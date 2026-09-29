@@ -71,9 +71,24 @@ export const signup = async (req, res) => {
       await sendEmail({ to: user.email, toName: user.name, subject, html });
     } catch (error) {
       console.error('Verification email failed:', error.message);
+      // The account EXISTS at this point — `user.save()` already committed. The
+      // user is not a failed signup, they are a registered user without a code.
+      //
+      // `code` and `emailSent` are the machine-readable part. Without them the
+      // frontend has to infer intent from a status code, and the only safe
+      // inference is "registration failed" — which leaves the user staring at a
+      // completed signup form for an account they already own. Retrying that
+      // form returns a duplicate-email error and dead-ends the flow.
+      //
+      // The response deliberately does NOT echo the email address or confirm
+      // the account is unverified; `resendVerification` stays neutral for the
+      // same reason, and this endpoint must not become a way to probe for
+      // registered addresses.
       return res.status(502).json({
         success: false,
         message: 'Account created but the verification email could not be sent. Please resend it.',
+        code: 'EMAIL_SEND_FAILED',
+        emailSent: false,
       });
     }
 
