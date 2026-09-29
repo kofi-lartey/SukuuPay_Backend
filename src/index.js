@@ -55,16 +55,39 @@ app.use((_req, res) => {
 
 app.use(errorHandler);
 
+// Bind the port BEFORE connecting to MongoDB.
+//
+// Render (and most PaaS routers) route traffic to the process by probing the
+// port it was told to expect, and they give a deploy only a short window to
+// accept a connection. Listening only after `mongoose.connect()` resolved meant
+// any slow, retried, or failed connection left nothing bound, so the deploy
+// died with "No server listening on port …" even though the process was alive
+// and the database was fine.
+//
+// Listening first also means `/health` is reachable while the database is still
+// connecting or down — which is exactly when an operator or uptime monitor most
+// needs a truthful answer. The health controller already reports the database
+// state, so the endpoint can describe a degraded instance instead of not
+// answering at all.
+const server = app.listen(PORT, () => {
+  // 0.0.0.0, not localhost: a server bound to loopback is unreachable from
+  // outside the container, which presents the same symptom as never binding.
+  console.log(`Server listening on port ${PORT} (bound 0.0.0.0)`);
+});
+
 mongoose.connect(MONGODB_URI)
   .then(() => {
     console.log('Connected to MongoDB successfully!');
-
-    app.listen(PORT, () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-    });
   })
   .catch((error) => {
     console.error('Database connection failed:', error);
+    // Exit non-zero so the platform restarts or rolls the deploy back. Without
+    // this the process stays up with a listening port but no database, serving
+    // 5xx on every request while looking "healthy" to a load balancer.
+    server.close(() => process.exit(1));
+    // Do not wait on a close that cannot complete (an in-flight connection
+    // would keep the process alive indefinitely).
+    setTimeout(() => process.exit(1), 5000).unref();
   });
 
 export default app;
