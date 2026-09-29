@@ -20,7 +20,15 @@ export const PASSWORD_RESET_EXPIRE_MINUTES = Number(
 );
 
 // ─────────────── Client ───────────────
-export const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
+// Origin the browser is on. Every link that lands a human on a page is built
+// from this: the email-verification link in authController and the
+// password-reset link in templates/emails.js. Those are two separate flows and
+// both must resolve to a real route on the deployed frontend — App.jsx defines
+// `/verify-email/:token` and `/reset-password/:token` — or the emailed link
+// 404s and the user is locked out of their own account.
+//
+// This is deliberately NOT WEBHOOK_BASE_URL. See that note below.
+export const CLIENT_URL = process.env.CLIENT_URL || 'https://sukuupay.netlify.app';
 
 // ─────────────── Brevo ───────────────
 export const BREVO_API_KEY = process.env.BREVO_API_KEY;
