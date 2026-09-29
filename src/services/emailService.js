@@ -44,7 +44,7 @@ const toRecipients = (list) => (list || []).map(toRecipient).filter((r) => r.ema
  *
  * Brevo issues two unrelated credentials and they are easy to swap:
  *   v3 API key -> `xkeys-...`  — sent in the `api-key` header
- *   SMTP key   -> `xsmtps-...` — used only to log in over SMTP
+ *   SMTP key   -> `xsmtpsib-...` — used only to log in over SMTP
  * An SMTP key sent as an API key is rejected with a bare
  * `401 {"message":"Key not found"}`, which reads like an expired credential and
  * sends you hunting through the deployment's environment settings.
@@ -64,13 +64,14 @@ export const validateBrevoApiKey = (key) => {
     };
   }
 
-  if (key.startsWith('xsmtps-')) {
+  if (/^xsmtps/i.test(key)) {
     return {
       code: 'EMAIL_KEY_IS_SMTP_NOT_API',
       message:
-        'BREVO_API_KEY is an SMTP key (xsmtps-…), not a v3 API key (xkeys-…). ' +
-        'Create an API key under Brevo → SMTP & API → API Keys and set that here. ' +
-        'The current value is the SMTP password, which the v3 REST API never accepts.',
+        'BREVO_API_KEY is an SMTP key (xsmtpsib-…), not a v3 API key (xkeys-…). ' +
+        'Create an API key under Brevo → SMTP & API → API Keys → Generate a new API key, ' +
+        'and set that here. The current value is the SMTP password, which the v3 REST API ' +
+        'never accepts.',
       status: 500,
     };
   }
@@ -163,7 +164,7 @@ export const sendEmail = async ({
       throw new EmailTransportError(
         'Brevo rejected the API key (401 unauthorized). The key is invalid, ' +
           'revoked, or belongs to a different Brevo account. Check BREVO_API_KEY ' +
-          'in the deployment environment — note that an SMTP key (xsmtps-…) is not ' +
+          'in the deployment environment — note that an SMTP key (xsmtpsib-…) is not ' +
           'an API key and is always rejected here. Provider said: ' +
           details,
         {

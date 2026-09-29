@@ -29,10 +29,20 @@ const rejected = [
   { name: 'null key', key: null, expected: 'EMAIL_NOT_CONFIGURED' },
   { name: 'empty key', key: '', expected: 'EMAIL_NOT_CONFIGURED' },
   {
-    name: 'SMTP key (the live bug)',
+    // The live key, with its real `xsmtpsib-` prefix. An earlier guard tested
+    // for `xsmtps-` and so missed this, downgrading a precise diagnosis to
+    // "malformed" — the exact outcome the check exists to prevent. Keep this
+    // case: it is the one that actually shipped.
+    name: 'SMTP key, real xsmtpsib- prefix',
+    key: 'xsmtpsib-ib9d881afaf3-b0f1c73cf1b2a17e2ac91-abcdefghijklmnop',
+    expected: 'EMAIL_KEY_IS_SMTP_NOT_API',
+  },
+  {
+    name: 'SMTP key, xsmtps- prefix',
     key: 'xsmtps-ib9d881afaf3-b0f1c73cf1b2a17e2ac91-H2X9k2LpQ',
     expected: 'EMAIL_KEY_IS_SMTP_NOT_API',
   },
+  { name: 'SMTP key, uppercase prefix', key: 'XSMTPSIB-abc123', expected: 'EMAIL_KEY_IS_SMTP_NOT_API' },
   { name: 'SendGrid key', key: 'SG.abc123.def456', expected: 'EMAIL_KEY_MALFORMED' },
   { name: 'bare token', key: '1234567890abcdef', expected: 'EMAIL_KEY_MALFORMED' },
   { name: 'placeholder from .env template', key: 'your-brevo-api-key', expected: 'EMAIL_KEY_MALFORMED' },
