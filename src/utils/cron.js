@@ -61,8 +61,23 @@ const job = new cron.CronJob(
     const client = url.startsWith("https") ? https : http;
     const req = client
       .get(url, (res) => {
-        if (res.statusCode === 200) console.log("Health check passed:", url);
-        else console.error("Health check failed", res.statusCode, url);
+        if (res.statusCode === 200) {
+          console.log("Health check passed:", url);
+        } else if (res.statusCode === 404) {
+          // A 404 is ambiguous, and the most common cause is a hostname that
+          // serves something else entirely — a mis-set API_URL pointing at the
+          // frontend, or at a renamed Render service. A reachable host with no
+          // such route is a different problem from an unreachable host, so say
+          // which one this is rather than logging a bare "failed".
+          console.error(
+            "Health check got 404 — the host answered but has no /api/health. " +
+              "Check that API_URL points at the API itself, not the frontend or a " +
+              "renamed service. Probed:",
+            url
+          );
+        } else {
+          console.error("Health check failed", res.statusCode, url);
+        }
         res.resume(); // drain so the socket is released
       })
       // Bounded so a hung endpoint cannot accumulate open sockets every 14
