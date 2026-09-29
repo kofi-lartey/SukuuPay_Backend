@@ -1,0 +1,4 @@
+studentName,studentClass,gender,dateOfBirth,parentName,parentRelationship,parentPhone,parentEmail,secondParentName,secondParentPhone,secondParentRelationship,emergencyContactName,emergencyContactPhone,emergencyContactRelationship,totalOwed,deadline
+Kwame Mensah,JHS 2A,male,2012-04-15,Mrs. Akosua Mensah,mother,0244123456,akosua@example.com,Mr. Kofi Mensah,0201987654,father,Auntie Ama,0244556677,Aunt,850,2026-10-30
+Akosua Boateng,JHS 1B,female,2013-07-22,Mr. Yaw Boateng,father,0201987654,,Yaw Owusu,0201987654,father,,0244556677,,900,2026-10-30
+Yaw Owusu,JHS 3A,male,2011-02-10,Mrs. Ama Owusu,mother,0244556677,,Ama Serwaa,0244556677,guardian,,0201987654,,850,2026-10-30
