@@ -8,6 +8,7 @@ import {
   resetPassword,
   verifyEmail,
   resendVerification,
+  me,
 } from '../controllers/authController.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { validate } from '../middleware/validate.js';
@@ -37,3 +38,4 @@ authRoute.post('/auth/forgot-password', emailLimiter, validate(forgotPasswordSch
 authRoute.post('/auth/reset-password/:token', otpLimiter, validate(resetPasswordParamsSchema, 'params'), validate(resetPasswordSchema), resetPassword);
 authRoute.post('/auth/verify-email/:token', otpLimiter, validate(paramsTokenSchema, 'params'), verifyEmail);
 authRoute.post('/auth/resend-verification', emailLimiter, validate(resendVerificationSchema), resendVerification);
+authRoute.get('/auth/me', authenticate, me);

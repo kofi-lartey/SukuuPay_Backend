@@ -52,6 +52,27 @@ const stampFileFilter = (req, file, cb) => {
   cb(null, true);
 };
 
+// ─────────────────────────────────────────────
+// SCHOOL AD CREATIVE
+// Ads render at a fixed 16:9 inside the auth CTA panel, so the creative is
+// cropped and served at the exact size the slider asks for. Handing the client
+// an untransformed original is what makes a carousel tank LCP.
+// `fetch_format: auto` lets Cloudinary serve AVIF/WebP per request.
+// ─────────────────────────────────────────────
+const adStorage = new CloudinaryStorage({
+  cloudinary: cloudinary.v2,
+  params: {
+    folder: `${CLOUDINARY_UPLOAD_FOLDER}/ads`,
+    allowed_formats: ["jpg", "jpeg", "png", "webp"],
+    transformation: [
+      { width: 960, height: 540, crop: "fill", gravity: "auto" },
+      { quality: "auto:good" },
+      { fetch_format: "auto" },
+    ],
+    public_id: (req, file) => `school-ad-${Date.now()}-${Math.round(Math.random() * 1e9)}`,
+  },
+});
+
 export const uploadLogo = multer({
   storage: logoStorage,
   fileFilter,
@@ -69,6 +90,15 @@ export const uploadStamp = multer({
     files: 1,
   },
 }).single("stamp");
+
+export const uploadSchoolAd = multer({
+  storage: adStorage,
+  fileFilter,
+  limits: {
+    fileSize: 3 * 1024 * 1024,
+    files: 1,
+  },
+}).single("image");
 
 // ─────────────────────────────────────────────
 // STUDENT PHOTO UPLOAD
@@ -178,6 +208,7 @@ export const extractPublicId = (url) => {
 export default {
   uploadLogo,
   uploadStamp,
+  uploadSchoolAd,
   uploadBulk,
   studentPhotoUpload,
   schoolLogoUpload,

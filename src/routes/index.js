@@ -17,6 +17,7 @@ import { adminRoute } from './admin.routes.js';
 import { healthRoute } from './health.routes.js';
 import { whatsappRoute } from './whatsapp.routes.js';
 import { webhookRoute } from './webhooks.routes.js';
+import { publicAdRoute } from './schoolAd.routes.js';
 
 const router = Router();
 
@@ -39,6 +40,7 @@ router.use('/upload', uploadRoute);
 router.use('/notifications', notificationRoute);
 router.use('/settings', settingsRoute);
 router.use('/admin', adminRoute);
+router.use('/', publicAdRoute);
 
 // WhatsApp and the third-party callback routers declare absolute paths, so they
 // are mounted at the root of this router: they answer /api/whatsapp/* and

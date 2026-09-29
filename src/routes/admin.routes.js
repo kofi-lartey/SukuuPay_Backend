@@ -16,6 +16,21 @@ import {
   revenueQuerySchema,
   suspendSchema,
 } from "../validations/admin.validation.js";
+import {
+  listSchoolAds,
+  createSchoolAd,
+  updateSchoolAd,
+  reviewSchoolAd,
+  deleteSchoolAd,
+} from "../controllers/schoolAd.controller.js";
+import { uploadSchoolAd } from "../middleware/upload.js";
+import {
+  createSchoolAdSchema,
+  updateSchoolAdSchema,
+  schoolAdIdParamSchema,
+  listSchoolAdsQuerySchema,
+  approveSchoolAdSchema,
+} from "../validations/schoolAd.validation.js";
 
 export const adminRoute = Router();
 
@@ -61,4 +76,44 @@ adminRoute.put(
   "/schools/:id/unsuspend",
   validate(schoolIdParamSchema, "params"),
   unsuspendSchoolPlatformController
+);
+
+// GET /admin/school-ads — moderation queue across every placement
+adminRoute.get(
+  "/school-ads",
+  validate(listSchoolAdsQuerySchema, "query"),
+  listSchoolAds
+);
+
+// POST /admin/school-ads — submit a creative. Filed as "pending"; an explicit
+// approval call is required before it can reach the public slider.
+adminRoute.post(
+  "/school-ads",
+  uploadSchoolAd,
+  validate(createSchoolAdSchema),
+  createSchoolAd
+);
+
+// PUT /admin/school-ads/:adId — edit copy, dates, weight or swap the creative
+adminRoute.put(
+  "/school-ads/:adId",
+  uploadSchoolAd,
+  validate(schoolAdIdParamSchema, "params"),
+  validate(updateSchoolAdSchema),
+  updateSchoolAd
+);
+
+// PUT /admin/school-ads/:adId/approve — the only path that can change status
+adminRoute.put(
+  "/school-ads/:adId/approve",
+  validate(schoolAdIdParamSchema, "params"),
+  validate(approveSchoolAdSchema),
+  reviewSchoolAd
+);
+
+// DELETE /admin/school-ads/:adId — soft delete, also purges the Cloudinary asset
+adminRoute.delete(
+  "/school-ads/:adId",
+  validate(schoolAdIdParamSchema, "params"),
+  deleteSchoolAd
 );

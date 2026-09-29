@@ -339,6 +339,20 @@ export const verifyEmail = async (req, res) => {
 };
 
 /**
+ * GET /auth/me
+ * Lets a client restore its session from an access token alone. The
+ * `authenticate` middleware has already loaded the live user, so this only
+ * reports it.
+ */
+export const me = async (req, res) => {
+  return res.status(200).json({
+    success: true,
+    message: 'Current user retrieved',
+    user: req.user.toJSON(),
+  });
+};
+
+/**
  * POST /auth/resend-verification
  */
 export const resendVerification = async (req, res) => {
