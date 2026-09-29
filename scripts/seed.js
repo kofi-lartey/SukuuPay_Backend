@@ -29,6 +29,7 @@ import { Student } from '../src/models/studentModel.js';
 import { User } from '../src/models/userModel.js';
 import { PaymentPlan } from '../src/models/paymentPlanModel.js';
 import { Payment } from '../src/models/paymentModel.js';
+import { SchoolAd } from '../src/models/SchoolAd.js';
 import { generateStudentId, resolveAcademicYearStart } from '../src/utils/generateStudentId.js';
 
 dotenv.config({ quiet: true });
@@ -121,6 +122,44 @@ const SEED_PLAN = {
   intervalDays: 30,
   startDateDays: 0,
 };
+
+// ─────────────────────────────────────────────
+// AUTH-ASIDE ADVERTISEMENTS
+// ─────────────────────────────────────────────
+// The login/signup/recovery asides show a rotating band of school creatives, so
+// the seed supplies two live ads; without them the band falls back to the
+// metrics row and the carousel is never exercised on a fresh database.
+//
+// Seeded as `approved` and dated far enough ahead to stay live. The public
+// endpoint only serves approved ads inside their date window, so a `pending`
+// seed would render an empty band and look like a bug.
+//
+// The images are external placeholder services rather than real creatives: the
+// upload path writes to Cloudinary, and a seed should not depend on a live
+// Cloudinary account or leave assets behind in the bucket. Both fields are
+// https, which the client re-checks before rendering them into an href/alt.
+const SEED_ADS = [
+  {
+    key: 'Greenfield Academy',
+    schoolName: 'Greenfield Academy',
+    headline: 'Admissions open for 2026',
+    imageUrl: 'https://picsum.photos/seed/sukuupay-greenfield/960/540',
+    imageAlt: 'Greenfield Academy senior school campus building',
+    linkUrl: 'https://example.com/greenfield/apply',
+    placement: 'auth_aside',
+    sortWeight: 10,
+  },
+  {
+    key: 'Tamale Senior High',
+    schoolName: 'Tamale Senior High',
+    headline: 'Now accepting BECE entrants',
+    imageUrl: 'https://picsum.photos/seed/sukuupay-tamale/960/540',
+    imageAlt: 'Students walking through the grounds of Tamale Senior High',
+    linkUrl: 'https://example.com/tamale/apply',
+    placement: 'auth_aside',
+    sortWeight: 5,
+  },
+];
 
 const log = (...a) => console.log(...a);
 const step = (n, msg) => log(`\n[${n}] ${msg}`);
@@ -337,6 +376,34 @@ const upsertPayment = async (student, plan, createdBy, session) => {
   return doc;
 };
 
+const upsertAd = async (spec, approvedBy, session) => {
+  const { key, ...fields } = spec;
+
+  const existing = await SchoolAd.findOne({ schoolName: key }).session(session);
+  if (existing) {
+    existing.set({
+      ...fields,
+      status: 'approved',
+      approvedBy,
+      approvedAt: new Date(),
+      deletedAt: null,
+      // Pushed out on every run so a seed written months ago is still live.
+      endsAt: new Date(Date.now() + 365 * 86400000),
+    });
+    await existing.save({ session });
+    return existing;
+  }
+
+  return SchoolAd.create({
+    ...fields,
+    status: 'approved',
+    approvedBy,
+    approvedAt: new Date(),
+    endsAt: new Date(Date.now() + 365 * 86400000),
+    session,
+  });
+};
+
 const run = async () => {
   if (!APPLY) {
     log('================================================================');
@@ -358,26 +425,27 @@ const run = async () => {
     if (RESET && APPLY) {
       step('reset', 'removing previously seeded rows');
       await Payment.deleteMany({ paymentId: { $in: SEED_PAYMENT_IDS } }).session(session);
+      await SchoolAd.deleteMany({ schoolName: { $in: SEED_ADS.map((a) => a.key) } }).session(session);
       await PaymentPlan.deleteMany({ planName: SEED_PLAN.planName }).session(session);
       await Student.deleteMany({ studentName: SEED_STUDENT.studentName }).session(session);
       await School.deleteMany({ schoolCode: SEED_SCHOOL.schoolCode }).session(session);
       await User.deleteMany({ email: { $in: SEED_USERS.map((u) => u.email) } }).session(session);
-      log('  removed seeded payments, plans, students, schools, users');
+      log('  removed seeded payments, ads, plans, students, schools, users');
     }
 
-    step('1/5', 'super admin');
+    step('1/6', 'super admin');
     const admin = await upsertUser(SEED_USERS[0], null, session);
     log(`  super_admin  ${admin.email}`);
 
-    step('2/5', 'school');
+    step('2/6', 'school');
     const school = await upsertSchool(SEED_SCHOOL, session);
     log(`  school       ${school.name}  [${school.schoolCode}]  sms=${school.sms?.provider}`);
 
-    step('3/5', 'school admin (scoped to the school)');
+    step('3/6', 'school admin (scoped to the school)');
     const schoolAdmin = await upsertUser(SEED_USERS[1], school._id, session);
     log(`  school_admin ${schoolAdmin.email}  schoolId=${schoolAdmin.schoolId}`);
 
-    step('4/5', 'student + pay link');
+    step('4/6', 'student + pay link');
     const student = await upsertStudent(SEED_STUDENT, school._id, school.schoolCode, admin._id, session);
     log(`  student      ${student.studentName}  [${student.studentId}]  ${student.studentClass}`);
     log(`  parent       ${student.parents[0].parentName}  ${student.parents[0].phone}`);
@@ -385,7 +453,7 @@ const run = async () => {
     log(`  paid         GHS ${(student.totalPaid / 100).toFixed(2)}`);
     log(`  balance      GHS ${(student.balance / 100).toFixed(2)}  (recomputed by the model hook)`);
 
-    step('5/5', 'payment plan + settled payment');
+    step('5/6', 'payment plan + settled payment');
     const plan = await upsertPlan(SEED_PLAN, student, admin._id, session);
     const sum = plan.installments.reduce((t, i) => t + i.amount, 0);
     log(`  plan         ${plan.planName}  ${plan.numberOfInstallments} installments`);
@@ -396,6 +464,15 @@ const run = async () => {
     }
     const payment = await upsertPayment(student, plan, admin._id, session);
     log(`  payment      ${payment.paymentId}  GHS ${(payment.amount / 100).toFixed(2)}  ${payment.status}`);
+
+    step('6/6', 'auth-aside advertisements');
+    const ads = [];
+    for (const spec of SEED_ADS) {
+      const ad = await upsertAd(spec, admin._id, session);
+      ads.push(ad);
+      log(`  ad           ${ad.schoolName}  "${ad.headline}"  [${ad.status}]`);
+    }
+    log(`  carousel     ${ads.length} live ads on placement=auth_aside (visible on /login, /signup, /forgot-password)`);
 
     // ── Report ──
     log('\n================================================================');
@@ -424,6 +501,7 @@ const run = async () => {
         ['students', Student, { _id: student._id }],
         ['paymentplans', PaymentPlan, { _id: plan._id }],
         ['payments', Payment, { paymentId: 'PAY-SEED-0001' }],
+        ['schoolads', SchoolAd, { schoolName: { $in: SEED_ADS.map((a) => a.key) } }],
       ]) {
         log(`  ${label.padEnd(12)} ${await model.countDocuments(q)}`);
       }
