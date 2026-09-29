@@ -13,6 +13,7 @@ import {
   MtnTransportError,
 } from "../utils/mtnApi.js";
 import { resolveGateway } from "../utils/paymentGateway.js";
+import { WEBHOOK_BASE_URL } from "../config/env.js";
 
 class ApiError extends Error {
   constructor(message, status = 500, code = "INTERNAL_ERROR") {
@@ -237,7 +238,10 @@ const initiateMtnPayment = async (payment, student, school, token) => {
  * (POST /pay/webhook/hubtel) and its settlement handler are untouched.
  */
 const initiateHubtelPayment = async (payment, student, school, token) => {
-  const callbackUrl = `${process.env.PAY_LINK_BASE_URL || "https://sukuupay.com"}/api/pay/webhook/hubtel`;
+  // Backend origin, not PAY_LINK_BASE_URL: this is a server-to-server POST from
+  // Hubtel, and the route is mounted at /api/webhooks/... (plural). Building this
+  // from the frontend base produced a URL Hubtel could never reach.
+  const callbackUrl = `${WEBHOOK_BASE_URL}/api/webhooks/hubtel/payment`;
   const hubtelRequest = buildHubtelPaymentRequest(school, payment, callbackUrl);
 
   // TODO: replace with the live Hubtel initialize-payment call. The request

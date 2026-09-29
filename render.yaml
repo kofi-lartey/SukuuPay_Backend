@@ -1,0 +1,152 @@
+# Render blueprint for the SukuuPay API.
+#
+# Reference: https://render.com/docs/blueprint-spec
+#
+# Every credential is a `sync: false` value, which means Render creates the
+# variable but leaves it EMPTY and expects you to paste the real value in the
+# dashboard. Nothing secret lives in this file, and nothing secret is read from
+# .env at build time — .env is gitignored, and Render injects config as real
+# environment variables at runtime.
+services:
+  - type: web
+    name: sukuupay-api
+    runtime: node
+    plan: starter # see the note on free tier below
+    region: frankfurt # Ghana-adjacent; change to oregon/us-east if you prefer
+    branch: main
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    # Give the process room to connect to Atlas and start cron jobs before the
+    # first request. 100s is generous; the default 30s is tight for a cold start.
+    autoDeploy: true
+    envVars:
+      # ── Runtime ──
+      - key: NODE_ENV
+        value: production
+      # Render injects PORT. 2345 is kept for local parity but the process must
+      # not assume it — see index.js, which binds process.env.PORT.
+      - key: PORT
+        value: 2345
+      - key: NODE_VERSION
+        value: 22.16.0
+
+      # ── Database ──
+      - key: MONGODB_URI
+        sync: false
+
+      # ── Public origins ──
+      # API_URL and WEBHOOK_BASE_URL are the BACKEND origin. Provider callbacks
+      # are server-to-server POSTs and must land here, not on the frontend.
+      #
+      # Set these to https://sukuupay-api.onrender.com after the first deploy,
+      # then trigger a redeploy. Until WEBHOOK_BASE_URL points at this service,
+      # Hubtel settlement callbacks go nowhere.
+      - key: API_URL
+        sync: false
+      - key: WEBHOOK_BASE_URL
+        sync: false
+      - key: API_BASE_URL
+        sync: false
+      # Frontend. CORS and parent-facing redirects only — no provider calls this.
+      - key: CLIENT_URL
+        sync: false
+      # The parent-facing /pay/<token> page. FRONTEND origin, not backend.
+      - key: PAY_LINK_BASE_URL
+        sync: false
+      # Optional: probe something other than API_URL.
+      - key: HEALTH_CHECK_URL
+        sync: false
+
+      # ── Auth ──
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_EXPIRE
+        value: 15m
+      - key: REFRESH_TOKEN_EXPIRE
+        value: 7d
+      - key: EMAIL_OTP_EXPIRE_MINUTES
+        value: 15
+      - key: PASSWORD_RESET_EXPIRE_MINUTES
+        value: 30
+
+      # ── MTN MoMo (primary payment gateway) ──
+      # Currently sandbox. Switching to production requires MTN partner approval
+      # and production credentials from the OVA dashboard — changing these values
+      # alone does not enable live payments.
+      - key: PRIMARY_PAYMENT_GATEWAY
+        value: mtn
+      - key: MTN_ENVIRONMENT
+        value: sandbox
+      - key: MTN_TARGET_ENVIRONMENT
+        value: sandbox
+      - key: MTN_API_USER
+        sync: false
+      - key: MTN_API_KEY
+        sync: false
+      - key: MTN_COLLECTION_SUBSCRIPTION_KEY
+        sync: false
+      - key: MTN_CURRENCY
+        value: GHS
+      # Backend origin MTN posts payment results to. Unset means no callback is
+      # registered and payments never settle.
+      - key: MTN_CALLBACK_HOST
+        sync: false
+      # MTN Collections callbacks carry no keyed signature, so this shared secret
+      # is the only proof of origin. Set it.
+      - key: MTN_WEBHOOK_SECRET
+        sync: false
+
+      # ── Arkesel (primary SMS gateway) ──
+      - key: SMS_DEFAULT_PROVIDER
+        value: arke
+      - key: ARKESEL_API_KEY
+        sync: false
+      - key: ARKESEL_API_URL
+        value: https://sms.arkesel.com/api/v2/sms/send
+      - key: ARKESEL_SENDER_ID
+        value: SukuuPay
+      - key: ARKESEL_TIMEOUT_MS
+        value: 15000
+      # Delivery reports arrive here. Must be public HTTPS:
+      #   https://sukuupay-api.onrender.com/api/webhooks/arkesel/sms
+      # Without it every message stays `submitted` forever.
+      - key: ARKESEL_CALLBACK_URL
+        sync: false
+      - key: ARKESEL_WEBHOOK_SECRET
+        sync: false
+
+      # ── Webhook auth ──
+      # false until Arkesel confirms whether DLRs are signed. Setting true risks
+      # rejecting every real delivery report, which looks identical to the
+      # callback simply never arriving.
+      - key: WEBHOOK_AUTH_ENFORCED
+        value: "false"
+
+      # ── WhatsApp (Version 2 placeholder) ──
+      - key: WHATSAPP_ENABLED
+        value: "false"
+      - key: WHATSAPP_COMING_SOON_MESSAGE
+        value: WhatsApp messaging is coming soon in Version 2.
+
+      # ── Email (Brevo) ──
+      - key: BREVO_API_KEY
+        sync: false
+      - key: BREVO_API_URL
+        value: https://api.brevo.com/v3/smtp/email
+      - key: BREVO_EVENT_SECRET
+        sync: false
+      - key: EMAIL_DAILY_QUOTA
+        value: 1000
+      - key: EMAIL_JOB_CONCURRENCY
+        value: 3
+
+      # ── Cloudinary ──
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: CLOUDINARY_UPLOAD_FOLDER
+        value: SukuuPay

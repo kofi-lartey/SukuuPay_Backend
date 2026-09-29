@@ -44,8 +44,27 @@ export const EMAIL_DAILY_QUOTA = Number(process.env.EMAIL_DAILY_QUOTA || 1000);
 // Concurrency for in-process bulk email jobs.
 export const EMAIL_JOB_CONCURRENCY = Number(process.env.EMAIL_JOB_CONCURRENCY || 3);
 
+// Origin of this service. Used by the keep-alive health check in utils/cron.js,
+// which skips itself when this is a loopback address — probing localhost proves
+// nothing about whether the public endpoint is reachable.
+export const API_URL = process.env.API_URL || '';
+
 // Public API origin, used to build unsubscribe links and List-Unsubscribe headers.
 export const API_BASE_URL = process.env.API_BASE_URL || 'https://api.sukuupay.com';
+
+// Backend origin for inbound provider callbacks (Hubtel, MTN, Arkesel).
+//
+// This is deliberately NOT PAY_LINK_BASE_URL. That is the parent-facing page and
+// points at the frontend; provider callbacks are server-to-server POSTs that must
+// land on a route this process serves. Building a webhook URL from the frontend
+// origin produces a callback the provider cannot reach, and settlement silently
+// never arrives.
+export const WEBHOOK_BASE_URL = process.env.WEBHOOK_BASE_URL || API_BASE_URL;
+
+// Origin the keep-alive health check probes. Defaults to API_URL, but is separate
+// so a monitoring service can be pointed somewhere else. A loopback value is
+// detected and skipped rather than passed over — see utils/cron.js.
+export const HEALTH_CHECK_URL = process.env.HEALTH_CHECK_URL || '';
 
 // ─────────────── Pay links (public, parent-facing) ───────────────
 // Pay links are served from the public marketing domain, not the admin app.

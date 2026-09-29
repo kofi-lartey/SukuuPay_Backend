@@ -17,6 +17,7 @@ import {
   MtnTransportError,
 } from "../utils/mtnApi.js";
 import { resolveGateway } from "../utils/paymentGateway.js";
+import { WEBHOOK_BASE_URL } from "../config/env.js";
 
 class ApiError extends Error {
   constructor(message, status = 500, code = "INTERNAL_ERROR") {
@@ -759,7 +760,7 @@ const prepayViaHubtel = async (payment, plan, primaryParent, amount) => {
   const clientSecret = school.payment?.hubtelClientSecret;
   const apiKey = school.payment?.hubtelApiKey;
 
-  const callbackUrl = `${process.env.PAY_LINK_BASE_URL || "https://sukuupay.com"}/api/pay/webhook/hubtel`;
+  const callbackUrl = `${WEBHOOK_BASE_URL}/api/webhooks/hubtel/payment`;
 
   // TODO: replace with the live Hubtel initialize-payment call. The request
   // payload is assembled here so the integration point is explicit; the

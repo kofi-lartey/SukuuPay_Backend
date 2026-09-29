@@ -287,6 +287,31 @@ describe('MTN gateway', () => {
 });
 
 // ── Health / version honesty ──
+describe('deployment config', () => {
+  test('health check skips a loopback origin instead of passing vacuously', async () => {
+    // The original check pinged itself on localhost, so a deployed instance
+    // reported healthy while nothing proved the public entry point was reachable.
+    // Skipping is the honest answer; silently passing is not.
+    const { resolveHealthCheckUrl } = await import('../src/utils/cron.js');
+    assert.equal(resolveHealthCheckUrl(), null, 'dev API_URL is loopback -> skip');
+
+    const { HEALTH_CHECK_URL, WEBHOOK_BASE_URL } = await import('../src/config/env.js');
+    assert.equal(typeof HEALTH_CHECK_URL, 'string');
+    assert.equal(WEBHOOK_BASE_URL, 'http://localhost:2345',
+      'webhook origin defaults to the backend, never the frontend');
+  });
+
+  test('webhook base URL is not borrowed from the frontend pay-link origin', async () => {
+    // The Hubtel callback was built from PAY_LINK_BASE_URL, which points at the
+    // frontend. A server-to-server POST cannot land on a static host, so payment
+    // settlement would never arrive — silently, because the send still succeeds.
+    const { WEBHOOK_BASE_URL } = await import('../src/config/env.js');
+    const { PAY_LINK_BASE_URL } = await import('../src/config/env.js');
+    assert.notEqual(WEBHOOK_BASE_URL, PAY_LINK_BASE_URL,
+      'backend and frontend origins must be distinct');
+  });
+});
+
 describe('GET /version reports honestly', () => {
   test('every integration declares its real state', async () => {
     const { getVersion } = await import('../src/services/health.service.js');
