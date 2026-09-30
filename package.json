@@ -7,10 +7,10 @@
     "test": "node --test \"tests/**/*.test.js\"",
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "seed": "node scripts/seed.js",
-    "seed:apply": "node scripts/seed.js --apply",
-    "seed:reset": "node scripts/seed.js --apply --reset",
-    "seed:verify": "node scripts/verify-seed.mjs"
+    "audit:unlinked": "node scripts/audit-unlinked-users.js",
+    "demo:backup": "node scripts/backup-demo-data.mjs",
+    "demo:purge": "node scripts/purge-demo-data.js",
+    "demo:restore": "node scripts/restore-demo-data.mjs"
   },
   "keywords": [],
   "author": "",
