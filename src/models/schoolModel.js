@@ -216,6 +216,23 @@ const schoolModel = new mongoose.Schema(
       currentYear: { type: String, default: new Date().getFullYear().toString() },
       termsPerYear: { type: Number, default: 3, min: 1, max: 4 },
       classes: [{ type: String, trim: true }],
+      /**
+       * The classes a student may graduate from, when the school is not shaped
+       * like the last-three assumption.
+       *
+       * `getFinalYearClassesFrom` falls back to `classes.slice(-3)`, which is
+       * right for a school running JHS 1–3 and wrong for every other shape. A
+       * Ghanaian basic-and-JHS school listing `Nursery 1 … Primary 6, JHS 1–3`
+       * has its last three as JHS 1–3, so a JHS 1 student passed
+       * `graduateStudent`'s "not in a final year class" guard — the guard was
+       * protecting nothing. Naming the final years explicitly is what makes both
+       * graduation and the cohort data correct, and it is one field rather than
+       * the `Class` collection the module spec proposes.
+       *
+       * Empty means "use the fallback", so a school that has not set it behaves
+       * exactly as before.
+       */
+      finalYearClasses: [{ type: String, trim: true }],
       gradingSystem: {
         type: String,
         enum: ["WAEC", "IB", "Cambridge", "Custom"],

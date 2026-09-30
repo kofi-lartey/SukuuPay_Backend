@@ -1312,16 +1312,23 @@ const getFinalYearClasses = async (schoolId) =>
   getFinalYearClassesFrom(await fetchSchool(schoolId));
 
 /**
- * The classes a student may graduate from: the last three on the school's list.
+ * The classes a student may graduate from.
  *
- * Still a heuristic — "final year" is a property of the school, not a derivable
- * rule, and a school running Basic 1–6 then JHS 1–3 has a different shape from
- * one running Nursery–JHS 3. It is read from `academic.classes` rather than
- * hardcoded, which is the most that can be done until a `Class` collection
- * exists (see the module spec, §5.3).
+ * `school.academic.finalYearClasses` when the school has named them, and
+ * otherwise the last three on the class list.
+ *
+ * The fallback is a heuristic, and a wrong one for most Ghanaian school shapes.
+ * A basic-and-JHS school lists `Nursery 1 … Primary 6, JHS 1, JHS 2, JHS 3`,
+ * whose last three are JHS 1–3 — so `graduateStudent`'s "not in a final year
+ * class" guard let a JHS 1 student through, and the guard protected nothing. A
+ * school that names its final years gets the correct answer; one that has not is
+ * no worse off than before, which is why the fallback stays.
  */
-const getFinalYearClassesFrom = (school) =>
-  (school?.academic?.classes || []).slice(-3);
+const getFinalYearClassesFrom = (school) => {
+  const named = school?.academic?.finalYearClasses || [];
+  if (named.length) return named;
+  return (school?.academic?.classes || []).slice(-3);
+};
 
 // ──────────────────── Promote Single Student ────────────────────
 export const promoteStudent = async (id, data, user) => {
@@ -2023,7 +2030,21 @@ export const getCohorts = async (query, user) => {
 
   await fetchSchool(resolvedSchoolId);
 
-  const match = { schoolId: resolvedSchoolId, deletedAt: null, status: "graduated", isAlumni: true };
+  // A cohort is everyone who sat in the graduating year, and the counters
+  // report what became of them.
+  //
+  // The match used to be `{ status: 'graduated', isAlumni: true }`, which
+  // contradicted `getCohortDetail` two functions below — that one filters on
+  // `graduationYear` alone. So the list showed a cohort of 37 while its detail
+  // showed 46, and `transferredCount` and `droppedCount` were structurally
+  // always zero: no row that could satisfy the match could ever be counted by
+  // them. Two definitions of "cohort", one of them dead.
+  //
+  // `graduationYear` is therefore the cohort identity, and for a student who
+  // left during their final year it is the year they *would have* graduated. The
+  // alumni list still requires `status: 'graduated'` and `isAlumni`, so a leaver
+  // is counted in their cohort without appearing as a graduate.
+  const match = { schoolId: resolvedSchoolId, deletedAt: null, graduationYear: { $ne: null } };
   if (year) match.graduationYear = String(year);
 
   const pipeline = [
@@ -2032,7 +2053,25 @@ export const getCohorts = async (query, user) => {
       $group: {
         _id: "$graduationYear",
         name: { $first: { $concat: ["Class of ", "$graduationYear"] } },
-        academicYear: { $first: { $concat: [{ $subtract: [{ $toInt: "$graduationYear" }, 1]}, "/", "$graduationYear"] } },
+        // `$toString` around the `$subtract` is load-bearing, and it was the bug
+        // that made the whole Cohorts tab non-functional.
+        //
+        // `$subtract` returns a *number*, and `$concat` only accepts strings, so
+        // MongoDB rejected the pipeline with `Location16702: $concat only
+        // supports strings, not int`. The endpoint 500'd on any cohort that
+        // actually had students in it — and it only ever appeared to work
+        // because an empty database returns no groups, so the offending
+        // expression was never evaluated. Seeding four cohorts is what finally
+        // produced a row for it to fail on.
+        academicYear: {
+          $first: {
+            $concat: [
+              { $toString: { $subtract: [{ $toInt: "$graduationYear" }, 1] } },
+              "/",
+              "$graduationYear",
+            ],
+          },
+        },
         startDate: { $min: "$createdAt" },
         endDate: { $max: "$graduationDate" },
         studentCount: { $sum: 1 },

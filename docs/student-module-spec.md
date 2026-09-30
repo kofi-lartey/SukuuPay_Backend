@@ -858,11 +858,90 @@ both KPI rows are literally the same component.
 | Item | Status |
 |---|---|
 | **`Parent` collection** | Deferred. The embedded array is now addressable, so the endpoints work. Promoting parents is a data migration, and would also give `Payment.parentId` a real `ref`. It is still the right call — just not a same-day one |
-| **`Class` collection** | Deferred. The misleading Joi fields were renamed instead (§11.1), so promotion is correct. Class ids, real capacities and teacher assignments still have no source |
-| **DB-backed tests for the new service code** | Open. `reserveStudentIds` concurrency, `insertMany` recovery, the bulk limits and the audit rows all need a database; `Backend/` has no `mongodb-memory-server` and the suite is pure-unit by convention. This is the largest remaining gap |
-| **`Class` capacity** | The promotion preview now takes `classCapacity` and skips the check when it is not supplied, rather than assuming 40 |
+| **`Class` collection** | Partly addressed. A `Class` collection is still deferred, but `School.academic.finalYearClasses` now lets a school name its own final years instead of the `slice(-3)` fallback — see §12.1 |
+| **DB-backed tests for the new service code** | Open. `reserveStudentIds` concurrency, `insertMany` recovery, the bulk limits and the audit rows all need a database; `Backend/` has no `mongodb-memory-server` and the suite is pure-unit by convention. Partly mitigated by `npm run seed:verify` — see §12.2 |
 | **Cohort detail deep-link from the roster** | The tabs and cards exist; there is no `?cohort=` route parameter |
 | **Guardian CRUD in the profile drawer** | The four endpoints work and the drawer lists guardians, but editing them from the drawer is not built — `GuardiansTab` is read-only |
+
+### 12.1 Final-year classes
+
+`getFinalYearClassesFrom` falls back to `classes.slice(-3)`, which is right for a
+JHS 1–3 school and wrong for every other shape. A basic-and-JHS school listing
+`Nursery 1 … Primary 6, JHS 1, JHS 2, JHS 3` has its last three as JHS 1–3, so
+`graduateStudent`'s "not in a final year class" guard admitted a JHS 1 student and
+protected nothing.
+
+`School.academic.finalYearClasses` names them. Empty means the fallback, so a
+school that has not set it behaves exactly as before.
+
+### 12.2 Seed and verification
+
+```
+npm run seed            # dry run — executes every write, then rolls back
+npm run seed:apply      # commit
+npm run seed:reset      # wipe the fixture first, then commit
+npm run seed:verify     # read-only checks against the real service functions
+```
+
+`scripts/lib/demoRoster.js` builds a deterministic Ghanaian fixture: four
+graduating cohorts (2023–2026), a 2026/2027 roster across Nursery–JHS 3, plans
+whose installments sum exactly to their totals, and settled payments. It uses a
+seeded PRNG rather than `Math.random()`, so two machines produce identical data.
+
+`seed:verify` calls `getCohorts`, `getCohortDetail`, `getAlumni`, `getStudentStats`
+and `listStudents` directly — the same code the API calls — and asserts the cohort
+arithmetic, the honours filters, the fee-status filters and the data integrity
+(balances, pay-link tokens, guardians, the `acceptanceToken` index). It is the
+only automated coverage the DB-backed service code has, and it found four bugs
+that no existing test could reach.
+
+---
+
+## 13. Bugs found by seeding real data
+
+Seeding was meant to produce test data. It found five defects, four of which
+existed only because there was never a row for them to fail on.
+
+**1. The Cohorts tab could never have worked.** `getCohorts` built
+`academicYear` with `$concat`, handing it the result of `$subtract` — a *number*.
+MongoDB rejects that with `Location16702: $concat only supports strings, not int`,
+so the endpoint 500'd on any cohort that had students. It only appeared to work
+because an empty database produces no `$group` output, so the offending
+expression was never evaluated. Fixed with `$toString` around the `$subtract`.
+
+**2. The cohort list and the cohort detail disagreed.** `getCohorts` matched
+`{ status: 'graduated', isAlumni: true }` while `getCohortDetail` matched on
+`graduationYear` alone. The list reported 37 for a cohort whose detail reported
+46, and `transferredCount` and `droppedCount` were structurally always zero — no
+row that could satisfy the match could ever be counted by them. Both now key on
+`graduationYear`, and a leaver carries the year they *would* have graduated.
+
+**3. Only one plan in a deployment could lack an acceptance code.** The schema
+declares a partial index on `acceptanceToken`; databases created before that
+change have `{ unique: true, sparse: true }`, and `sparse` does not work here —
+a sparse index omits documents where the field is *absent*, but the field is
+`default: null`, so Mongoose writes it explicitly, the index entry exists, and
+every null collides. The second plan in any school would fail with E11000. The
+seed drops and recreates the index, narrowly and visibly. This affects any
+environment, not just the fixture.
+
+**4. `insertMany` drops documents that fail schema validation without throwing.**
+The first fixture run reported success having written 61 of 278 students, because
+`classHistory[].by` is required and the fixture set it to `null`. The seed now
+asserts the written count matches the expected count, which turns a silent partial
+write into a loud failure.
+
+**5. A bulk write does not get `pre('save')` hooks.** `insertMany` skips them, so
+the hook that derives `balance` from `totalOwed - totalPaid` never fires. A
+fixture that assumed it did stored `balance: 0` for all 279 students — and the
+roster's fee badges, its "Fully Cleared" tile and its overdue filter all read that
+field, so the roster looked plausible while every figure was wrong. The fixture
+computes `balance` itself, and `seed:verify` asserts
+`balance === totalOwed - totalPaid` for every student.
+
+The same class of hazard applies in production: `bulkCreateStudents` validates
+each row with Joi before inserting, which is what protects it, but a bulk write
+that skips that step fails silently.
 
 ---
 
@@ -871,9 +950,10 @@ both KPI rows are literally the same component.
 | Layer | Command | Result |
 |---|---|---|
 | Backend unit | `npm test` (in `Backend/`) | 130 passing, 41 new |
+| Seed integrity | `npm run seed:verify` (in `Backend/`) | all checks passed |
 | Frontend build | `npm run build` | clean |
 | Shell + Overview + roster render | `npm run check:dashboard` | 18 passing |
-| Mock API contract | `npm run check:mock` | 94 passing |
+| Mock API contract | `npm run check:mock` | 97 passing, 3 new for cohorts |
 | Auth render | `npm run check:auth` | 8 passing |
 
 `check:dashboard` gained four checks during this work, each covering a bug the

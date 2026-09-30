@@ -111,8 +111,15 @@ export const generateStudentId = async (schoolCode, academicYear) => {
  * max-based scheme; without this, the first request after deploy would restart
  * the counter at 1 and collide with every id already issued. Safe to re-run: it
  * only ever raises the counter, never lowers it.
+ *
+ * `session` matters more than it looks. Both the aggregation and the counter
+ * update default to reading *outside* the caller's transaction, so a seed that
+ * inserts a whole fixture and then calls this would look at the pre-seed
+ * database and conclude the highest id is 3 — reporting a number that is wrong
+ * and then leaving the counter below the ids actually stored. The next live
+ * create would then hand out a number the fixture already uses.
  */
-export const syncStudentIdCounter = async (schoolCode, academicYear) => {
+export const syncStudentIdCounter = async (schoolCode, academicYear, session) => {
   const { Student } = await import("../models/studentModel.js");
   const year = resolveAcademicYearStart(academicYear);
   const prefix = `${schoolCode}-${year}-`;
@@ -128,10 +135,14 @@ export const syncStudentIdCounter = async (schoolCode, academicYear) => {
         },
       },
     },
-  ]);
+  ])
+    .session(session || null)
+    .exec();
 
   const highest = row?.maxCounter || 0;
-  await Counter.updateOne({ key, seq: { $lt: highest } }, { $set: { seq: highest } });
+  await Counter.updateOne({ key, seq: { $lt: highest } }, { $set: { seq: highest } }).session(
+    session || null
+  );
   return highest;
 };
 

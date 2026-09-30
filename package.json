@@ -9,7 +9,8 @@
     "dev": "nodemon src/index.js",
     "seed": "node scripts/seed.js",
     "seed:apply": "node scripts/seed.js --apply",
-    "seed:reset": "node scripts/seed.js --apply --reset"
+    "seed:reset": "node scripts/seed.js --apply --reset",
+    "seed:verify": "node scripts/verify-seed.mjs"
   },
   "keywords": [],
   "author": "",
