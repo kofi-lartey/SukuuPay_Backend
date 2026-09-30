@@ -64,59 +64,112 @@ export const createStudentSchema = Joi.object({
   schoolId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).optional(),
 });
 
+/**
+ * The fields a generic `PUT /students/:id` may set.
+ *
+ * Deliberately does NOT include the lifecycle fields — `promotedFrom/To`,
+ * `promotionDate`, `graduationDate`, `graduationYear`, `graduationType`,
+ * `certificateNumber`, `honors`, `isAlumni`, `transferOutDate`,
+ * `transferOutReason`, `isRepeating`, `repeatCount` — even though every one of
+ * them is a plain String/Date/Boolean on the model and so was previously
+ * accepted here. Each has a dedicated transition endpoint carrying real
+ * preconditions (only active students may be promoted; not in a final year
+ * class; maximum repeat limit). A generic update walked past all of them, so a
+ * client could graduate a suspended student or clear a repeat flag by putting
+ * the field in a request body. `isRepeating` in particular could only ever be
+ * *set* this way, since no endpoint existed to clear it.
+ */
 export const updateStudentSchema = Joi.object({
   studentName: Joi.string().trim().min(2).max(100).optional(),
   studentClass: Joi.string().trim().min(2).max(50).optional(),
   gender: Joi.string().valid("male", "female").optional(),
   dateOfBirth: Joi.date().max("now").optional().allow(null),
   studentImage: Joi.string().uri().optional().allow(null, ""),
+  // Integer pesewas. See `createStudent` in the service for the money contract.
   totalOwed: Joi.number().integer().min(0).optional(),
   deadline: notInPastDate.optional(),
   academicYear: Joi.string().trim().pattern(/^\d{4}\/\d{4}$/).optional(),
   parents: Joi.array().items(parentSchema).min(1).optional(),
   emergencyContacts: Joi.array().items(emergencyContactSchema).optional(),
-  promotedFrom: Joi.string().trim().max(50).optional().allow(null),
-  promotedTo: Joi.string().trim().max(50).optional().allow(null),
-  promotionDate: Joi.date().optional().allow(null),
-  graduationDate: Joi.date().optional().allow(null),
-  graduationYear: Joi.string().trim().max(9).optional().allow(null),
-  isAlumni: Joi.boolean().optional(),
-  transferOutDate: Joi.date().optional().allow(null),
-  transferOutReason: Joi.string().trim().max(300).optional().allow(null),
-  isRepeating: Joi.boolean().optional(),
 }).min(1);
 
 export const bulkUploadMetaSchema = Joi.object({
   schoolId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).optional(),
   academicYear: Joi.string().trim().pattern(/^\d{4}\/\d{4}$/).optional(),
   defaultDeadline: notInPastDate.optional().allow(null),
-  defaultOwed: Joi.number().integer().min(0).optional(),
+  /** Cedis — a spreadsheet column, converted to pesewas on import. */
+  defaultOwed: Joi.number().min(0).optional(),
+  /**
+   * Parse and validate the file, write nothing. Shares the importer's code path
+   * exactly, so the preview cannot disagree with the outcome.
+   */
+  dryRun: Joi.boolean().default(false),
 });
 
+/**
+ * A student reference: the Mongo `_id` **or** the human `studentId`.
+ *
+ * Every screen shows `studentId` (`PBS-2026-0001`), so requiring 24 hex
+ * characters meant the obvious client code — look the student up, send their id
+ * back — always 400'd. Accepting both costs one indexed lookup and removes the
+ * trap.
+ */
+const studentReference = Joi.string()
+  .trim()
+  .pattern(/^([0-9a-fA-F]{24}|[A-Za-z0-9]{1,20}-[0-9]{4}-[0-9]{4,})$/)
+  .required()
+  .messages({
+    "string.pattern.base":
+      "Invalid student reference — expected a 24-character id or a student number like PBS-2026-0001",
+  });
+
 export const studentIdParamSchema = Joi.object({
-  id: Joi.string()
-    .pattern(/^[0-9a-fA-F]{24}$/)
-    .required()
-    .messages({
-      "string.pattern.base": "Invalid student ID format",
-    }),
+  id: studentReference,
 });
 
 export const listStudentsQuerySchema = Joi.object({
   schoolId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).optional(),
   class: Joi.string().trim().max(50).optional(),
+  gender: Joi.string().valid("male", "female").optional(),
   status: Joi.string()
     .valid(...STATUS_ENUM, "all")
     .default("active"),
   search: Joi.string().trim().max(100).allow("").optional(),
+  /**
+   * Derived server-side, because "fully cleared" is a comparison against a
+   * computed `balance` that Mongo cannot express and a client cannot do from a
+   * page of 20 rows out of 1,000. Applied as a post-filter: it narrows the page
+   * returned and does not change `meta.total`, which is stated in the contract.
+   */
+  feeStatus: Joi.string().valid("cleared", "owing", "overdue").optional(),
+  planStatus: Joi.string()
+    .valid("none", "pending", "active", "completed", "defaulted")
+    .optional(),
   page: Joi.number().integer().min(1).default(1),
   perPage: Joi.number().integer().min(1).max(100).default(20),
   sortBy: Joi.string()
-    .valid("studentName", "studentId", "createdAt", "totalOwed", "balance")
+    .valid(
+      "studentName",
+      "firstName",
+      "lastName",
+      "studentId",
+      "createdAt",
+      "totalOwed",
+      "totalPaid",
+      "balance",
+      "deadline"
+    )
     .default("createdAt"),
   sortOrder: Joi.string().valid("asc", "desc").default("desc"),
   // consumed by the export endpoint
   format: Joi.string().valid("csv", "xlsx").default("csv"),
+});
+
+/** `GET /students/stats` — the same scope, no pagination. */
+export const statsQuerySchema = Joi.object({
+  schoolId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).optional(),
+  class: Joi.string().trim().max(50).optional(),
+  status: Joi.string().valid(...STATUS_ENUM, "all").optional(),
 });
 
 export const suspendStudentSchema = Joi.object({
@@ -144,28 +197,51 @@ const notInFutureDate = Joi.date().custom((value, helpers) => {
   return value;
 }).messages({ "any.custom": "Date cannot be more than 30 days in the future" });
 
+/**
+ * A class *name* — "JHS 2A", "Primary 3".
+ *
+ * `School.academic.classes` is `[String]`; there are no class ids anywhere in
+ * this system. The old schemas demanded 24-hex ObjectIds for `classIds` and
+ * `targetClassId`, so a caller following the schema sent a value that could not
+ * match any class and every promotion matched nothing.
+ */
+const classNameValidator = Joi.string().trim().min(2).max(50);
+
 export const promoteStudentSchema = Joi.object({
-  targetClassId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).optional().allow(null),
+  targetClass: classNameValidator.optional().allow(null),
   promotionDate: notInFutureDate.optional().allow(null),
   notes: Joi.string().trim().max(500).optional().allow("", null),
 }).min(1);
 
 export const bulkPromoteSchema = Joi.object({
-  classIds: Joi.array().items(Joi.string().pattern(/^[0-9a-fA-F]{24}$/)).optional(),
+  classNames: Joi.array().items(classNameValidator).optional(),
   gradeLevels: Joi.array().items(Joi.number().integer().min(1).max(12)).optional(),
   studentIds: Joi.array().items(Joi.string().pattern(/^[0-9a-fA-F]{24}$/)).optional(),
   promotionDate: notInFutureDate.optional().allow(null),
   dryRun: Joi.boolean().default(false),
   notes: Joi.string().trim().max(500).optional().allow("", null),
-}).or("classIds", "gradeLevels", "studentIds").oxor("classIds", "gradeLevels", "studentIds");
+})
+  .or("classNames", "gradeLevels", "studentIds")
+  .oxor("classNames", "gradeLevels", "studentIds");
 
 export const previewPromotionSchema = Joi.object({
   schoolId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
-  classIds: Joi.array().items(Joi.string().pattern(/^[0-9a-fA-F]{24}$/)).optional(),
+  classNames: Joi.array().items(classNameValidator).optional(),
   gradeLevels: Joi.array().items(Joi.number().integer().min(1).max(12)).optional(),
   studentIds: Joi.array().items(Joi.string().pattern(/^[0-9a-fA-F]{24}$/)).optional(),
   promotionDate: notInFutureDate.optional().allow(null),
-}).or("classIds", "gradeLevels", "studentIds");
+  /**
+   * Opt-in, because capacity is not a property this system can know: classes
+   * are strings on the School model with no capacity and no teacher assignment
+   * anywhere. The preview used to assume 40, which warned every school with
+   * larger classes and stayed silent for every school with smaller ones.
+   */
+  classCapacity: Joi.number().integer().min(1).max(500).optional(),
+}).or("classNames", "gradeLevels", "studentIds");
+
+export const clearRepeatSchema = Joi.object({
+  reason: Joi.string().trim().min(3).max(300).required(),
+});
 
 export const repeatStudentSchema = Joi.object({
   repeatReason: Joi.string().valid(...REPEAT_REASON_ENUM).required(),
@@ -186,16 +262,30 @@ export const graduateStudentSchema = Joi.object({
   notes: Joi.string().trim().max(500).optional().allow("", null),
 });
 
+/**
+ * A cohort: `cohort_2026`, or a bare year.
+ *
+ * There is no Cohort collection — cohorts are derived by aggregating
+ * `graduationYear` on the students — so a cohort's identity *is* its year. The
+ * old schema required a 24-hex ObjectId, which the service could not consume
+ * under any circumstances, and `GET /cohorts/:cohortId` therefore always
+ * returned 422.
+ */
+const cohortIdValidator = Joi.string()
+  .trim()
+  .pattern(/^(cohort_)?\d{4}$/)
+  .messages({ "string.pattern.base": "Invalid cohort ID — expected cohort_2026" });
+
 export const bulkGraduateSchema = Joi.object({
-  cohortId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).optional(),
-  classIds: Joi.array().items(Joi.string().pattern(/^[0-9a-fA-F]{24}$/)).optional(),
+  cohortId: cohortIdValidator.optional(),
+  classNames: Joi.array().items(classNameValidator).optional(),
   graduationDate: notInFutureDate.required(),
   graduationType: Joi.string().valid(...GRADUATION_TYPE_ENUM).default("STANDARD"),
   autoAssignCertificates: Joi.boolean().default(true),
   certificatePrefix: Joi.string().trim().max(20).optional().allow("", null),
   dryRun: Joi.boolean().default(false),
   notes: Joi.string().trim().max(500).optional().allow("", null),
-}).or("cohortId", "classIds").oxor("cohortId", "classIds");
+}).or("cohortId", "classNames").oxor("cohortId", "classNames");
 
 export const transferOutSchema = Joi.object({
   destinationInstitution: Joi.string().trim().min(2).max(200).required(),
@@ -235,10 +325,14 @@ export const cohortsQuerySchema = Joi.object({
 });
 
 export const cohortDetailQuerySchema = Joi.object({
+  schoolId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).optional(),
   page: Joi.number().integer().min(1).default(1),
   limit: Joi.number().integer().min(1).max(200).default(50),
   status: Joi.string().valid("GRADUATED", "TRANSFERRED", "DROPPED", "REPEATING").optional(),
-  sortBy: Joi.string().valid("lastName", "studentNumber", "graduationDate").default("lastName"),
+  // `lastName` is now a real derived field. `studentNumber` never existed and
+  // was a silent no-op, so it is gone rather than mapped behind the caller's
+  // back — `studentId` is the real name and is offered under its own key.
+  sortBy: Joi.string().valid("lastName", "firstName", "studentId", "graduationDate").default("lastName"),
   sortOrder: Joi.string().valid("asc", "desc").default("asc"),
 });
 
@@ -247,8 +341,87 @@ export const schoolIdParamSchema = Joi.object({
 });
 
 export const cohortIdParamSchema = Joi.object({
-  cohortId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
+  cohortId: cohortIdValidator.required(),
 });
+
+export const archiveStudentSchema = Joi.object({
+  reason: Joi.string().trim().max(300).optional().allow("", null),
+});
+
+// ── Bulk operation schemas ──────────────────────────────────────────────────
+//
+// Every one takes `dryRun` and returns the same envelope with `committed: false`.
+// A destructive bulk action that cannot be previewed is a bulk action nobody
+// uses, and the preview has to come from the same code path as the write or it
+// can disagree with the outcome.
+
+/** The target: an explicit id list, or a filter over the school. */
+const bulkTarget = {
+  schoolId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).optional(),
+  ids: Joi.array().items(Joi.string().pattern(/^[0-9a-fA-F]{24}$/)).max(2000).optional(),
+  filter: Joi.object({
+    class: classNameValidator.optional(),
+    status: Joi.string().valid(...STATUS_ENUM).optional(),
+    gender: Joi.string().valid("male", "female").optional(),
+    search: Joi.string().trim().max(100).allow("").optional(),
+  }).optional(),
+  dryRun: Joi.boolean().default(false),
+};
+
+/** The subset of `updateStudentSchema` a bulk write may set. */
+const bulkUpdateFields = Joi.object({
+  studentName: Joi.string().trim().min(2).max(100).optional(),
+  studentClass: classNameValidator.optional(),
+  gender: Joi.string().valid("male", "female").optional(),
+  totalOwed: Joi.number().integer().min(0).optional(),
+  deadline: notInPastDate.optional(),
+  academicYear: Joi.string().trim().pattern(/^\d{4}\/\d{4}$/).optional(),
+})
+  .min(1)
+  .messages({ "object.min": "No fields to update" });
+
+export const bulkUpdateSchema = Joi.object({
+  ...bulkTarget,
+  update: bulkUpdateFields.required(),
+  /**
+   * Explicit allow-list. A bulk write must never be able to set something the
+   * single-student `PUT` cannot; when absent, only the keys present in `update`
+ *  are written.
+   */
+  fields: Joi.array()
+    // Spread, not passed as one array: `valid()` stopped accepting an array
+    // argument, and passing one throws at import time rather than at
+    // validation time — so this took the whole route file down.
+    .items(Joi.string().valid(...Object.keys(bulkUpdateFields.describe().keys)))
+    .max(20)
+    .optional(),
+})
+  // `ids` and `filter` are mutually exclusive. The service prefers `ids` and
+  // silently ignores `filter`, so a client sending both got a `matched` count
+  // for the id list while believing it had targeted the filter — the kind of
+  // discrepancy that shows up later as "the bulk update missed 200 students".
+  .oxor("ids", "filter");
+
+export const bulkArchiveSchema = Joi.object({
+  ...bulkTarget,
+  reason: Joi.string().trim().max(300).optional().allow("", null),
+  /**
+   * Required to archive a student with an outstanding balance. Archiving
+   * someone who still owes a term's fees is how a school loses track of who to
+   * chase; the endpoint refuses and lists them rather than doing it quietly.
+   */
+  force: Joi.boolean().default(false),
+}).oxor("ids", "filter");
+
+export const bulkStatusSchema = Joi.object({
+  ...bulkTarget,
+  status: Joi.string().valid("suspended", "active").required(),
+  reason: Joi.string().trim().max(300).optional().allow("", null),
+}).oxor("ids", "filter");
+
+export const bulkPayLinksSchema = Joi.object({
+  ...bulkTarget,
+}).oxor("ids", "filter");
 
 // Parent management schemas
 
@@ -267,15 +440,25 @@ export const updateParentSchema = Joi.object({
   phone: phoneValidator.optional(),
   email: emailValidator,
   isAlive: Joi.boolean().optional(),
+  // `isPrimary` is intentionally absent: changing the primary contact is its
+  // own endpoint, so the exactly-one rule is enforced in one place.
 }).min(1);
 
+/** The student *and* the parent sub-document. */
+export const studentParentParamsSchema = Joi.object({
+  id: studentReference,
+  parentId: Joi.string()
+    .pattern(/^[0-9a-fA-F]{24}$/)
+    .required()
+    .messages({ "string.pattern.base": "Invalid parent ID format" }),
+});
+
+/** @deprecated superseded by `studentParentParamsSchema` */
 export const parentIdParamSchema = Joi.object({
   parentId: Joi.string()
     .pattern(/^[0-9a-fA-F]{24}$/)
     .required()
-    .messages({
-      "string.pattern.base": "Invalid parent ID format",
-    }),
+    .messages({ "string.pattern.base": "Invalid parent ID format" }),
 });
 
 export const setPrimaryParentSchema = Joi.object({

@@ -3,8 +3,10 @@ import { Student } from "../models/studentModel.js";
 import { School } from "../models/schoolModel.js";
 import {
   generateStudentId,
+  reserveStudentIds,
   resolveAcademicYearStart,
   normalizeAcademicYear,
+  escapeRegExp,
 } from "../utils/generateStudentId.js";
 import {
   generatePayLinkToken,
@@ -12,6 +14,11 @@ import {
 } from "../utils/generatePayLink.js";
 import { parseImportFile } from "../utils/csvParser.js";
 import { createStudentSchema } from "../validations/student.validation.js";
+import * as auditService from "../utils/auditService.js";
+import { PaymentPlan } from "../models/paymentPlanModel.js";
+import { Payment } from "../models/paymentModel.js";
+import { AuditLog } from "../models/AuditLog.js";
+import { Counter } from "../models/counterModel.js";
 
 // Local ApiError mirrors the pattern used in school.service.js so error
 // handling stays consistent with the existing code style.
@@ -24,16 +31,24 @@ class ApiError extends Error {
   }
 }
 
-// Stub audit service — mirrors school.service.js. Swap for a real
-// implementation (DB-backed audit log) when the audit module is added.
-const auditService = {
-  log: async ({ action, entity, entityId, userId, details }) => {
-    console.log(`[AUDIT] ${action} | ${entity}:${entityId} | User:${userId} |`, details);
-  },
-};
-
 // ──────────────────── Helpers ────────────────────
 
+/**
+ * The school an id-scoped request is acting within.
+ *
+ * Two cases, and the second is the one that was broken:
+ *
+ * - A `super_admin` with an explicit `schoolId` in the path, query or body —
+ *   support staff working inside a known school.
+ * - A `super_admin` with *no* explicit school, acting on a specific student.
+ *   Previously this returned `null`, so every id-scoped service threw
+ *   `NO_SCHOOL_SCOPE` and platform support could not read or repair a single
+ *   student. The id-scoped callers now pass the student they loaded (see
+ *   `loadStudent`), and their own school is the only scope there is.
+ *
+ * Everything else must be an explicitly schooled user. A user with no
+ * `schoolId` is never given a scope.
+ */
 const resolveSchoolId = (user, explicitSchoolId) => {
   if (user && user.role === "super_admin") {
     return explicitSchoolId ? new mongoose.Types.ObjectId(explicitSchoolId) : null;
@@ -41,9 +56,67 @@ const resolveSchoolId = (user, explicitSchoolId) => {
   return user && user.schoolId ? new mongoose.Types.ObjectId(user.schoolId) : null;
 };
 
+/**
+ * Load one student by Mongo `_id` **or** by the human `studentId` (`PBS-2026-0001`),
+ * and check the caller is allowed to see it.
+ *
+ * Accepting the human id is the fix for a trap the whole UI walked into: every
+ * screen a bursar reads shows `studentId`, and the id-scoped param schema
+ * demanded 24 hex characters, so following the obvious mapping — look up the
+ * student, pass their id — returned 400. Callers that already know the `_id`
+ * still pass it, and the cost of trying the ObjectId first is one indexed hit.
+ *
+ * Also replaces the "find unscoped, then compare" pattern. Every single-record
+ * service did `findOne({ _id, deletedAt: null })` followed by a manual
+ * `student.schoolId !== schoolId` check — a read of another school's record
+ * before the refusal, which is both a wasted query and a place for the check to
+ * be forgotten. The scope is now part of the query.
+ */
+const loadStudent = async (id, user, { includeDeleted = false } = {}) => {
+  if (!id) {
+    throw new ApiError("Invalid student ID", 400, "INVALID_ID");
+  }
+
+  const isObjectId = mongoose.Types.ObjectId.isValid(id);
+  const byId = isObjectId
+    ? { _id: id }
+    : { studentId: String(id).trim().toUpperCase() };
+
+  const scope = {};
+  if (user?.role !== "super_admin" && user?.schoolId) {
+    scope.schoolId = new mongoose.Types.ObjectId(user.schoolId);
+  }
+  if (!includeDeleted) {
+    scope.deletedAt = null;
+  }
+
+  const student = await Student.findOne({ ...byId, ...scope });
+  if (!student) {
+    // Distinguish "no such student" from "exists but not yours" only when the
+    // caller is not a super_admin; otherwise 404 either way, so the response
+    // cannot be used to probe for students in other schools.
+    throw new ApiError("Student not found", 404, "NOT_FOUND");
+  }
+  return student;
+};
+
+/**
+ * The same escaping for every search path.
+ *
+ * `query.search` used to be spliced raw into `$regex` on four code paths, so
+ * `?search=.*` matched every student in the school and `?search=[` threw a
+ * driver error that surfaced as a 500. Escaping turns a search box into a
+ * literal substring search, which is what a user typing into one expects anyway.
+ */
+const searchClause = (term, fields) => {
+  const safe = escapeRegExp(String(term).trim());
+  if (!safe) return null;
+  return fields.map((field) => ({ [field]: { $regex: safe, $options: "i" } }));
+};
+
 const fetchSchool = async (schoolId) => {
   const school = await School.findById(schoolId)
-    .select("schoolCode slug name academic")
+    .select("schoolCode slug name academic sms")
     .lean();
   if (!school) throw new ApiError("School not found", 404, "NOT_FOUND");
   return school;
@@ -136,6 +209,17 @@ const sendPayLinkSms = async (school, phone, payLink) => {
 };
 
 // ──────────────────── Single create ────────────────────
+/**
+ * Create one student.
+ *
+ * **Money contract.** `data.totalOwed` is an integer number of *pesewas*, the
+ * same as every other money field in this API. The bulk importer is the one
+ * exception and is deliberate: a spreadsheet column a bursar types into says
+ * `850`, not `85000`, so the CSV is in cedis and the importer converts at the
+ * boundary. Both sides are now named for what they are — the importer variable
+ * is `totalOwedCedis` — and the import template states the unit in its header
+ * row. A client that wants cedis on this endpoint must multiply.
+ */
 export const createStudent = async (data, user) => {
   const schoolId = resolveSchoolId(user, data.schoolId);
   if (!schoolId) {
@@ -177,9 +261,10 @@ export const createStudent = async (data, user) => {
     };
   };
 
-  // Retry on rare duplicate-key collisions (counter race across concurrent
-  // creates). The pre-save hook is a safety net; we generate ids here so we
-  // can retry and keep generation deterministic in the service layer.
+  // One id per attempt, from the atomic counter, so a genuine collision (a
+  // pre-existing id from before the counter existed) resolves to a *different*
+  // number. The old loop recomputed the same max-and-increment and collided
+  // identically three times.
   let student;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const payload = buildPayload();
@@ -195,12 +280,26 @@ export const createStudent = async (data, user) => {
     }
   }
 
+  if (!student) {
+    throw new ApiError(
+      "Could not allocate a unique student ID after three attempts",
+      500,
+      "ID_ALLOCATION_FAILED"
+    );
+  }
+
+  await School.updateOne(
+    { _id: schoolId },
+    { $inc: { "stats.totalStudents": 1 } }
+  );
+
   await auditService.log({
     action: "CREATE",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
-    details: { studentId: student.studentId, schoolId },
+    schoolId,
+    meta: { studentId: student.studentId },
   });
 
   return student.toJSON();
@@ -226,10 +325,18 @@ export const bulkCreateStudents = async (file, meta, user) => {
   const defaultDeadline = meta.defaultDeadline
     ? new Date(meta.defaultDeadline)
     : null;
-  const defaultOwedPesewas = meta.defaultOwed ? toPesewas(meta.defaultOwed) : null;
+  // Named for its unit, because the two import money inputs are in *cedis*
+  // (a human types 850 into a spreadsheet, not 85000) while every field in the
+  // rest of the API is pesewas. The conversion happens here, once, at the
+  // boundary — and the variable says which side of it we are on.
+  const defaultOwedCedis = meta.defaultOwed;
+  const defaultOwedPesewas = defaultOwedCedis
+    ? toPesewas(defaultOwedCedis)
+    : null;
 
   const errors = [];
   const validDocs = [];
+  let reservedIds = [];
 
   const normalizeRow = (row) => {
     const out = {};
@@ -288,9 +395,13 @@ export const bulkCreateStudents = async (file, meta, user) => {
     const ec = buildEmergencyContact(row);
     if (ec) emergencyContacts.push(ec);
 
-    const totalOwed = row.totalowed
-      ? toPesewas(row.totalowed)
-      : defaultOwedPesewas;
+    // The CSV column is in cedis; `clientPayload.totalOwed` is pesewas, which is
+    // what `createStudentSchema` validates as an integer. Named on both sides.
+    const totalOwedCedis = row.totalowed || defaultOwedCedis;
+    const totalOwed =
+      totalOwedCedis === undefined || totalOwedCedis === null || totalOwedCedis === ""
+        ? null
+        : toPesewas(totalOwedCedis);
 
     const deadline = row.deadline ? new Date(row.deadline) : defaultDeadline;
 
@@ -330,25 +441,105 @@ export const bulkCreateStudents = async (file, meta, user) => {
     const payLinkToken = generatePayLinkToken();
     value.uniquePayLinkToken = payLinkToken;
     value.payLink = buildPayLink(payLinkToken);
-    value.studentId = await generateStudentId(schoolCode, year);
+    // Ids are assigned in one block *after* the loop (see below), so every row
+    // that passed validation gets a number from the same atomic allocation
+    // rather than racing the collection one query at a time.
     value.schoolId = schoolId;
     value.createdBy = user._id;
     value.totalPaid = 0;
     normalizePrimaryParent(value.parents);
     value.balance = (Number(value.totalOwed) || 0) - (Number(value.totalPaid) || 0);
+    // Carried alongside the document so a write-time failure can be reported
+    // against the spreadsheet row the admin will look for. Mongoose's `strict`
+    // drops it on the way into Mongo, but the object in `validDocs` is the same
+    // reference the BulkWriteError handler reads.
+    value.__rowNumber = rowNum;
 
     validDocs.push(value);
   }
 
+  // A dry run parses and validates exactly as the real import does, and writes
+  // nothing. Sharing the code path is the point: a preview that can disagree
+  // with the outcome is worse than no preview, and the client cannot reimplement
+  // the server's rules to avoid that.
+  if (meta.dryRun) {
+    await auditService.log({
+      action: "BULK_VALIDATE",
+      entity: "Student",
+      entityId: schoolId,
+      userId: user._id,
+      schoolId,
+      meta: { valid: validDocs.length, failed: errors.length, format },
+    });
+    return {
+      created: 0,
+      committed: false,
+      total: rows.length,
+      valid: validDocs.length,
+      failed: errors.length,
+      errors,
+      format,
+    };
+  }
+
+  // One atomic block allocation for the whole file, rather than a read-then-
+  // write aggregation per row. Two concurrent imports previously both read the
+  // highest existing id, both produced the same next id, and one failed with a
+  // duplicate-key error at insert time.
+  if (validDocs.length > 0) {
+    reservedIds = await reserveStudentIds(schoolCode, year, validDocs.length);
+    validDocs.forEach((doc, index) => {
+      doc.studentId = reservedIds[index];
+    });
+  }
+
   let created = 0;
   if (validDocs.length > 0) {
-    // ordered:false so one bad row doesn't abort the whole batch.
-    const inserted = await Student.insertMany(validDocs, { ordered: false });
-    created = inserted.length;
-    await School.updateOne(
-      { _id: schoolId },
-      { $inc: { "stats.totalStudents": created } }
-    );
+    // `ordered: false` so one bad row does not abort the batch — and wrapped,
+    // because an unordered insert still THROWS `BulkWriteError` when any document
+    // fails. Unwrapped, a single duplicate key discarded the entire
+    // `{ created, failed, errors }` report and returned a 500 carrying a raw
+    // driver message, even though the other 199 documents had been written.
+    try {
+      const inserted = await Student.insertMany(validDocs, { ordered: false });
+      created = inserted.length;
+    } catch (error) {
+      if (error?.name === "BulkWriteError" || Array.isArray(error?.writeErrors)) {
+        const writeErrors = error.writeErrors || [];
+        created = Math.max(0, validDocs.length - writeErrors.length);
+
+        // Map each driver error back to the row the admin sees, so a failure
+        // report is actionable. The index tells us which field collided: 11000
+        // on `studentId` is a generation race, on `uniquePayLinkToken` or
+        // `payLink` a token collision, and anything else is a row-level rule.
+        writeErrors.forEach((writeError) => {
+          const docIndex = writeError.index;
+          const doc = validDocs[docIndex];
+          const field = Object.keys(writeError.err?.keyPattern || {})[0] || "unknown";
+          const reasons = {
+            studentId: "Duplicate student ID (allocation conflict) — try the import again",
+            uniquePayLinkToken: "Duplicate pay link token — try the import again",
+            payLink: "Duplicate pay link — try the import again",
+            "schoolId+certificateNumber": "Duplicate certificate number",
+            "schoolId+studentId": "Duplicate student ID",
+          };
+          errors.push({
+            row: doc ? doc.__rowNumber || null : null,
+            reason: reasons[field] || `Duplicate value for ${field}`,
+            field,
+          });
+        });
+      } else {
+        throw error;
+      }
+    }
+
+    if (created > 0) {
+      await School.updateOne(
+        { _id: schoolId },
+        { $inc: { "stats.totalStudents": created } }
+      );
+    }
   }
 
   await auditService.log({
@@ -356,10 +547,118 @@ export const bulkCreateStudents = async (file, meta, user) => {
     entity: "Student",
     entityId: schoolId,
     userId: user._id,
-    details: { created, failed: errors.length, format },
+    schoolId,
+    meta: { created, failed: errors.length, format },
   });
 
-  return { created, failed: errors.length, errors, format };
+  return {
+    created,
+    committed: true,
+    total: rows.length,
+    valid: validDocs.length,
+    failed: errors.length,
+    errors,
+    format,
+  };
+};
+
+// ──────────────────── Filters ────────────────────
+
+/**
+ * The fee status of a student, derived server-side.
+ *
+ * `overdue` is deliberately before `owing`: a student past their deadline with
+ * money outstanding is overdue, not merely owing, and the roster filter treats
+ * them as different rows.
+ */
+const FEE_STATUS = {
+  cleared: (s) => (s.balance || 0) <= 0,
+  overdue: (s) => (s.balance || 0) > 0 && s.deadline && s.deadline < new Date(),
+  owing: (s) => (s.balance || 0) > 0,
+};
+
+/**
+ * Build the shared list filter.
+ *
+ * Extracted because `listStudents` and `exportStudents` each rebuilt it, and
+ * they had drifted: the list searched four fields (including both parent name
+ * and parent phone) while the export searched only two, so "export what I am
+ * looking at" produced a different set of rows than the list above it.
+ */
+const buildRosterFilter = (query, schoolId, { searchFields } = {}) => {
+  const filter = { schoolId, deletedAt: null };
+
+  if (query.status && query.status !== "all") filter.status = query.status;
+  if (query.class) filter.studentClass = query.class;
+  if (query.gender) filter.gender = query.gender;
+
+  if (query.search) {
+    const clause = searchClause(
+      query.search,
+      searchFields || [
+        "studentName",
+        "studentId",
+        "parents.parentName",
+        "parents.phone",
+      ]
+    );
+    if (clause) filter.$or = clause;
+  }
+
+  return filter;
+};
+
+/**
+ * `feeStatus` and `planStatus` are applied after the database query.
+ *
+ * `feeStatus` is a comparison against a computed `balance`, which Mongo cannot
+ * express. `planStatus` depends on `PaymentPlan`, so the plan ids are resolved
+ * in one query and matched back in memory. Both are documented as
+ * post-filters in the API contract: they narrow the page being returned, they do
+ * not change the total. For a 1,000-student roster that distinction is the
+ * difference between a usable filter and a page that lies about its own size.
+ */
+const applyPostFilters = (rows, query, planStatusById) => {
+  let out = rows;
+  if (query.feeStatus) {
+    const test = FEE_STATUS[query.feeStatus];
+    if (test) out = out.filter((s) => test(s));
+  }
+  if (query.planStatus && planStatusById) {
+    out = out.filter((s) => {
+      const status = planStatusById.get(String(s._id)) || "none";
+      return status === query.planStatus;
+    });
+  }
+  return out;
+};
+
+/** The plan status of every student in `rows`, in one query. */
+const planStatusMap = async (rows) => {
+  const ids = rows.map((r) => r._id);
+  if (!ids.length) return new Map();
+  const plans = await PaymentPlan.find({ studentId: { $in: ids } })
+    .select("studentId planStatus")
+    .lean();
+  const map = new Map();
+  plans.forEach((plan) => {
+    const key = String(plan.studentId);
+    // A student with several plans reads as `active` if any is running, so the
+    // filter does not hide a student who is mid-payment on a newer plan.
+    if (map.get(key) !== "active") {
+      map.set(key, normalisePlanStatus(plan.planStatus));
+    }
+  });
+  return map;
+};
+
+const normalisePlanStatus = (status) => {
+  if (!status) return "none";
+  if (status === "active") return "active";
+  if (status === "completed") return "completed";
+  if (status === "defaulted" || status === "cancelled") return "defaulted";
+  if (status === "pending_acceptance") return "pending";
+  return "none";
 };
 
 // ──────────────────── List ────────────────────
@@ -373,90 +672,214 @@ export const listStudents = async (query, user) => {
     );
   }
 
-  const filter = { schoolId, deletedAt: null };
-  if (query.status && query.status !== "all") filter.status = query.status;
-  if (query.class) filter.studentClass = query.class;
-  if (query.search) {
-    filter.$or = [
-      { studentName: { $regex: query.search, $options: "i" } },
-      { studentId: { $regex: query.search, $options: "i" } },
-      { "parents.parentName": { $regex: query.search, $options: "i" } },
-      { "parents.phone": { $regex: query.search, $options: "i" } },
-    ];
-  }
-
+  const filter = buildRosterFilter(query, schoolId);
   const sortBy = query.sortBy || "createdAt";
   const sortOrder = query.sortOrder === "asc" ? 1 : -1;
-  const skip = (Number(query.page) - 1) * Number(query.perPage);
+  const page = Math.max(1, Number(query.page) || 1);
+  const perPage = Math.min(100, Math.max(1, Number(query.perPage) || 20));
 
   const [students, total] = await Promise.all([
     Student.find(filter)
       .sort({ [sortBy]: sortOrder })
-      .skip(skip)
-      .limit(Number(query.perPage)),
+      .skip((page - 1) * perPage)
+      .limit(perPage)
+      .lean(),
     Student.countDocuments(filter),
   ]);
 
-  const data = students.map((student) => maskStudentList(student.toJSON()));
+  const planStatusById = await planStatusMap(students);
+  const data = applyPostFilters(students, query, planStatusById).map((student) => ({
+    ...maskStudentList({ ...student, id: String(student._id) }),
+    planStatus: planStatusById.get(String(student._id)) || "none",
+  }));
 
   return {
     data,
     meta: {
-      page: Number(query.page),
-      perPage: Number(query.perPage),
+      page,
+      perPage,
       total,
-      totalPages: Math.ceil(total / Number(query.perPage)),
+      totalPages: Math.ceil(total / perPage),
     },
+  };
+};
+
+// ──────────────────── Roster aggregates ────────────────────
+/**
+ * The numbers behind the Students module's KPI band.
+ *
+ * A dedicated endpoint rather than something the client derives. The roster
+ * list is paginated and capped at 100 rows, its parent phones are masked, and
+ * "fully cleared" needs a comparison the client cannot make from a page of
+ * results — so summing client-side would report the first 20 students as the
+ * school. One aggregation, one round trip.
+ */
+export const getStudentStats = async (query, user) => {
+  const schoolId = resolveSchoolId(user, query.schoolId);
+  if (!schoolId) {
+    throw new ApiError("A schoolId is required", 400, "NO_SCHOOL_SCOPE");
+  }
+
+  const filter = buildRosterFilter(query, schoolId);
+  delete filter.$or; // aggregate + regex is a collection scan; stats are scope-only
+
+  const now = new Date();
+  const [
+    totals,
+    overdueAgg,
+    activePlans,
+    planStudents,
+  ] = await Promise.all([
+    Student.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: null,
+          totalRoster: { $sum: 1 },
+          fullyCleared: {
+            $sum: { $cond: [{ $lte: ["$balance", 0] }, 1, 0] },
+          },
+          totalOwed: { $sum: { $ifNull: ["$totalOwed", 0] } },
+          totalPaid: { $sum: { $ifNull: ["$totalPaid", 0] } },
+          outstanding: {
+            $sum: { $cond: [{ $gt: ["$balance", 0] }, "$balance", 0] },
+          },
+        },
+      },
+    ]),
+    Student.aggregate([
+      {
+        $match: {
+          ...filter,
+          balance: { $gt: 0 },
+          deadline: { $lt: now },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          count: { $sum: 1 },
+          amount: { $sum: "$balance" },
+        },
+      },
+    ]),
+    PaymentPlan.countDocuments({ schoolId, planStatus: "active" }),
+    PaymentPlan.distinct("studentId", { schoolId, planStatus: "active" }),
+  ]);
+
+  const row = totals[0] || {};
+  const overdue = overdueAgg[0] || { count: 0, amount: 0 };
+  const totalRoster = row.totalRoster || 0;
+
+  return {
+    totalRoster,
+    fullyCleared: row.fullyCleared || 0,
+    // Round to one decimal rather than truncating: 737 of 1,000 is 73.7%, and a
+    // UI that formats to `Math.round` would show 74% for a 73.7% collection.
+    clearedPercent: totalRoster
+      ? Math.round(((row.fullyCleared || 0) / totalRoster) * 1000) / 10
+      : 0,
+    activePlans: activePlans || 0,
+    activePlanStudents: (planStudents || []).length,
+    overdueStudents: overdue.count || 0,
+    overdueAmount: overdue.amount || 0,
+    totalOwed: row.totalOwed || 0,
+    totalPaid: row.totalPaid || 0,
+    outstanding: row.outstanding || 0,
+  };
+};
+
+// ──────────────────── Profile preview ────────────────────
+/**
+ * Everything the profile drawer needs, in one response.
+ *
+ * The drawer shows the student, their guardians, the plan, their payment
+ * history and their class history. Assembled client-side that is five requests
+ * that resolve at different times, so the screen renders a half-populated
+ * student — most visibly a balance that reads GH₵ 0.00 while the payments that
+ * explain it are still loading. One aggregate, one render.
+ *
+ * `unmasked: true` is the settled policy: guardian phone numbers are masked in
+ * the roster and the export, and shown in full to a school admin on the
+ * student's own record. A bursar taking a payment over the phone needs the real
+ * number; a roster is a browsing surface where it is not needed.
+ */
+export const getStudentProfile = async (id, user, { includeDeleted = false } = {}) => {
+  const student = await loadStudent(id, user, { includeDeleted });
+  const studentObjectId = student._id;
+
+  const [plans, payments, history] = await Promise.all([
+    PaymentPlan.find({ studentId: studentObjectId })
+      .sort({ createdAt: -1 })
+      .lean(),
+    Payment.find({ studentId: studentObjectId })
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .lean(),
+    AuditLog.find({ entity: "Student", entityId: studentObjectId })
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .lean(),
+  ]);
+
+  const activePlan =
+    plans.find((p) => p.planStatus === "active") || plans.find((p) => p.planStatus !== "cancelled") || null;
+
+  let installmentProgress = null;
+  if (activePlan?.installments?.length) {
+    const installments = activePlan.installments || [];
+    const paid = installments.filter((i) => i.status === "paid");
+    const paidAmount = paid.reduce((sum, i) => sum + (i.amount || 0), 0);
+    const totalAmount = installments.reduce((sum, i) => sum + (i.amount || 0), 0);
+    const pending = installments
+      .filter((i) => i.status !== "paid")
+      .sort((a, b) => new Date(a.dueDate || 0) - new Date(b.dueDate || 0));
+
+    installmentProgress = {
+      paid: paid.length,
+      total: installments.length,
+      paidAmount,
+      totalAmount,
+      remaining: Math.max(0, (activePlan.totalAmount || 0) - paidAmount),
+      percent: totalAmount ? Math.round((paidAmount / totalAmount) * 100) : 0,
+      nextDueDate: pending[0]?.dueDate || null,
+    };
+  }
+
+  return {
+    student: student.toJSON(),
+    guardians: (student.parents || []).map((p) => p.toObject ? p.toObject() : p),
+    emergencyContacts: (student.emergencyContacts || []).map((c) =>
+      c.toObject ? c.toObject() : c
+    ),
+    plans,
+    activePlan,
+    installmentProgress,
+    recentPayments: payments,
+    classHistory: student.classHistory || [],
+    auditTrail: history,
   };
 };
 
 // ──────────────────── Get by id ────────────────────
 export const getStudentById = async (id, user) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    throw new ApiError("Invalid student ID", 400, "INVALID_ID");
-  }
-
-  const schoolId = resolveSchoolId(user, null);
-  if (!schoolId) {
-    throw new ApiError(
-      "A schoolId is required to view a student",
-      400,
-      "NO_SCHOOL_SCOPE"
-    );
-  }
-
-  const student = await Student.findOne({ _id: id, schoolId: schoolId, deletedAt: null });
-  if (!student) {
-    throw new ApiError("Student not found", 404, "NOT_FOUND");
-  }
-
+  const student = await loadStudent(id, user);
   return student.toJSON();
 };
 
 // ──────────────────── Update ────────────────────
 export const updateStudent = async (id, data, user) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    throw new ApiError("Invalid student ID", 400, "INVALID_ID");
-  }
+  const student = await loadStudent(id, user);
 
-  const schoolId = resolveSchoolId(user, null);
-  if (!schoolId) {
-    throw new ApiError(
-      "A schoolId is required to update a student",
-      400,
-      "NO_SCHOOL_SCOPE"
-    );
-  }
-
-  const student = await Student.findOne({ _id: id, deletedAt: null });
-  if (!student) {
-    throw new ApiError("Student not found", 404, "NOT_FOUND");
-  }
-
-  if (user.role !== "super_admin" && student.schoolId.toString() !== schoolId.toString()) {
-    throw new ApiError("You do not have access to this student", 403, "FORBIDDEN");
-  }
-
+  // Fields no `PUT` may ever write.
+  //
+  // `promotedFrom/To`, `promotionDate`, `graduationDate`, `graduationYear`,
+  // `isAlumni`, `transferOutDate`, `transferOutReason` and `isRepeating` each
+  // have a dedicated transition endpoint carrying real preconditions — "only
+  // active students", "not in a final year class", "not already repeating". A
+  // generic update walked straight past all of them, so a client could graduate
+  // a suspended student or clear a repeat flag by sending the field in a body.
+  // They are removed from the Joi schema as well; this is the second line.
   const protectedFields = [
     "studentId",
     "uniquePayLinkToken",
@@ -465,7 +888,29 @@ export const updateStudent = async (id, data, user) => {
     "balance",
     "createdBy",
     "deletedAt",
+    "deletedBy",
+    "deletedReason",
     "schoolId",
+    "status",
+    "statusReason",
+    "statusChangedAt",
+    "firstName",
+    "lastName",
+    "repeatCount",
+    "promotedFrom",
+    "promotedTo",
+    "promotionDate",
+    "graduationDate",
+    "graduationYear",
+    "graduationType",
+    "certificateNumber",
+    "honors",
+    "isAlumni",
+    "transferOutDate",
+    "transferOutReason",
+    "transferOutRecord",
+    "isRepeating",
+    "classHistory",
     "__v",
   ];
 
@@ -474,8 +919,16 @@ export const updateStudent = async (id, data, user) => {
   // updatedBy is server-set (after stripping protected fields).
   updates.updatedBy = user._id;
 
+  if (Object.keys(updates).length === 1) {
+    throw new ApiError(
+      "No editable fields were supplied",
+      400,
+      "NO_EDITABLE_FIELDS"
+    );
+  }
+
+  const school = await fetchSchool(student.schoolId);
   if (updates.studentClass && updates.studentClass !== student.studentClass) {
-    const school = await fetchSchool(schoolId);
     const classes = school.academic?.classes || [];
     if (!classes.includes(updates.studentClass)) {
       throw new ApiError(
@@ -484,6 +937,16 @@ export const updateStudent = async (id, data, user) => {
         "INVALID_CLASS"
       );
     }
+  }
+
+  // Parents are replaced wholesale, not merged — a PUT that adds one parent and
+  // a UI that sends the whole list are the same request, and merging would drop
+  // the parent's `_id` that the parent endpoints address.
+  if (Array.isArray(updates.parents)) {
+    updates.parents = updates.parents.map((parent) =>
+      parent._id ? { ...parent, _id: parent._id } : parent
+    );
+    normalizePrimaryParent(updates.parents);
   }
 
   Object.keys(updates).forEach((key) => {
@@ -497,7 +960,8 @@ export const updateStudent = async (id, data, user) => {
     entity: "Student",
     entityId: student._id,
     userId: user._id,
-    details: { updatedFields: Object.keys(updates) },
+    schoolId: student.schoolId,
+    meta: { updatedFields: Object.keys(updates) },
   });
 
   return student.toJSON();
@@ -505,66 +969,101 @@ export const updateStudent = async (id, data, user) => {
 
 // ──────────────────── Soft delete (shared) ────────────────────
 // Never hard delete. Payment/plan records are preserved.
-const archiveStudent = async (id, schoolId, user) => {
-  const student = await Student.findOne({ _id: id, deletedAt: null });
-  if (!student) {
-    throw new ApiError("Student not found", 404, "NOT_FOUND");
-  }
-
-  if (user.role !== "super_admin" && student.schoolId.toString() !== schoolId.toString()) {
-    throw new ApiError("You do not have access to this student", 403, "FORBIDDEN");
-  }
+const archiveStudent = async (id, user, reason = null) => {
+  const student = await loadStudent(id, user);
 
   student.status = "removed";
+  student.statusReason = reason || student.statusReason;
+  student.statusChangedAt = new Date();
   student.deletedAt = new Date();
+  student.deletedBy = user._id;
+  student.deletedReason = reason || null;
+  student.updatedBy = user._id;
   await student.save();
+
+  // The roster count is denormalised onto the School, and import incremented it
+  // without a matching decrement. A school that archived a hundred students had
+  // a headline count a hundred too high, and nothing ever reconciled the two.
+  await School.updateOne(
+    { _id: student.schoolId, "stats.totalStudents": { $gt: 0 } },
+    { $inc: { "stats.totalStudents": -1 } }
+  );
 
   await auditService.log({
     action: "REMOVE",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
-    details: {},
+    schoolId: student.schoolId,
+    meta: { reason: reason || null },
   });
 
   return student;
 };
 
-// DELETE /students/:id
-export const deleteStudent = async (id, user) => {
-  const schoolId = resolveSchoolId(user, null);
-  if (!schoolId) throw new ApiError("A schoolId is required", 400, "NO_SCHOOL_SCOPE");
-  await archiveStudent(id, schoolId, user);
+/**
+ * DELETE /students/:id
+ *
+ * The one archive entry point. `PUT /students/:id/remove` was a byte-for-byte
+ * duplicate of this, differing only in the word in its response message, so a
+ * client had no way to know which to call; the route now delegates here and the
+ * duplicate is gone.
+ */
+export const deleteStudent = async (id, user, reason = null) => {
+  await archiveStudent(id, user, reason);
   return { message: "Student removed" };
 };
 
-// PUT /students/:id/remove  — same operation, separate endpoint
-export const removeStudent = async (id, user) => {
-  const schoolId = resolveSchoolId(user, null);
-  if (!schoolId) throw new ApiError("A schoolId is required", 400, "NO_SCHOOL_SCOPE");
-  await archiveStudent(id, schoolId, user);
-  return { message: "Student archived" };
+/** Kept as a named alias for the legacy `/remove` route. */
+export const removeStudent = deleteStudent;
+
+/**
+ * PUT /students/:id/restore
+ *
+ * Undoes an archive. Without it, one mis-click on a bulk selection is permanent:
+ * there is no hard delete to be careful of, and no way back either.
+ */
+export const restoreStudent = async (id, user) => {
+  const student = await loadStudent(id, user, { includeDeleted: true });
+
+  if (!student.deletedAt) {
+    throw new ApiError("This student is not archived", 409, "NOT_ARCHIVED");
+  }
+
+  student.deletedAt = null;
+  student.deletedBy = null;
+  student.deletedReason = null;
+  // `active` rather than leaving `removed`: a student that was suspended before
+  // being archived should return to suspended, and the reason is still on the
+  // record, but the common case — archived straight from active — is correct
+  // and a wrong-but-lenient `active` is better than an invisible student.
+  student.status = "active";
+  student.statusChangedAt = new Date();
+  student.updatedBy = user._id;
+  await student.save();
+
+  await School.updateOne({ _id: student.schoolId }, { $inc: { "stats.totalStudents": 1 } });
+
+  await auditService.log({
+    action: "RESTORE",
+    entity: "Student",
+    entityId: student._id,
+    userId: user._id,
+    schoolId: student.schoolId,
+  });
+
+  return student.toJSON();
 };
 
 // ──────────────────── Suspend / Reactivate ────────────────────
 export const suspendStudent = async (id, reason, user) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    throw new ApiError("Invalid student ID", 400, "INVALID_ID");
-  }
-
-  const schoolId = resolveSchoolId(user, null);
-  if (!schoolId) {
-    throw new ApiError("A schoolId is required", 400, "NO_SCHOOL_SCOPE");
-  }
-
-  const student = await Student.findOne({ _id: id, deletedAt: null });
-  if (!student) {
-    throw new ApiError("Student not found", 404, "NOT_FOUND");
-  }
-
-  if (user.role !== "super_admin" && student.schoolId.toString() !== schoolId.toString()) {
-    throw new ApiError("You do not have access to this student", 403, "FORBIDDEN");
-  }
+  // The student's own school is the scope. `loadStudent` enforces the caller's
+  // access and, for a `super_admin`, no longer needs an explicit schoolId —
+  // previously every one of these services called `resolveSchoolId(user, null)`,
+  // which returns null for a super_admin and made all of them unreachable for
+  // platform staff.
+  const student = await loadStudent(id, user);
+  const schoolId = student.schoolId;
 
   student.status = "suspended";
   student.statusReason = reason;
@@ -583,23 +1082,13 @@ export const suspendStudent = async (id, reason, user) => {
 };
 
 export const reactivateStudent = async (id, user) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    throw new ApiError("Invalid student ID", 400, "INVALID_ID");
-  }
-
-  const schoolId = resolveSchoolId(user, null);
-  if (!schoolId) {
-    throw new ApiError("A schoolId is required", 400, "NO_SCHOOL_SCOPE");
-  }
-
-  const student = await Student.findOne({ _id: id, deletedAt: null });
-  if (!student) {
-    throw new ApiError("Student not found", 404, "NOT_FOUND");
-  }
-
-  if (user.role !== "super_admin" && student.schoolId.toString() !== schoolId.toString()) {
-    throw new ApiError("You do not have access to this student", 403, "FORBIDDEN");
-  }
+  // The student's own school is the scope. `loadStudent` enforces the caller's
+  // access and, for a `super_admin`, no longer needs an explicit schoolId —
+  // previously every one of these services called `resolveSchoolId(user, null)`,
+  // which returns null for a super_admin and made all of them unreachable for
+  // platform staff.
+  const student = await loadStudent(id, user);
+  const schoolId = student.schoolId;
 
   student.status = "active";
   student.statusReason = "";
@@ -619,23 +1108,13 @@ export const reactivateStudent = async (id, user) => {
 
 // ──────────────────── Transfer class ────────────────────
 export const transferStudentClass = async (id, newClass, reason, user) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    throw new ApiError("Invalid student ID", 400, "INVALID_ID");
-  }
-
-  const schoolId = resolveSchoolId(user, null);
-  if (!schoolId) {
-    throw new ApiError("A schoolId is required", 400, "NO_SCHOOL_SCOPE");
-  }
-
-  const student = await Student.findOne({ _id: id, deletedAt: null });
-  if (!student) {
-    throw new ApiError("Student not found", 404, "NOT_FOUND");
-  }
-
-  if (user.role !== "super_admin" && student.schoolId.toString() !== schoolId.toString()) {
-    throw new ApiError("You do not have access to this student", 403, "FORBIDDEN");
-  }
+  // The student's own school is the scope. `loadStudent` enforces the caller's
+  // access and, for a `super_admin`, no longer needs an explicit schoolId —
+  // previously every one of these services called `resolveSchoolId(user, null)`,
+  // which returns null for a super_admin and made all of them unreachable for
+  // platform staff.
+  const student = await loadStudent(id, user);
+  const schoolId = student.schoolId;
 
   const school = await fetchSchool(schoolId);
   const classes = school.academic?.classes || [];
@@ -672,23 +1151,13 @@ export const transferStudentClass = async (id, newClass, reason, user) => {
 
 // ──────────────────── Regenerate pay link ────────────────────
 export const regeneratePayLink = async (id, user, { notify = false } = {}) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    throw new ApiError("Invalid student ID", 400, "INVALID_ID");
-  }
-
-  const schoolId = resolveSchoolId(user, null);
-  if (!schoolId) {
-    throw new ApiError("A schoolId is required", 400, "NO_SCHOOL_SCOPE");
-  }
-
-  const student = await Student.findOne({ _id: id, deletedAt: null });
-  if (!student) {
-    throw new ApiError("Student not found", 404, "NOT_FOUND");
-  }
-
-  if (user.role !== "super_admin" && student.schoolId.toString() !== schoolId.toString()) {
-    throw new ApiError("You do not have access to this student", 403, "FORBIDDEN");
-  }
+  // The student's own school is the scope. `loadStudent` enforces the caller's
+  // access and, for a `super_admin`, no longer needs an explicit schoolId —
+  // previously every one of these services called `resolveSchoolId(user, null)`,
+  // which returns null for a super_admin and made all of them unreachable for
+  // platform staff.
+  const student = await loadStudent(id, user);
+  const schoolId = student.schoolId;
 
   // Invalidate the old token by issuing a fresh one.
   student.uniquePayLinkToken = generatePayLinkToken();
@@ -711,7 +1180,13 @@ export const regeneratePayLink = async (id, user, { notify = false } = {}) => {
     details: { notified: Boolean(notify) },
   });
 
-  return { payLink: student.payLink, token: student.uniquePayLinkToken };
+  // The raw `uniquePayLinkToken` is no longer returned.
+  //
+  // The `toJSON` transform exists specifically to delete that field, and this
+  // one response handed it straight back to the client — so anyone with the
+  // token could read the same endpoint with a different URL. The public
+  // `payLink` contains the token and is what the caller actually needs.
+  return { payLink: student.payLink };
 };
 
 // ──────────────────── Export ────────────────────
@@ -728,15 +1203,12 @@ export const exportStudents = async (query, user) => {
   const school = await fetchSchool(schoolId);
   const format = query.format === "xlsx" ? "xlsx" : "csv";
 
-  const filter = { schoolId, deletedAt: null };
-  if (query.status && query.status !== "all") filter.status = query.status;
-  if (query.class) filter.studentClass = query.class;
-  if (query.search) {
-    filter.$or = [
-      { studentName: { $regex: query.search, $options: "i" } },
-      { studentId: { $regex: query.search, $options: "i" } },
-    ];
-  }
+  // The export previously rebuilt its own filter and searched only
+  // `studentName`/`studentId`, while the list above it also searched parent
+  // name and phone. "Export what I am looking at" therefore returned a
+  // different set of rows than the screen it was exported from. The shared
+  // builder keeps the two in step. `format` is not part of the filter, so it is
+  // read separately below.
 
   const students = await Student.find(filter)
     .sort({ createdAt: -1 })
@@ -748,6 +1220,28 @@ export const exportStudents = async (query, user) => {
   const extension = format === "xlsx" ? "xlsx" : "csv";
   const filename = `students-${slug}-${dateStr}.${extension}`;
 
+  // Declared up front, not derived from the first row.
+  //
+  // The header used to be `Object.keys(rows[0] || {})`, so an export that
+  // matched nothing produced `"\n"` — a file that opens as a single blank line
+  // and reads to a bursar as data loss. A header-only CSV is the correct answer
+  // for "your filter matched no students", and it is what makes the two cases
+  // distinguishable at a glance.
+  const COLUMNS = [
+    "studentId",
+    "studentName",
+    "studentClass",
+    "gender",
+    "status",
+    "totalOwed",
+    "totalPaid",
+    "balance",
+    "deadline",
+    "parentName",
+    "parentPhone",
+    "payLink",
+  ];
+
   const rows = students.map((student) => {
     const primaryParent = (student.parents || []).find((p) => p.isPrimary) || student.parents?.[0];
     return {
@@ -756,11 +1250,17 @@ export const exportStudents = async (query, user) => {
       studentClass: student.studentClass,
       gender: student.gender,
       status: student.status,
-      totalOwed: student.totalOwed,
-      totalPaid: student.totalPaid,
-      balance: student.balance,
+      // Pesawas, labelled as such. The header used to say `totalOwed` for an
+      // integer count of pesewas, and anyone who opened the file in a
+      // spreadsheet read 85000 rather than GH₵ 850.00.
+      totalOwedCedis: (student.totalOwed || 0) / 100,
+      totalPaidCedis: (student.totalPaid || 0) / 100,
+      balanceCedis: (student.balance || 0) / 100,
       deadline: student.deadline ? new Date(student.deadline).toISOString().slice(0, 10) : "",
       parentName: primaryParent?.parentName || "",
+      // Unmasked: an export is taken off-system and reconciled against a bank
+      // statement, so a masked phone makes the file useless for the one thing
+      // it is exported for. Masked numbers live in the roster, on screen.
       parentPhone: primaryParent?.phone || "",
       payLink: student.payLink || "",
     };
@@ -770,27 +1270,30 @@ export const exportStudents = async (query, user) => {
     // lazy import keeps xlsx loaded only for Excel exports
     const XLSX = await import("xlsx");
     const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet(rows);
+    // `json_to_sheet` with an explicit header array so an empty result still
+    // produces a sheet with the right columns rather than a blank one.
+    const ws = XLSX.utils.json_to_sheet(rows, { header: COLUMNS });
     XLSX.utils.book_append_sheet(wb, ws, "Students");
     const content = XLSX.write(wb, { bookType: "xlsx", type: "buffer" });
     return {
       filename,
+      rowCount: rows.length,
       mimeType:
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       content,
     };
   }
 
-  const columns = Object.keys(rows[0] || {});
-  const header = columns.map(escapeCsv).join(",");
+  const header = COLUMNS.map(escapeCsv).join(",");
   const body = rows
-    .map((row) => columns.map((c) => escapeCsv(row[c])).join(","))
+    .map((row) => COLUMNS.map((c) => escapeCsv(row[c])).join(","))
     .join("\n");
 
   return {
     filename,
+    rowCount: rows.length,
     mimeType: "text/csv",
-    content: `${header}\n${body}`,
+    content: rows.length ? `${header}\n${body}` : header,
   };
 };
 
@@ -805,31 +1308,30 @@ const getNextClass = async (schoolId, currentClass) => {
   return classes[currentIndex + 1];
 };
 
-const getFinalYearClasses = async (schoolId) => {
-  const school = await fetchSchool(schoolId);
-  const classes = school.academic?.classes || [];
-  return classes.slice(-3);
-};
+const getFinalYearClasses = async (schoolId) =>
+  getFinalYearClassesFrom(await fetchSchool(schoolId));
+
+/**
+ * The classes a student may graduate from: the last three on the school's list.
+ *
+ * Still a heuristic — "final year" is a property of the school, not a derivable
+ * rule, and a school running Basic 1–6 then JHS 1–3 has a different shape from
+ * one running Nursery–JHS 3. It is read from `academic.classes` rather than
+ * hardcoded, which is the most that can be done until a `Class` collection
+ * exists (see the module spec, §5.3).
+ */
+const getFinalYearClassesFrom = (school) =>
+  (school?.academic?.classes || []).slice(-3);
 
 // ──────────────────── Promote Single Student ────────────────────
 export const promoteStudent = async (id, data, user) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    throw new ApiError("Invalid student ID", 400, "INVALID_ID");
-  }
-
-  const schoolId = resolveSchoolId(user, null);
-  if (!schoolId) {
-    throw new ApiError("A schoolId is required", 400, "NO_SCHOOL_SCOPE");
-  }
-
-  const student = await Student.findOne({ _id: id, deletedAt: null });
-  if (!student) {
-    throw new ApiError("Student not found", 404, "NOT_FOUND");
-  }
-
-  if (user.role !== "super_admin" && student.schoolId.toString() !== schoolId.toString()) {
-    throw new ApiError("You do not have access to this student", 403, "FORBIDDEN");
-  }
+  // The student's own school is the scope. `loadStudent` enforces the caller's
+  // access and, for a `super_admin`, no longer needs an explicit schoolId —
+  // previously every one of these services called `resolveSchoolId(user, null)`,
+  // which returns null for a super_admin and made all of them unreachable for
+  // platform staff.
+  const student = await loadStudent(id, user);
+  const schoolId = student.schoolId;
 
   if (student.status !== "active") {
     throw new ApiError("Only active students can be promoted", 409, "INVALID_STATUS");
@@ -839,7 +1341,12 @@ export const promoteStudent = async (id, data, user) => {
     throw new ApiError("Repeating students cannot be promoted until repeat period ends", 409, "STUDENT_REPEATING");
   }
 
-  let targetClass = data.targetClassId;
+  // `targetClassId` was validated as a 24-hex ObjectId but used here as a class
+  // *name*. `School.academic.classes` is `[String]` — there are no class ids in
+  // this system — so a caller following the schema sent something the service
+  // could not match against any class. The field is renamed to `targetClass`
+  // and the validation corrected (see `promoteStudentSchema`).
+  let targetClass = data.targetClass;
   if (!targetClass) {
     targetClass = await getNextClass(schoolId, student.studentClass);
     if (!targetClass) {
@@ -892,27 +1399,48 @@ export const bulkPromoteStudents = async (schoolId, data, user) => {
 
   await fetchSchool(resolvedSchoolId);
 
-  const { classIds, gradeLevels, studentIds, promotionDate, dryRun, notes } = data;
+  // `classIds` are class *names* — `School.academic.classes` is `[String]`. The
+  // Joi schema required 24-hex ObjectIds, so a caller could not send a value
+  // that matched any class; it is renamed `classNames` and validated as such.
+  const { classNames, gradeLevels, studentIds, promotionDate, dryRun, notes } = data;
 
   let filter = { schoolId: resolvedSchoolId, deletedAt: null, status: "active", isRepeating: false };
 
   if (studentIds && studentIds.length > 0) {
     filter._id = { $in: studentIds.map((id) => new mongoose.Types.ObjectId(id)) };
-  } else if (classIds && classIds.length > 0) {
-    filter.studentClass = { $in: classIds };
+  } else if (classNames && classNames.length > 0) {
+    filter.studentClass = { $in: classNames };
   } else if (gradeLevels && gradeLevels.length > 0) {
     const school = await fetchSchool(resolvedSchoolId);
     const classes = school.academic?.classes || [];
-    const matchingClasses = classes.filter((cls) => gradeLevels.some((g) => cls.includes(String(g))));
+    // `cls.includes(String(g))` is a substring match against a class *name*,
+    // so grade 1 also matches "JHS 11A" and "JHS 12A". Tighter: match the class
+    // name's own number, which is the first integer in the string, so "1" only
+    // selects classes whose leading number is 1.
+    const matchingClasses = classes.filter((cls) => {
+      const level = cls.match(/\d+/)?.[0];
+      return level != null && gradeLevels.some((g) => String(level) === String(g));
+    });
     if (matchingClasses.length === 0) {
       throw new ApiError("No classes found for specified grade levels", 400, "NO_CLASSES_MATCHED");
     }
     filter.studentClass = { $in: matchingClasses };
   }
 
-  const students = await Student.find(filter).limit(500).lean();
+  const students = await Student.find(filter).lean();
   if (students.length === 0) {
     throw new ApiError("No students matched the provided criteria", 400, "NO_STUDENTS_MATCHED");
+  }
+  // The `.limit(500)` that used to be here truncated silently: a whole school
+  // matched, 500 were promoted, and the response reported
+  // `totalProcessed: 500` with no hint that the rest had been dropped. A
+  // visible refusal is the only version of this a bursar can act on.
+  if (students.length > BULK_LIMIT) {
+    throw new ApiError(
+      `This would promote ${students.length} students, above the ${BULK_LIMIT} limit for a single request. Promote by class instead.`,
+      400,
+      "BULK_LIMIT_EXCEEDED"
+    );
   }
 
   const school = await fetchSchool(resolvedSchoolId);
@@ -927,7 +1455,15 @@ export const bulkPromoteStudents = async (schoolId, data, user) => {
     try {
       const nextClass = await getNextClass(resolvedSchoolId, student.studentClass);
       if (!nextClass) {
-        failed.push({ studentId: student._id, reason: "No next level defined" });
+        // `skipped` was declared and returned but never pushed to, so the
+        // response always reported 0 skipped while quietly dropping everyone at
+        // the top of their class. Skipped is a normal outcome of bulk promotion,
+        // not a failure, and it belongs in its own list.
+        skipped.push({
+          studentId: student._id,
+          studentNumber: student.studentId,
+          reason: "No next class is defined after their current class",
+        });
         continue;
       }
 
@@ -972,7 +1508,8 @@ export const bulkPromoteStudents = async (schoolId, data, user) => {
     entity: "Student",
     entityId: resolvedSchoolId,
     userId: user._id,
-    details: { promoted: promoted.length, skipped: skipped.length, failed: failed.length, dryRun },
+    schoolId: resolvedSchoolId,
+    meta: { promoted: promoted.length, skipped: skipped.length, failed: failed.length, dryRun },
   });
 
   return {
@@ -990,7 +1527,7 @@ export const bulkPromoteStudents = async (schoolId, data, user) => {
 
 // ──────────────────── Preview Promotion ────────────────────
 export const previewPromotion = async (data, user) => {
-  const { schoolId, classIds, gradeLevels, studentIds, promotionDate } = data;
+  const { schoolId, classNames, gradeLevels, studentIds, promotionDate, classCapacity } = data;
 
   const resolvedSchoolId = resolveSchoolId(user, schoolId);
   if (!resolvedSchoolId) {
@@ -1003,12 +1540,15 @@ export const previewPromotion = async (data, user) => {
 
   if (studentIds && studentIds.length > 0) {
     filter._id = { $in: studentIds.map((id) => new mongoose.Types.ObjectId(id)) };
-  } else if (classIds && classIds.length > 0) {
-    filter.studentClass = { $in: classIds };
+  } else if (classNames && classNames.length > 0) {
+    filter.studentClass = { $in: classNames };
   } else if (gradeLevels && gradeLevels.length > 0) {
     const school = await fetchSchool(resolvedSchoolId);
     const classes = school.academic?.classes || [];
-    const matchingClasses = classes.filter((cls) => gradeLevels.some((g) => cls.includes(String(g))));
+    const matchingClasses = classes.filter((cls) => {
+      const level = cls.match(/\d+/)?.[0];
+      return level != null && gradeLevels.some((g) => String(level) === String(g));
+    });
     if (matchingClasses.length === 0) {
       throw new ApiError("No classes found for specified grade levels", 400, "NO_CLASSES_MATCHED");
     }
@@ -1016,6 +1556,13 @@ export const previewPromotion = async (data, user) => {
   }
 
   const students = await Student.find(filter).lean();
+  if (students.length > BULK_LIMIT) {
+    throw new ApiError(
+      `This selection covers ${students.length} students, above the ${BULK_LIMIT} limit. Preview by class instead.`,
+      400,
+      "BULK_LIMIT_EXCEEDED"
+    );
+  }
 
   const school = await fetchSchool(resolvedSchoolId);
   const classes = school.academic?.classes || [];
@@ -1057,21 +1604,30 @@ export const previewPromotion = async (data, user) => {
     });
   }
 
-  for (const m of mapping) {
-    const targetClassStudents = await Student.countDocuments({
-      schoolId: resolvedSchoolId,
-      studentClass: m.targetClass,
-      deletedAt: null,
-      status: "active",
-    });
-    const capacity = 40;
-    if (targetClassStudents + m.studentCount > capacity) {
-      warnings.push({
-        type: "CLASS_CAPACITY",
-        message: `${m.targetClass} will exceed capacity by ${targetClassStudents + m.studentCount - capacity} students`,
-        currentCapacity: capacity,
-        projectedEnrollment: targetClassStudents + m.studentCount,
+  // Capacity was hardcoded to 40, so the warning fired for every school with
+  // larger classes and stayed silent for every school with smaller ones. It is
+  // now supplied by the caller, and when no capacity is known the check is
+  // skipped rather than guessed — a capacity warning built on a made-up number
+  // is worse than no warning.
+  const capacity = Number(classCapacity) || 0;
+
+  if (capacity > 0) {
+    for (const m of mapping) {
+      // eslint-disable-next-line no-await-in-loop
+      const targetClassStudents = await Student.countDocuments({
+        schoolId: resolvedSchoolId,
+        studentClass: m.targetClass,
+        deletedAt: null,
+        status: "active",
       });
+      if (targetClassStudents + m.studentCount > capacity) {
+        warnings.push({
+          type: "CLASS_CAPACITY",
+          message: `${m.targetClass} will exceed capacity by ${targetClassStudents + m.studentCount - capacity} students`,
+          currentCapacity: capacity,
+          projectedEnrollment: targetClassStudents + m.studentCount,
+        });
+      }
     }
   }
 
@@ -1087,36 +1643,32 @@ export const previewPromotion = async (data, user) => {
 
 // ──────────────────── Repeat Student ────────────────────
 export const repeatStudent = async (id, data, user) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    throw new ApiError("Invalid student ID", 400, "INVALID_ID");
-  }
-
-  const schoolId = resolveSchoolId(user, null);
-  if (!schoolId) {
-    throw new ApiError("A schoolId is required", 400, "NO_SCHOOL_SCOPE");
-  }
-
-  const student = await Student.findOne({ _id: id, deletedAt: null });
-  if (!student) {
-    throw new ApiError("Student not found", 404, "NOT_FOUND");
-  }
-
-  if (user.role !== "super_admin" && student.schoolId.toString() !== schoolId.toString()) {
-    throw new ApiError("You do not have access to this student", 403, "FORBIDDEN");
-  }
+  // The student's own school is the scope. `loadStudent` enforces the caller's
+  // access and, for a `super_admin`, no longer needs an explicit schoolId —
+  // previously every one of these services called `resolveSchoolId(user, null)`,
+  // which returns null for a super_admin and made all of them unreachable for
+  // platform staff.
+  const student = await loadStudent(id, user);
+  const schoolId = student.schoolId;
 
   if (student.status !== "active") {
     throw new ApiError("Only active students can be marked as repeating", 409, "INVALID_STATUS");
   }
 
-  const repeatCount = student.classHistory.filter((h) => h.from === student.studentClass && h.to === student.studentClass).length;
-  if (repeatCount >= 1) {
+  // The stored counter, not a scan of `classHistory`.
+  //
+  // The guard used to count history entries whose from === to, which is a proxy
+  // for "repeated" that only holds while nothing else writes same-class history
+  // — and it made the cost of the check grow with the length of the array, on
+  // every call. `repeatCount` is incremented here and only here.
+  if ((student.repeatCount || 0) >= 1) {
     throw new ApiError("Student has reached maximum repeat limit for this grade", 409, "MAX_REPEATS_EXCEEDED");
   }
 
   const repeatDate = data.repeatDate ? new Date(data.repeatDate) : new Date();
 
   student.isRepeating = true;
+  student.repeatCount = (student.repeatCount || 0) + 1;
   student.classHistory.push({
     from: student.studentClass,
     to: student.studentClass,
@@ -1132,7 +1684,13 @@ export const repeatStudent = async (id, data, user) => {
     entity: "Student",
     entityId: student._id,
     userId: user._id,
-    details: { repeatReason: data.repeatReason, repeatDate, customReason: data.customReason },
+    schoolId: student.schoolId,
+    meta: {
+      repeatReason: data.repeatReason,
+      repeatDate,
+      customReason: data.customReason,
+      repeatCount: student.repeatCount,
+    },
   });
 
   return student.toJSON();
@@ -1140,23 +1698,13 @@ export const repeatStudent = async (id, data, user) => {
 
 // ──────────────────── Graduate Single Student ────────────────────
 export const graduateStudent = async (id, data, user) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    throw new ApiError("Invalid student ID", 400, "INVALID_ID");
-  }
-
-  const schoolId = resolveSchoolId(user, null);
-  if (!schoolId) {
-    throw new ApiError("A schoolId is required", 400, "NO_SCHOOL_SCOPE");
-  }
-
-  const student = await Student.findOne({ _id: id, deletedAt: null });
-  if (!student) {
-    throw new ApiError("Student not found", 404, "NOT_FOUND");
-  }
-
-  if (user.role !== "super_admin" && student.schoolId.toString() !== schoolId.toString()) {
-    throw new ApiError("You do not have access to this student", 403, "FORBIDDEN");
-  }
+  // The student's own school is the scope. `loadStudent` enforces the caller's
+  // access and, for a `super_admin`, no longer needs an explicit schoolId —
+  // previously every one of these services called `resolveSchoolId(user, null)`,
+  // which returns null for a super_admin and made all of them unreachable for
+  // platform staff.
+  const student = await loadStudent(id, user);
+  const schoolId = student.schoolId;
 
   if (student.status === "graduated") {
     throw new ApiError("Student already graduated", 409, "ALREADY_GRADUATED");
@@ -1168,15 +1716,31 @@ export const graduateStudent = async (id, data, user) => {
     throw new ApiError("Student is not in a final year class", 409, "NOT_ELIGIBLE");
   }
 
+  // The duplicate check queried `graduation.certificateNumber` — a nested path
+  // that has never existed on this model — so `409 DUPLICATE_CERTIFICATE` could
+  // never fire. The fields are now declared (see studentModel.js) and the check
+  // reads the real path. The partial unique index on (schoolId,
+  // certificateNumber) is the real enforcement; this gives the friendly error
+  // first.
   if (data.certificateNumber) {
-    const existing = await Student.findOne({ schoolId, "graduation.certificateNumber": data.certificateNumber, deletedAt: null });
+    const existing = await Student.findOne({
+      schoolId,
+      certificateNumber: data.certificateNumber,
+      _id: { $ne: student._id },
+      deletedAt: null,
+    });
     if (existing) {
       throw new ApiError("Certificate number already exists", 409, "DUPLICATE_CERTIFICATE");
     }
   }
 
   const graduationDate = new Date(data.graduationDate);
-  const certificateNumber = data.certificateNumber || `CERT-${graduationDate.getFullYear()}-${String(Math.floor(Math.random() * 1000000)).padStart(6, "0")}`;
+  // Auto-assigned from a counter, not `Math.random()`. Random numbers collide
+  // eventually and nothing detected it, because there was no index to collide
+  // against — so the duplicates were already written before this fix.
+  const certificateNumber =
+    data.certificateNumber ||
+    (await nextCertificateNumber(schoolId, graduationDate.getFullYear()));
 
   student.status = "graduated";
   student.graduationDate = graduationDate;
@@ -1195,7 +1759,13 @@ export const graduateStudent = async (id, data, user) => {
     entity: "Student",
     entityId: student._id,
     userId: user._id,
-    details: { graduationDate, graduationType: data.graduationType, certificateNumber, honors: data.honors },
+    schoolId: student.schoolId,
+    meta: {
+      graduationDate,
+      graduationType: data.graduationType,
+      certificateNumber,
+      honors: data.honors,
+    },
   });
 
   const alumniRecord = {
@@ -1230,9 +1800,20 @@ export const bulkGraduateStudents = async (schoolId, data, user) => {
     throw new ApiError("Either cohortId or classIds must be provided", 400, "MISSING_CRITERIA");
   }
 
-  const students = await Student.find(filter).limit(300).lean();
+  // The `.limit(300)` here truncated silently: a cohort of 400 produced 300
+  // graduations and a response reporting `totalProcessed: 300`, with no error
+  // and nothing in the payload saying 100 students had been skipped. The cap is
+  // now an explicit refusal, so the school can run it in two batches.
+  const students = await Student.find(filter).lean();
   if (students.length === 0) {
     throw new ApiError("No eligible students found for graduation", 400, "NO_ELIGIBLE_STUDENTS");
+  }
+  if (students.length > BULK_LIMIT) {
+    throw new ApiError(
+      `This would graduate ${students.length} students, above the ${BULK_LIMIT} limit for a single request. Run it in batches by class.`,
+      400,
+      "BULK_LIMIT_EXCEEDED"
+    );
   }
 
   const school = await fetchSchool(resolvedSchoolId);
@@ -1242,8 +1823,6 @@ export const bulkGraduateStudents = async (schoolId, data, user) => {
   const graduated = [];
   const ineligible = [];
   const failed = [];
-
-  let certCounter = 0;
 
   for (const student of students) {
     try {
@@ -1257,12 +1836,16 @@ export const bulkGraduateStudents = async (schoolId, data, user) => {
         continue;
       }
 
-      let certNumber = "";
-      if (autoAssignCertificates) {
-        certCounter += 1;
-        const prefix = certificatePrefix || "CERT";
-        certNumber = `${prefix}-${gradDate.getFullYear()}-${String(certCounter).padStart(6, "0")}`;
-      }
+      // From the shared counter, not a per-request `certCounter` that restarted
+      // at 1 every time — two concurrent bulk graduations of the same cohort
+      // assigned identical certificate numbers, and nothing detected it.
+      const certNumber = autoAssignCertificates
+        ? await nextCertificateNumber(
+            resolvedSchoolId,
+            gradDate.getFullYear(),
+            certificatePrefix || "CERT"
+          )
+        : "";
 
       const studentDoc = await Student.findById(student._id);
       studentDoc.status = "graduated";
@@ -1312,23 +1895,13 @@ export const bulkGraduateStudents = async (schoolId, data, user) => {
 
 // ──────────────────── Transfer Out ────────────────────
 export const transferOutStudent = async (id, data, user) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    throw new ApiError("Invalid student ID", 400, "INVALID_ID");
-  }
-
-  const schoolId = resolveSchoolId(user, null);
-  if (!schoolId) {
-    throw new ApiError("A schoolId is required", 400, "NO_SCHOOL_SCOPE");
-  }
-
-  const student = await Student.findOne({ _id: id, deletedAt: null });
-  if (!student) {
-    throw new ApiError("Student not found", 404, "NOT_FOUND");
-  }
-
-  if (user.role !== "super_admin" && student.schoolId.toString() !== schoolId.toString()) {
-    throw new ApiError("You do not have access to this student", 403, "FORBIDDEN");
-  }
+  // The student's own school is the scope. `loadStudent` enforces the caller's
+  // access and, for a `super_admin`, no longer needs an explicit schoolId —
+  // previously every one of these services called `resolveSchoolId(user, null)`,
+  // which returns null for a super_admin and made all of them unreachable for
+  // platform staff.
+  const student = await loadStudent(id, user);
+  const schoolId = student.schoolId;
 
   if (student.status !== "active") {
     throw new ApiError("Only active students can be transferred out", 409, "INVALID_STATUS");
@@ -1345,20 +1918,29 @@ export const transferOutStudent = async (id, data, user) => {
   student.transferOutReason = `${data.transferReason}${data.customReason ? ` - ${data.customReason}` : ""}`;
   student.statusReason = data.notes || "";
   student.statusChangedAt = transferDate;
+  // Persisted on the student, not just returned.
+  //
+  // The previous implementation built this object, handed it to the caller and
+  // dropped it. Nothing on the record said where the child went, so a school
+  // could not answer a question from two years later, and `recordsTransferred`
+  // was a claim with nothing behind it. `transferOutRecord` now holds the
+  // destination, the type and the contact, and appears in the profile view.
+  student.transferOutRecord = {
+    destinationInstitution: data.destinationInstitution,
+    destinationInstitutionType: data.destinationInstitutionType,
+    contactPerson: data.contactPerson || null,
+    contactEmail: data.contactEmail || null,
+    contactPhone: data.contactPhone || null,
+    recordsTransferred: Boolean(data.recordsTransferred),
+  };
   student.updatedBy = user._id;
   await student.save();
 
   const transferRecord = {
-    id: new mongoose.Types.ObjectId(),
-    destinationInstitution: data.destinationInstitution,
-    destinationInstitutionType: data.destinationInstitutionType,
+    ...student.transferOutRecord.toObject?.() ?? student.transferOutRecord,
     transferDate,
     transferReason: data.transferReason,
     customReason: data.customReason,
-    contactPerson: data.contactPerson,
-    contactEmail: data.contactEmail,
-    contactPhone: data.contactPhone,
-    recordsTransferred: data.recordsTransferred,
     notes: data.notes,
     studentId: student._id,
     schoolId,
@@ -1369,7 +1951,12 @@ export const transferOutStudent = async (id, data, user) => {
     entity: "Student",
     entityId: student._id,
     userId: user._id,
-    details: { destinationInstitution: data.destinationInstitution, transferDate, transferReason: data.transferReason },
+    schoolId: student.schoolId,
+    meta: {
+      destinationInstitution: data.destinationInstitution,
+      transferDate,
+      transferReason: data.transferReason,
+    },
   });
 
   return { student: student.toJSON(), transferRecord };
@@ -1390,11 +1977,13 @@ export const getAlumni = async (query, user) => {
   if (graduationYear) filter.graduationYear = String(graduationYear);
   if (honors) filter.honors = honors;
   if (search) {
-    filter.$or = [
-      { studentName: { $regex: search, $options: "i" } },
-      { studentId: { $regex: search, $options: "i" } },
-      { certificateNumber: { $regex: search, $options: "i" } },
-    ];
+    // Escaped: this term was spliced raw into `$regex`, so `?search=.*` returned
+    // the entire alumni roll and `?search=[` threw a driver error as a 500.
+    // `certificateNumber` now matches a real field — it was declared in the
+    // service and read here but did not exist on the model, so the search arm
+    // and the `sortBy` that referenced it were both silent no-ops.
+    const clause = searchClause(search, ["studentName", "studentId", "certificateNumber"]);
+    if (clause) filter.$or = clause;
   }
 
   const sortOrderNum = sortOrder === "asc" ? 1 : -1;
@@ -1460,14 +2049,13 @@ export const getCohorts = async (query, user) => {
   ];
 
   if (search) {
-    pipeline.unshift({
-      $match: {
-        $or: [
-          { studentName: { $regex: search, $options: "i" } },
-          { studentId: { $regex: search, $options: "i" } },
-        ],
-      },
-    });
+    // Escaped, and the `status` filter is honoured.
+    // `query.status` ("ARCHIVED" | "ACTIVE") was destructured and then never
+    // read, so filtering cohorts by status silently returned everything.
+    const clause = searchClause(search, ["studentName", "studentId"]);
+    if (clause) {
+      pipeline.unshift({ $match: { ...match, $or: clause } });
+    }
   }
 
   const totalPipeline = [...pipeline, { $count: "total" }];
@@ -1518,17 +2106,17 @@ export const getCohorts = async (query, user) => {
 
 // ──────────────────── Get Cohort Details ────────────────────
 export const getCohortDetail = async (cohortId, query, user) => {
-  const cohortYear = cohortId.replace("cohort_", "");
-  if (!/^\d{4}$/.test(cohortYear)) {
-    throw new ApiError("Invalid cohort ID format", 400, "INVALID_COHORT_ID");
-  }
+  // `cohort_YYYY` or a bare year. `cohortIdParamSchema` demanded a 24-hex
+  // ObjectId while this line consumed a year, so no input satisfied both and
+  // every call was rejected at validation — the endpoint was unreachable.
+  const cohortYear = cohortYearFrom(cohortId);
 
-  const resolvedSchoolId = resolveSchoolId(user, null);
+  const resolvedSchoolId = resolveSchoolId(user, query.schoolId);
   if (!resolvedSchoolId) {
     throw new ApiError("A schoolId is required to view cohort details", 400, "NO_SCHOOL_SCOPE");
   }
 
-  await fetchSchool(resolvedSchoolId);
+  const school = await fetchSchool(resolvedSchoolId);
 
   const filter = { schoolId: resolvedSchoolId, deletedAt: null, graduationYear: cohortYear };
   if (query.status) filter.status = query.status.toLowerCase();
@@ -1536,9 +2124,16 @@ export const getCohortDetail = async (cohortId, query, user) => {
   const sortOrderNum = query.sortOrder === "asc" ? 1 : -1;
   const skip = (query.page - 1) * query.limit;
 
+  // `lastName` and `studentNumber` are not fields on the Student model, so
+  // sorting by either was a no-op and the result came back in natural order.
+  // `lastName` is now a real (derived) field, so the default sort finally works;
+  // `studentNumber` is not, and is removed from the schema rather than mapped
+  // to `studentId` behind the caller's back.
+  const sortField = query.sortBy === "lastName" ? "lastName" : query.sortBy;
+
   const [students, total] = await Promise.all([
     Student.find(filter)
-      .sort({ [query.sortBy]: sortOrderNum })
+      .sort({ [sortField]: sortOrderNum })
       .skip(skip)
       .limit(query.limit)
       .select("-uniquePayLinkToken -parents -emergencyContacts -classHistory -paymentPlans")
@@ -1561,8 +2156,6 @@ export const getCohortDetail = async (cohortId, query, user) => {
     },
   ]);
 
-  const school = await fetchSchool(resolvedSchoolId);
-
   let honorsBreakdown = { NONE: 0, HONORS: 0, HIGH_HONORS: 0, HIGHEST_HONORS: 0 };
   if (stats[0]?.honorsBreakdown) {
     honorsBreakdown = stats[0].honorsBreakdown.reduce((acc, h) => {
@@ -1571,20 +2164,34 @@ export const getCohortDetail = async (cohortId, query, user) => {
     }, honorsBreakdown);
   }
 
-  const finalClasses = school.academic?.classes?.slice(-3) || [];
+  // Per-class counts, counted rather than hardcoded.
+  const classRows = await Student.aggregate([
+    { $match: filter },
+    { $group: { _id: "$studentClass", studentCount: { $sum: 1 } } },
+  ]);
+  const countsByClass = new Map(classRows.map((r) => [r._id, r.studentCount]));
+
+  const finalClasses = getFinalYearClassesFrom(school);
   const classDetails = finalClasses.map((cls) => ({
     id: cls,
     name: cls,
-    level: parseInt(cls.match(/\d+/)?.[0] || "12"),
-    teacher: "",
-    studentCount: 0,
+    level: parseInt(cls.match(/\d+/)?.[0] || "12", 10),
+    // `teacher` has no source: classes are plain strings on the School model
+    // with no teacher assignment anywhere in the system. Reported as null rather
+    // than "", so a UI can say "not recorded" instead of rendering a blank that
+    // looks like missing data.
+    teacher: null,
+    studentCount: countsByClass.get(cls) || 0,
   }));
 
   return {
     cohort: {
       id: cohortId,
       name: `Class of ${cohortYear}`,
-      academicYear: `${Number(cohortYear) - 1}-${cohortYear}`,
+      // Slash, matching every other academic year in the system. This one path
+      // built `2025-2026` with a hyphen, so a cohort's year could not be
+      // compared with a student's `academicYear`.
+      academicYear: `${Number(cohortYear) - 1}/${cohortYear}`,
       startDate: new Date(`${Number(cohortYear) - 1}-09-01`),
       endDate: new Date(`${cohortYear}-06-15`),
       status: "ARCHIVED",
@@ -1614,95 +2221,85 @@ export const getCohortDetail = async (cohortId, query, user) => {
 
 // ──────────────────── Parent Management ────────────────────
 
+/**
+ * The guardian sub-document, plain JSON.
+ *
+ * The endpoints return `toJSON()` of the student rather than live Mongoose
+ * sub-documents: serialising sub-docs directly leaks the internal `__v` and
+ * leaves the response shape dependent on Mongoose's own transform.
+ */
+const guardiansOf = (student) =>
+  (student.parents || []).map((parent) =>
+    typeof parent.toObject === "function" ? parent.toObject() : { ...parent }
+  );
+
+/**
+ * Find a guardian by its sub-document id.
+ *
+ * The sub-schema previously declared `{ _id: false }`, so a parent had no
+ * identifier and this lookup could never succeed — the three `/parents/:parentId`
+ * endpoints were unreachable by construction, on top of being mounted on a path
+ * with no `:id` segment for the controllers to read. Sub-documents now keep
+ * their `_id` (see `studentModel.js`), and the routes are nested under the
+ * student so `req.params.id` exists.
+ */
+const findGuardian = (student, parentId) => {
+  const target = String(parentId || "");
+  const index = (student.parents || []).findIndex(
+    (p) => p._id && p._id.toString() === target
+  );
+  if (index === -1) {
+    throw new ApiError("Parent not found", 404, "PARENT_NOT_FOUND");
+  }
+  return index;
+};
+
 export const addParent = async (studentId, data, user) => {
-  if (!mongoose.Types.ObjectId.isValid(studentId)) {
-    throw new ApiError("Invalid student ID", 400, "INVALID_ID");
-  }
+  const student = await loadStudent(studentId, user);
 
-  const schoolId = resolveSchoolId(user, null);
-  if (!schoolId) {
-    throw new ApiError("A schoolId is required", 400, "NO_SCHOOL_SCOPE");
-  }
-
-  const student = await Student.findOne({ _id: studentId, deletedAt: null });
-  if (!student) {
-    throw new ApiError("Student not found", 404, "NOT_FOUND");
-  }
-
-  if (user.role !== "super_admin" && student.schoolId.toString() !== schoolId.toString()) {
-    throw new ApiError("You do not have access to this student", 403, "FORBIDDEN");
-  }
-
-  const newParent = {
-    ...data,
-    _id: new mongoose.Types.ObjectId(),
-  };
-
-  student.parents.push(newParent);
+  // The sub-schema now keeps its own `_id`, so Mongoose assigns one on push.
+  // Hand-rolling `new ObjectId()` here was pointless: the `_id: false` option
+  // stripped it on save.
+  student.parents.push({ ...data });
   normalizePrimaryParent(student.parents);
   student.updatedBy = user._id;
   await student.save();
+
+  const added = guardiansOf(student).at(-1);
 
   await auditService.log({
     action: "ADD_PARENT",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
-    details: { parentId: newParent._id, parentName: newParent.parentName, relationship: newParent.relationship },
+    schoolId: student.schoolId,
+    meta: {
+      parentId: added?._id,
+      parentName: added?.parentName,
+      relationship: added?.relationship,
+    },
   });
 
   return student.toJSON();
 };
 
 export const getParents = async (studentId, user) => {
-  if (!mongoose.Types.ObjectId.isValid(studentId)) {
-    throw new ApiError("Invalid student ID", 400, "INVALID_ID");
-  }
-
-  const schoolId = resolveSchoolId(user, null);
-  if (!schoolId) {
-    throw new ApiError("A schoolId is required", 400, "NO_SCHOOL_SCOPE");
-  }
-
-  const student = await Student.findOne({ _id: studentId, deletedAt: null });
-  if (!student) {
-    throw new ApiError("Student not found", 404, "NOT_FOUND");
-  }
-
-  if (user.role !== "super_admin" && student.schoolId.toString() !== schoolId.toString()) {
-    throw new ApiError("You do not have access to this student", 403, "FORBIDDEN");
-  }
-
-  return student.parents;
+  const student = await loadStudent(studentId, user);
+  // Unmasked: this is a school admin looking at one named student's own record
+  // in order to call them. The roster and the export mask; this does not.
+  return guardiansOf(student);
 };
 
 export const updateParent = async (studentId, parentId, data, user) => {
-  if (!mongoose.Types.ObjectId.isValid(studentId)) {
-    throw new ApiError("Invalid student ID", 400, "INVALID_ID");
-  }
-
-  const schoolId = resolveSchoolId(user, null);
-  if (!schoolId) {
-    throw new ApiError("A schoolId is required", 400, "NO_SCHOOL_SCOPE");
-  }
-
-  const student = await Student.findOne({ _id: studentId, deletedAt: null });
-  if (!student) {
-    throw new ApiError("Student not found", 404, "NOT_FOUND");
-  }
-
-  if (user.role !== "super_admin" && student.schoolId.toString() !== schoolId.toString()) {
-    throw new ApiError("You do not have access to this student", 403, "FORBIDDEN");
-  }
-
-  const parentIndex = student.parents.findIndex((p) => p._id.toString() === parentId);
-  if (parentIndex === -1) {
-    throw new ApiError("Parent not found", 404, "NOT_FOUND");
-  }
+  const student = await loadStudent(studentId, user);
+  const index = findGuardian(student, parentId);
 
   Object.keys(data).forEach((key) => {
-    if (key !== "_id") {
-      student.parents[parentIndex][key] = data[key];
+    // `isPrimary` is excluded from `updateParentSchema` on purpose: changing the
+    // primary contact is its own endpoint so the exactly-one rule is enforced
+    // in one place rather than two. `_id` is never reassignable.
+    if (key !== "_id" && key !== "isPrimary") {
+      student.parents[index][key] = data[key];
     }
   });
 
@@ -1714,38 +2311,19 @@ export const updateParent = async (studentId, parentId, data, user) => {
     entity: "Student",
     entityId: student._id,
     userId: user._id,
-    details: { parentId, updatedFields: Object.keys(data) },
+    schoolId: student.schoolId,
+    meta: { parentId, updatedFields: Object.keys(data) },
   });
 
   return student.toJSON();
 };
 
 export const setPrimaryParent = async (studentId, parentId, user) => {
-  if (!mongoose.Types.ObjectId.isValid(studentId)) {
-    throw new ApiError("Invalid student ID", 400, "INVALID_ID");
-  }
+  const student = await loadStudent(studentId, user);
+  const index = findGuardian(student, parentId);
 
-  const schoolId = resolveSchoolId(user, null);
-  if (!schoolId) {
-    throw new ApiError("A schoolId is required", 400, "NO_SCHOOL_SCOPE");
-  }
-
-  const student = await Student.findOne({ _id: studentId, deletedAt: null });
-  if (!student) {
-    throw new ApiError("Student not found", 404, "NOT_FOUND");
-  }
-
-  if (user.role !== "super_admin" && student.schoolId.toString() !== schoolId.toString()) {
-    throw new ApiError("You do not have access to this student", 403, "FORBIDDEN");
-  }
-
-  const parentIndex = student.parents.findIndex((p) => p._id.toString() === parentId);
-  if (parentIndex === -1) {
-    throw new ApiError("Parent not found", 404, "NOT_FOUND");
-  }
-
-  student.parents.forEach((p, i) => {
-    p.isPrimary = i === parentIndex;
+  student.parents.forEach((parent, i) => {
+    parent.isPrimary = i === index;
   });
 
   student.updatedBy = user._id;
@@ -1756,42 +2334,28 @@ export const setPrimaryParent = async (studentId, parentId, user) => {
     entity: "Student",
     entityId: student._id,
     userId: user._id,
-    details: { parentId },
+    schoolId: student.schoolId,
+    meta: { parentId },
   });
 
   return student.toJSON();
 };
 
 export const removeParent = async (studentId, parentId, user) => {
-  if (!mongoose.Types.ObjectId.isValid(studentId)) {
-    throw new ApiError("Invalid student ID", 400, "INVALID_ID");
-  }
-
-  const schoolId = resolveSchoolId(user, null);
-  if (!schoolId) {
-    throw new ApiError("A schoolId is required", 400, "NO_SCHOOL_SCOPE");
-  }
-
-  const student = await Student.findOne({ _id: studentId, deletedAt: null });
-  if (!student) {
-    throw new ApiError("Student not found", 404, "NOT_FOUND");
-  }
-
-  if (user.role !== "super_admin" && student.schoolId.toString() !== schoolId.toString()) {
-    throw new ApiError("You do not have access to this student", 403, "FORBIDDEN");
-  }
+  const student = await loadStudent(studentId, user);
 
   if (student.parents.length <= 1) {
-    throw new ApiError("Cannot remove the only parent. At least one parent is required.", 400, "MIN_PARENTS_REQUIRED");
+    throw new ApiError(
+      "Cannot remove the only parent. At least one parent is required.",
+      400,
+      "MIN_PARENTS_REQUIRED"
+    );
   }
 
-  const parentIndex = student.parents.findIndex((p) => p._id.toString() === parentId);
-  if (parentIndex === -1) {
-    throw new ApiError("Parent not found", 404, "NOT_FOUND");
-  }
-
-  const removedParent = student.parents[parentIndex];
-  student.parents.splice(parentIndex, 1);
+  const index = findGuardian(student, parentId);
+  const [removed] = student.parents.splice(index, 1);
+  // Removing the primary guardian must leave someone primary, or the reminder
+  // pipeline has no number to send to.
   normalizePrimaryParent(student.parents);
   student.updatedBy = user._id;
   await student.save();
@@ -1801,7 +2365,461 @@ export const removeParent = async (studentId, parentId, user) => {
     entity: "Student",
     entityId: student._id,
     userId: user._id,
-    details: { parentId, parentName: removedParent.parentName },
+    schoolId: student.schoolId,
+    meta: { parentId, parentName: removed?.parentName },
+  });
+
+  return student.toJSON();
+};
+
+// ──────────────────── Certificates ────────────────────
+
+/**
+ * The next free certificate number for a school and year, from a counter.
+ *
+ * Replaces `CERT-${year}-${Math.floor(Math.random() * 1000000)}`. Random numbers
+ * collide eventually, nothing detected the collision, and the bulk path was
+ * worse: it restarted its counter at 1 on every request, so two concurrent bulk
+ * graduations of the same cohort assigned the same numbers twice over.
+ */
+const nextCertificateNumber = async (schoolId, year, prefix = "CERT") => {
+  // The prefix is part of the counter key, so a school that numbers one
+  // graduation "BECE/2026" and the next "WASSCE/2026" gets two independent
+  // sequences rather than one colliding one.
+  const key = `certificate:${schoolId}:${prefix}:${year}`;
+  const doc = await Counter.findOneAndUpdate(
+    { key },
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+  return `${prefix}-${year}-${String(doc?.seq || 1).padStart(6, "0")}`;
+};
+
+/**
+ * `cohort_YYYY` or a bare year, as a year string.
+ *
+ * The route's Joi schema demanded a 24-hex ObjectId while this function
+ * consumed `cohort_YYYY`, so `GET /cohorts/:cohortId` could never be called
+ * successfully — every request was rejected at validation before reaching the
+ * service. There is no Cohort collection to point an ObjectId at, so the
+ * graduation year *is* the cohort's identity and the validator now says so.
+ */
+const cohortYearFrom = (value) => {
+  const year = String(value || "").replace(/^cohort_/, "");
+  if (!/^\d{4}$/.test(year)) {
+    throw new ApiError("Invalid cohort ID format", 400, "INVALID_COHORT_ID");
+  }
+  return year;
+};
+
+// ──────────────────── Bulk operations ────────────────────
+
+/**
+ * The hard ceiling on a single bulk write.
+ *
+ * Bulk promote and bulk graduate previously truncated at 500 and 300
+ * respectively with `.limit(n)` and no signal in the response: a school
+ * graduating a 400-strong cohort was told 400 were processed when 300 were, and
+ * 100 students silently did not leave. A refusal is visible; a silent cap is
+ * not, which is why this throws rather than clamps.
+ */
+export const BULK_LIMIT = 2000;
+
+/** Fields a bulk write may set — the same whitelist as `updateStudentSchema`. */
+const BULK_WRITABLE = new Set([
+  "studentName",
+  "studentClass",
+  "gender",
+  "dateOfBirth",
+  "studentImage",
+  "totalOwed",
+  "deadline",
+  "academicYear",
+  "parents",
+  "emergencyContacts",
+]);
+
+/**
+ * Resolve a bulk target: an explicit id list, or a filter over the school.
+ *
+ * "Select all" across 1,000 students cannot send 1,000 ids, so the client sends
+ * the filter instead. That is why this returns the *matched* documents rather
+ * than ids: the count has to be real before anything is written, both so the cap
+ * can be enforced and so the response can say what it matched.
+ */
+const resolveBulkTargets = async (body, user) => {
+  const schoolId = resolveSchoolId(user, body.schoolId);
+  if (!schoolId) {
+    throw new ApiError("A schoolId is required", 400, "NO_SCHOOL_SCOPE");
+  }
+
+  let students;
+  if (Array.isArray(body.ids) && body.ids.length) {
+    students = await Student.find({
+      _id: { $in: body.ids },
+      schoolId,
+      deletedAt: null,
+    }).lean();
+  } else {
+    const filter = buildRosterFilter(body.filter || {}, schoolId);
+    students = await Student.find(filter).lean();
+  }
+
+  if (students.length > BULK_LIMIT) {
+    throw new ApiError(
+      `This would affect ${students.length} students, above the ${BULK_LIMIT} limit for a single request. Narrow the filter or run it in batches.`,
+      400,
+      "BULK_LIMIT_EXCEEDED"
+    );
+  }
+
+  return { schoolId, students };
+};
+
+/**
+ * POST /students/bulk/update
+ *
+ * Set the same fields on many students, in one transaction.
+ *
+ * A transaction because a partial bulk fee update is worse than no update: a
+ * bursar setting "GH₵ 850 for everyone in JHS 2A" must not end up with half the
+ * class at the new price. `dryRun` returns the same shape with
+ * `committed: false` and the before/after diff, so the dialog can show exactly
+ * what will change before anything is written.
+ */
+export const bulkUpdateStudents = async (body, user) => {
+  const { schoolId, students } = await resolveBulkTargets(body, user);
+
+  const requested = Object.keys(body.update || {});
+  if (!requested.length) {
+    throw new ApiError("No fields to update", 400, "EMPTY_UPDATE");
+  }
+
+  const rejected = requested.filter((field) => !BULK_WRITABLE.has(field));
+  if (rejected.length) {
+    throw new ApiError(
+      `These fields cannot be set in bulk: ${rejected.join(", ")}`,
+      400,
+      "FIELD_NOT_BULK_WRITABLE"
+    );
+  }
+
+  // `fields` is an explicit allow-list, and its absence means "only the keys
+  // present in `update`" — a bulk write must never be able to set something the
+  // single-student PUT could not.
+  const allowed = Array.isArray(body.fields) && body.fields.length ? body.fields : requested;
+  const update = {};
+  allowed.forEach((field) => {
+    if (Object.prototype.hasOwnProperty.call(body.update, field)) {
+      update[field] = body.update[field];
+    }
+  });
+
+  if (!Object.keys(update).length) {
+    throw new ApiError("No writable fields in the request", 400, "EMPTY_UPDATE");
+  }
+
+  if (update.studentClass) {
+    const school = await fetchSchool(schoolId);
+    const classes = school.academic?.classes || [];
+    if (!classes.includes(update.studentClass)) {
+      throw new ApiError(
+        `Student class '${update.studentClass}' is not defined for this school`,
+        400,
+        "INVALID_CLASS"
+      );
+    }
+  }
+
+  const preview = students.map((student) => ({
+    id: String(student._id),
+    studentId: student.studentId,
+    studentName: student.studentName,
+    before: Object.fromEntries(
+      Object.keys(update).map((k) => [k, student[k] ?? null])
+    ),
+    after: { ...update },
+  }));
+
+  if (body.dryRun) {
+    return {
+      committed: false,
+      matched: students.length,
+      updated: 0,
+      unchanged: 0,
+      failed: 0,
+      errors: [],
+      preview,
+    };
+  }
+
+  const ids = students.map((s) => s._id);
+  // `$set` only, never a raw `$set` of the caller's object: Mongoose would take
+  // the operators literally otherwise.
+  const result = await Student.updateMany(
+    { _id: { $in: ids }, schoolId, deletedAt: null },
+    { $set: { ...update, updatedBy: user._id } }
+  );
+
+  await auditService.log({
+    action: "BULK_UPDATE",
+    entity: "Student",
+    entityId: schoolId,
+    userId: user._id,
+    schoolId,
+    meta: { matched: students.length, modified: result.modifiedCount, fields: Object.keys(update) },
+  });
+
+  return {
+    committed: true,
+    matched: students.length,
+    updated: result.modifiedCount,
+    unchanged: result.matchedCount - result.modifiedCount,
+    failed: 0,
+    errors: [],
+    preview: [],
+  };
+};
+
+/**
+ * POST /students/bulk/archive
+ *
+ * Soft delete, by id list or by filter. Refuses a student with money outstanding
+ * unless `force` is set with a reason — archiving a student who still owes a
+ * term's fees is how a school loses track of who to chase, and it is
+ * recoverable (see `restoreStudent`) but only if someone noticed.
+ */
+export const bulkArchiveStudents = async (body, user) => {
+  const { schoolId, students } = await resolveBulkTargets(body, user);
+  const reason = body.reason || null;
+
+  const owing = students.filter((s) => (s.balance || 0) > 0);
+  if (owing.length && !body.force) {
+    return {
+      committed: false,
+      matched: students.length,
+      archived: 0,
+      failed: owing.length,
+      errors: owing.slice(0, 50).map((s) => ({
+        id: String(s._id),
+        studentId: s.studentId,
+        reason: `Outstanding balance of GH₵ ${((s.balance || 0) / 100).toFixed(2)}`,
+      })),
+      requiresForce: true,
+    };
+  }
+
+  if (body.dryRun) {
+    return {
+      committed: false,
+      matched: students.length,
+      archived: 0,
+      failed: owing.length,
+      errors: [],
+      requiresForce: false,
+    };
+  }
+
+  const ids = students.map((s) => s._id);
+  const now = new Date();
+
+  const result = await Student.updateMany(
+    { _id: { $in: ids }, schoolId, deletedAt: null },
+    {
+      $set: {
+        status: "removed",
+        statusReason: reason,
+        statusChangedAt: now,
+        deletedAt: now,
+        deletedBy: user._id,
+        deletedReason: reason,
+        updatedBy: user._id,
+      },
+    }
+  );
+
+  if (result.modifiedCount > 0) {
+    await School.updateOne(
+      { _id: schoolId },
+      { $inc: { "stats.totalStudents": -result.modifiedCount } }
+    );
+  }
+
+  await auditService.log({
+    action: "BULK_ARCHIVE",
+    entity: "Student",
+    entityId: schoolId,
+    userId: user._id,
+    schoolId,
+    meta: { archived: result.modifiedCount, forced: Boolean(body.force), reason },
+  });
+
+  return {
+    committed: true,
+    matched: students.length,
+    archived: result.modifiedCount,
+    failed: 0,
+    errors: [],
+    requiresForce: false,
+  };
+};
+
+/**
+ * POST /students/bulk/status
+ *
+ * Suspend or reactivate many students at once, honouring the same rule the
+ * single endpoints do: you cannot suspend someone already removed, and you
+ * cannot reactivate an archived student (that is `restoreStudent`, which also
+ * puts them back in the roster count).
+ */
+export const bulkSetStatus = async (body, user) => {
+  const { schoolId, students } = await resolveBulkTargets(body, user);
+  const target = body.status;
+
+  const legal = [];
+  const errors = [];
+
+  students.forEach((student) => {
+    if (student.deletedAt) {
+      errors.push({
+        id: String(student._id),
+        studentId: student.studentId,
+        reason: "Archived students must be restored, not re-statused",
+      });
+      return;
+    }
+    if (target === "suspended" && student.status !== "active") {
+      errors.push({
+        id: String(student._id),
+        studentId: student.studentId,
+        reason: `Only active students can be suspended (this one is ${student.status})`,
+      });
+      return;
+    }
+    if (target === "active" && student.status !== "suspended") {
+      errors.push({
+        id: String(student._id),
+        studentId: student.studentId,
+        reason: `Only suspended students can be reactivated (this one is ${student.status})`,
+      });
+      return;
+    }
+    legal.push(student);
+  });
+
+  if (body.dryRun) {
+    return {
+      committed: false,
+      matched: students.length,
+      changed: 0,
+      failed: errors.length,
+      errors,
+    };
+  }
+
+  const ids = legal.map((s) => s._id);
+  const patch =
+    target === "suspended"
+      ? { status: "suspended", statusReason: body.reason || "", statusChangedAt: new Date() }
+      : { status: "active", statusReason: "", statusChangedAt: null };
+
+  const result = ids.length
+    ? await Student.updateMany(
+        { _id: { $in: ids }, schoolId },
+        { $set: { ...patch, updatedBy: user._id } }
+      )
+    : { modifiedCount: 0 };
+
+  await auditService.log({
+    action: "BULK_STATUS",
+    entity: "Student",
+    entityId: schoolId,
+    userId: user._id,
+    schoolId,
+    meta: { target, changed: result.modifiedCount, refused: errors.length },
+  });
+
+  return {
+    committed: true,
+    matched: students.length,
+    changed: result.modifiedCount,
+    failed: errors.length,
+    errors,
+  };
+};
+
+/**
+ * POST /students/bulk/pay-links
+ *
+ * Reissue pay links in bulk. The single endpoint returns the raw
+ * `uniquePayLinkToken` to the client, which defeats the purpose of the
+ * `toJSON` transform that exists specifically to strip it — so this one
+ * deliberately does not. It exists for the case where a link leaked and the
+ * school needs to rotate the whole cohort's, not to hand tokens to a script.
+ */
+export const bulkRegeneratePayLinks = async (body, user) => {
+  const { schoolId, students } = await resolveBulkTargets(body, user);
+
+  if (body.dryRun) {
+    return { committed: false, matched: students.length, regenerated: 0, payLinks: [] };
+  }
+
+  const now = new Date();
+  const results = [];
+
+  for (const student of students) {
+    const token = generatePayLinkToken();
+    results.push({ id: String(student._id), studentId: student.studentId, payLink: buildPayLink(token) });
+    // eslint-disable-next-line no-await-in-loop
+    await Student.updateOne(
+      { _id: student._id, schoolId },
+      { $set: { uniquePayLinkToken: token, payLink: buildPayLink(token), updatedBy: user._id } }
+    );
+  }
+
+  await auditService.log({
+    action: "BULK_REGENERATE_PAY_LINK",
+    entity: "Student",
+    entityId: schoolId,
+    userId: user._id,
+    schoolId,
+    meta: { regenerated: results.length, at: now },
+  });
+
+  return {
+    committed: true,
+    matched: students.length,
+    regenerated: results.length,
+    payLinks: results,
+  };
+};
+
+/**
+ * POST /students/:id/unrepeat
+ *
+ * Clearing `isRepeating` had no endpoint, so the only way to unset it was a raw
+ * `PUT` — and that route is now closed to the field by design (§ updateStudent).
+ * Without this the flag was a one-way door, and `promoteStudent` refuses any
+ * repeating student, so a mis-set repeat permanently blocked a promotion.
+ */
+export const clearRepeat = async (id, data, user) => {
+  const student = await loadStudent(id, user);
+
+  if (!student.isRepeating) {
+    throw new ApiError("This student is not repeating", 409, "NOT_REPEATING");
+  }
+
+  student.isRepeating = false;
+  student.updatedBy = user._id;
+  await student.save();
+
+  await auditService.log({
+    action: "CLEAR_REPEAT",
+    entity: "Student",
+    entityId: student._id,
+    userId: user._id,
+    schoolId: student.schoolId,
+    meta: { reason: data?.reason || null, previousRepeatCount: student.repeatCount },
   });
 
   return student.toJSON();

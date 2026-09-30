@@ -38,8 +38,19 @@ const parentSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
-  },
-  { _id: false }
+  }
+  // NOTE: sub-documents keep their own `_id` (Mongoose's default).
+  //
+  // They previously declared `{ _id: false }`, which made the three
+  // `/students/:id/parents/:parentId` endpoints impossible: there was no
+  // identifier to address a single parent by, so every update set the primary
+  // and removed the wrong record. `addParent` had been pushing a hand-rolled
+  // `_id` that the `_id: false` option then stripped on save.
+  //
+  // The proper follow-up is promoting parents to their own collection, which
+  // would also give `Payment.parentId` (currently an untyped ObjectId with no
+  // `ref`) a real target. That is a migration; this fix is not, and until it
+  // happens the embedded array works and is addressable.
 );
 
 // ──────────────────── Emergency contact subdocument ────────────────────
@@ -99,6 +110,22 @@ const studentModel = new mongoose.Schema(
       trim: true,
       minlength: 2,
       maxlength: 100,
+    },
+    // Derived from studentName by the pre-save hook; never set by a client.
+    // They exist because `alumniQuerySchema` and `cohortDetailQuerySchema` both
+    // offer `lastName` as a sortBy — sorting on a field that did not exist was
+    // silently a no-op, and the sort was never applied.
+    firstName: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+    lastName: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
     },
     studentClass: {
       type: String,
@@ -223,6 +250,27 @@ const studentModel = new mongoose.Schema(
       type: String,
       default: null,
     },
+    // The three fields below were assigned in `graduateStudent` and
+    // `bulkGraduateStudents` and read back by `getAlumni` and `getCohorts`, but
+    // were never declared here. With Mongoose `strict` on (the default) the
+    // writes were dropped on save, so filtering alumni by honours returned an
+    // empty list, sorting by certificate number was ignored, and the duplicate
+    // certificate guard queried a path that did not exist.
+    graduationType: {
+      type: String,
+      enum: ["STANDARD", "EARLY", "HONORARY", "DEFERRED"],
+      default: null,
+    },
+    certificateNumber: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    honors: {
+      type: String,
+      enum: ["NONE", "HONORS", "HIGH_HONORS", "HIGHEST_HONORS"],
+      default: "NONE",
+    },
     isAlumni: {
       type: Boolean,
       default: false,
@@ -238,6 +286,25 @@ const studentModel = new mongoose.Schema(
     isRepeating: {
       type: Boolean,
       default: false,
+    },
+    // Incremented only by the repeat transition. Previously the repeat count was
+    // derived by scanning `classHistory` on every call to `repeatStudent`, so
+    // the array grew without bound and the guard cost grew with it.
+    repeatCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    // The destination of a transfer-out was built in memory, returned to the
+    // caller and then discarded — nothing on the student recorded where they
+    // went. `transferOutRecord` persists the whole submission.
+    transferOutRecord: {
+      destinationInstitution: { type: String, trim: true, default: null },
+      destinationInstitutionType: { type: String, trim: true, default: null },
+      contactPerson: { type: String, trim: true, default: null },
+      contactEmail: { type: String, lowercase: true, trim: true, default: null },
+      contactPhone: { type: String, trim: true, default: null },
+      recordsTransferred: { type: Boolean, default: false },
     },
     classHistory: {
       type: [classHistorySchema],
@@ -267,6 +334,17 @@ const studentModel = new mongoose.Schema(
       default: null,
       index: true,
     },
+    deletedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    deletedReason: {
+      type: String,
+      trim: true,
+      maxlength: 300,
+      default: null,
+    },
   },
   { timestamps: true }
 );
@@ -279,9 +357,31 @@ studentModel.index({ schoolId: 1, studentId: 1 }, { unique: true });
 // sender has to be resolved back to a school by parent number. Without this
 // index that lookup is a collection scan on every webhook delivery.
 studentModel.index({ "parents.phone": 1 });
+// The roster's default filter is exactly school + status + class, and it is the
+// query behind every page of the Students module. It was previously satisfied by
+// two separate single-field indexes, which Mongo can only intersect at high cost.
+studentModel.index({ schoolId: 1, status: 1, studentClass: 1 });
+// Certificate numbers must be unique within a school, and only among students
+// that actually have one — a partial index so the many nulls in a live roster
+// do not collide with each other.
+studentModel.index(
+  { schoolId: 1, certificateNumber: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { certificateNumber: { $type: "string" } },
+  }
+);
 
 // ── Pre-save hooks ──
 studentModel.pre("save", async function () {
+  // Derive firstName / lastName from studentName. Derived rather than accepted
+  // from a client so the two can never disagree — a payload that set
+  // `lastName: "Mensah"` on a student named "Kwame Mensah Jr" would otherwise
+  // sort and search under a name the school never entered.
+  const nameParts = String(this.studentName || "").trim().split(/\s+/).filter(Boolean);
+  this.firstName = nameParts[0] || "";
+  this.lastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : "";
+
   // Auto-generate studentId if missing (safety net; the service normally
   // generates it so it can retry on rare collisions).
   if (!this.studentId) {

@@ -2,9 +2,12 @@ import {
   createStudent,
   bulkCreateStudents,
   listStudents,
+  getStudentStats,
+  getStudentProfile,
   getStudentById,
   updateStudent,
   deleteStudent,
+  restoreStudent,
   suspendStudent,
   reactivateStudent,
   removeStudent,
@@ -15,6 +18,7 @@ import {
   bulkPromoteStudents,
   previewPromotion,
   repeatStudent,
+  clearRepeat,
   graduateStudent,
   bulkGraduateStudents,
   transferOutStudent,
@@ -26,7 +30,30 @@ import {
   updateParent,
   setPrimaryParent,
   removeParent,
+  bulkUpdateStudents,
+  bulkArchiveStudents,
+  bulkSetStatus,
+  bulkRegeneratePayLinks,
 } from "../services/student.service.js";
+
+/**
+ * The one error responder for every controller in this module.
+ *
+ * `ApiError` in the service carries a `code` on ~30 distinct conditions
+ * (`INVALID_CLASS`, `MAX_REPEATS_EXCEEDED`, `BULK_LIMIT_EXCEEDED`,
+ * `STUDENT_REPEATING`, …) and every controller previously returned only
+ * `{ success, message }`, so all of that was thrown away. A client could not
+ * branch on a code and had to string-match an English sentence, which breaks the
+ * moment the copy is edited. `api.js` on the frontend already branches on
+ * `data.code` for `SCHOOL_NOT_LINKED`, so the contract exists — this module
+ * just never sent it.
+ */
+const fail = (res, error) =>
+  res.status(error.status || 500).json({
+    success: false,
+    message: error.message,
+    code: error.code || "INTERNAL_ERROR",
+  });
 
 // ─────────────────────────────────────────────
 // CREATE STUDENT (single)
@@ -41,10 +68,7 @@ export const createStudentController = async (req, res) => {
       data: student,
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -77,10 +101,7 @@ export const bulkCreateStudentsController = async (req, res) => {
       },
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -98,10 +119,33 @@ export const listStudentsController = async (req, res) => {
       meta: result.meta,
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
+    return fail(res, error);
+  }
+};
+
+// ─────────────────────────────────────────────
+// ROSTER AGGREGATES (the Students module KPI band)
+// ─────────────────────────────────────────────
+export const getStudentStatsController = async (req, res) => {
+  try {
+    const data = await getStudentStats(req.query, req.user);
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+// ─────────────────────────────────────────────
+// STUDENT PROFILE PREVIEW (one aggregate, one render)
+// ─────────────────────────────────────────────
+export const getStudentProfileController = async (req, res) => {
+  try {
+    const data = await getStudentProfile(req.params.id, req.user, {
+      includeDeleted: req.query.includeDeleted === "true",
     });
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    return fail(res, error);
   }
 };
 
@@ -118,10 +162,7 @@ export const getStudentController = async (req, res) => {
       data: student,
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -138,10 +179,7 @@ export const updateStudentController = async (req, res) => {
       data: student,
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -157,10 +195,122 @@ export const deleteStudentController = async (req, res) => {
       message: result.message,
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
+    return fail(res, error);
+  }
+};
+
+// ─────────────────────────────────────────────
+// RESTORE AN ARCHIVED STUDENT
+// ─────────────────────────────────────────────
+export const restoreStudentController = async (req, res) => {
+  try {
+    const student = await restoreStudent(req.params.id, req.user);
+    return res.status(200).json({
+      success: true,
+      message: "Student restored to the roster",
+      data: student,
     });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+// ─────────────────────────────────────────────
+// CLEAR REPEAT
+// ─────────────────────────────────────────────
+export const clearRepeatController = async (req, res) => {
+  try {
+    const student = await clearRepeat(req.params.id, req.body, req.user);
+    return res.status(200).json({
+      success: true,
+      message: "Repeat flag cleared",
+      data: student,
+    });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+// ─────────────────────────────────────────────
+// BULK UPDATE STUDENTS
+// ─────────────────────────────────────────────
+export const bulkUpdateStudentsController = async (req, res) => {
+  try {
+    const result = await bulkUpdateStudents(req.body, req.user);
+    return res.status(200).json({
+      success: true,
+      message: result.committed
+        ? `${result.updated} students updated`
+        : `Preview of ${result.matched} students — nothing was written`,
+      data: result,
+    });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+// ─────────────────────────────────────────────
+// BULK ARCHIVE STUDENTS
+// ─────────────────────────────────────────────
+export const bulkArchiveStudentsController = async (req, res) => {
+  try {
+    const result = await bulkArchiveStudents(req.body, req.user);
+    // 409 rather than 200 when the archive was refused for outstanding
+    // balances: the request was understood and deliberately not performed, and
+    // a 200 would let a client treat it as a success it was not.
+    if (result.requiresForce) {
+      return res.status(409).json({
+        success: false,
+        message: `${result.failed} students have an outstanding balance. Re-send with force to archive them anyway.`,
+        code: "OUTSTANDING_BALANCE",
+        data: result,
+      });
+    }
+    return res.status(200).json({
+      success: true,
+      message: result.committed
+        ? `${result.archived} students archived`
+        : `Preview of ${result.matched} students — nothing was written`,
+      data: result,
+    });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+// ─────────────────────────────────────────────
+// BULK SET STATUS
+// ─────────────────────────────────────────────
+export const bulkSetStatusController = async (req, res) => {
+  try {
+    const result = await bulkSetStatus(req.body, req.user);
+    return res.status(200).json({
+      success: true,
+      message: result.committed
+        ? `${result.changed} students updated`
+        : `Preview of ${result.matched} students — nothing was written`,
+      data: result,
+    });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+// ─────────────────────────────────────────────
+// BULK REGENERATE PAY LINKS
+// ─────────────────────────────────────────────
+export const bulkRegeneratePayLinksController = async (req, res) => {
+  try {
+    const result = await bulkRegeneratePayLinks(req.body, req.user);
+    return res.status(200).json({
+      success: true,
+      message: result.committed
+        ? `${result.regenerated} pay links regenerated`
+        : `Preview of ${result.matched} students — nothing was written`,
+      data: result,
+    });
+  } catch (error) {
+    return fail(res, error);
   }
 };
 
@@ -186,10 +336,7 @@ export const suspendStudentController = async (req, res) => {
       data: student,
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -206,10 +353,7 @@ export const reactivateStudentController = async (req, res) => {
       data: student,
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -225,10 +369,7 @@ export const removeStudentController = async (req, res) => {
       message: result.message,
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -247,10 +388,7 @@ export const transferStudentController = async (req, res) => {
       data: student,
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -269,10 +407,7 @@ export const regeneratePayLinkController = async (req, res) => {
       data: result,
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -289,10 +424,7 @@ export const exportStudentsController = async (req, res) => {
 
     return res.send(result.content);
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -309,10 +441,7 @@ export const promoteStudentController = async (req, res) => {
       data: { student },
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -330,10 +459,7 @@ export const bulkPromoteStudentsController = async (req, res) => {
       data: result,
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -350,10 +476,7 @@ export const previewPromotionController = async (req, res) => {
       data: result,
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -370,10 +493,7 @@ export const repeatStudentController = async (req, res) => {
       data: { student },
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -390,10 +510,7 @@ export const graduateStudentController = async (req, res) => {
       data: result,
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -411,10 +528,7 @@ export const bulkGraduateStudentsController = async (req, res) => {
       data: result,
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -431,10 +545,7 @@ export const transferOutStudentController = async (req, res) => {
       data: result,
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -451,10 +562,7 @@ export const getAlumniController = async (req, res) => {
       data: result,
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -471,10 +579,7 @@ export const getCohortsController = async (req, res) => {
       data: result,
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -491,10 +596,7 @@ export const getCohortDetailController = async (req, res) => {
       data: result,
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -511,10 +613,7 @@ export const addParentController = async (req, res) => {
       data: { student },
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -531,10 +630,7 @@ export const getParentsController = async (req, res) => {
       data: { parents },
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -543,7 +639,16 @@ export const getParentsController = async (req, res) => {
 // ─────────────────────────────────────────────
 export const updateParentController = async (req, res) => {
   try {
-    const student = await updateParent(req.params.id, req.params.parentId, req.body, req.user);
+    // Both params come from the route now. The routes were mounted at
+    // `/parents/:parentId` while the controllers read `req.params.id`, so
+    // `studentId` was `undefined`, the lookup was `findOne({ _id: undefined })`
+    // and every one of the three parent writes 400'd.
+    const student = await updateParent(
+      req.params.id,
+      req.params.parentId,
+      req.body,
+      req.user
+    );
 
     return res.status(200).json({
       success: true,
@@ -551,10 +656,7 @@ export const updateParentController = async (req, res) => {
       data: { student },
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -571,10 +673,7 @@ export const setPrimaryParentController = async (req, res) => {
       data: { student },
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };
 
@@ -591,9 +690,6 @@ export const removeParentController = async (req, res) => {
       data: { student },
     });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message,
-    });
+    return fail(res, error);
   }
 };

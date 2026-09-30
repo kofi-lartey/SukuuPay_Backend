@@ -3,9 +3,12 @@ import {
   createStudentController,
   bulkCreateStudentsController,
   listStudentsController,
+  getStudentStatsController,
+  getStudentProfileController,
   getStudentController,
   updateStudentController,
   deleteStudentController,
+  restoreStudentController,
   suspendStudentController,
   reactivateStudentController,
   removeStudentController,
@@ -16,6 +19,7 @@ import {
   bulkPromoteStudentsController,
   previewPromotionController,
   repeatStudentController,
+  clearRepeatController,
   graduateStudentController,
   bulkGraduateStudentsController,
   transferOutStudentController,
@@ -27,6 +31,10 @@ import {
   updateParentController,
   setPrimaryParentController,
   removeParentController,
+  bulkUpdateStudentsController,
+  bulkArchiveStudentsController,
+  bulkSetStatusController,
+  bulkRegeneratePayLinksController,
 } from "../controllers/student.controller.js";
 import { authenticate, authorize } from "../middleware/authenticate.js";
 import { validate } from "../middleware/validate.js";
@@ -37,12 +45,14 @@ import {
   bulkUploadMetaSchema,
   studentIdParamSchema,
   listStudentsQuerySchema,
+  statsQuerySchema,
   suspendStudentSchema,
   transferClassSchema,
   promoteStudentSchema,
   bulkPromoteSchema,
   previewPromotionSchema,
   repeatStudentSchema,
+  clearRepeatSchema,
   graduateStudentSchema,
   bulkGraduateSchema,
   transferOutSchema,
@@ -53,14 +63,56 @@ import {
   cohortIdParamSchema,
   addParentSchema,
   updateParentSchema,
-  parentIdParamSchema,
+  studentParentParamsSchema,
   setPrimaryParentSchema,
+  archiveStudentSchema,
+  bulkUpdateSchema,
+  bulkArchiveSchema,
+  bulkStatusSchema,
+  bulkPayLinksSchema,
 } from "../validations/student.validation.js";
 
 export const studentRoute = Router();
 
 // Manage who can manage students: school admins and super admins.
 const requireSchoolAdmin = authorize("super_admin", "school_admin");
+
+// ── Bulk writes ──
+// Registered before the `/:id` routes below. Express matches in registration
+// order, and `POST /students/bulk/update` shares a prefix with nothing that
+// `/:id` claims, but keeping the group together at the top makes the ordering
+// dependency of the file obvious rather than incidental.
+studentRoute.post(
+  "/students/bulk/update",
+  authenticate,
+  requireSchoolAdmin,
+  validate(bulkUpdateSchema),
+  bulkUpdateStudentsController
+);
+
+studentRoute.post(
+  "/students/bulk/archive",
+  authenticate,
+  requireSchoolAdmin,
+  validate(bulkArchiveSchema),
+  bulkArchiveStudentsController
+);
+
+studentRoute.post(
+  "/students/bulk/status",
+  authenticate,
+  requireSchoolAdmin,
+  validate(bulkStatusSchema),
+  bulkSetStatusController
+);
+
+studentRoute.post(
+  "/students/bulk/pay-links",
+  authenticate,
+  requireSchoolAdmin,
+  validate(bulkPayLinksSchema),
+  bulkRegeneratePayLinksController
+);
 
 // ── Single create ──
 studentRoute.post(
@@ -91,6 +143,16 @@ studentRoute.get(
   listStudentsController
 );
 
+// ── Roster aggregates ──
+// Must precede `/students/:id` or "stats" is captured as an id and rejected by
+// `studentIdParamSchema`.
+studentRoute.get(
+  "/students/stats",
+  authenticate,
+  validate(statsQuerySchema, "query"),
+  getStudentStatsController
+);
+
 // ── Export (must precede /:id so "/export" is not captured as an id) ──
 studentRoute.get(
   "/students/export",
@@ -107,6 +169,15 @@ studentRoute.get(
   getStudentController
 );
 
+// Everything the profile drawer needs in one round trip. Registered before
+// `/:id` so the literal segment is not swallowed by the parameter.
+studentRoute.get(
+  "/students/:id/profile",
+  authenticate,
+  validate(studentIdParamSchema, "params"),
+  getStudentProfileController
+);
+
 studentRoute.put(
   "/students/:id",
   authenticate,
@@ -121,7 +192,19 @@ studentRoute.delete(
   authenticate,
   requireSchoolAdmin,
   validate(studentIdParamSchema, "params"),
+  validate(archiveStudentSchema),
   deleteStudentController
+);
+
+// ── Restore ──
+// The inverse of the archive. Without it a mis-click on a bulk selection is
+// permanent: there is no hard delete to be careful of, and no way back either.
+studentRoute.post(
+  "/students/:id/restore",
+  authenticate,
+  requireSchoolAdmin,
+  validate(studentIdParamSchema, "params"),
+  restoreStudentController
 );
 
 // ── State transitions ──
@@ -142,11 +225,15 @@ studentRoute.put(
   reactivateStudentController
 );
 
+// Alias of `DELETE /students/:id`, kept so existing clients keep working. Both
+// now archive; they were byte-for-byte identical before, differing only in the
+// word in their response message.
 studentRoute.put(
   "/students/:id/remove",
   authenticate,
   requireSchoolAdmin,
   validate(studentIdParamSchema, "params"),
+  validate(archiveStudentSchema),
   removeStudentController
 );
 
@@ -206,6 +293,19 @@ studentRoute.post(
   repeatStudentController
 );
 
+// Clearing the flag. `updateStudentSchema` no longer accepts `isRepeating`, so
+// this is the only way to unset it — and without it the flag was a one-way
+// door: `promoteStudent` refuses any repeating student, so a mis-set repeat
+// permanently blocked a promotion.
+studentRoute.post(
+  "/students/:id/unrepeat",
+  authenticate,
+  requireSchoolAdmin,
+  validate(studentIdParamSchema, "params"),
+  validate(clearRepeatSchema),
+  clearRepeatController
+);
+
 // ── Graduation endpoints ──
 studentRoute.post(
   "/students/:id/graduate",
@@ -236,6 +336,14 @@ studentRoute.post(
 );
 
 // ── Parent management ──
+//
+// All four are nested under `/students/:id`.
+//
+// They used to be `/parents/:parentId` while the controllers read
+// `req.params.id` — a path with no `:id` segment, so `studentId` arrived as
+// `undefined` and every write failed. The nesting also makes the resource
+// obvious: a guardian is addressed as a child of a student, not as a global
+// record.
 studentRoute.post(
   "/students/:id/parents",
   authenticate,
@@ -245,36 +353,40 @@ studentRoute.post(
   addParentController
 );
 
+// Guarded by role now. It was authenticated only, so any signed-in user — a
+// teacher, a viewer — could read every guardian's full phone number from a
+// school they had no administrative role in.
 studentRoute.get(
   "/students/:id/parents",
   authenticate,
+  requireSchoolAdmin,
   validate(studentIdParamSchema, "params"),
   getParentsController
 );
 
 studentRoute.put(
-  "/parents/:parentId",
+  "/students/:id/parents/:parentId",
   authenticate,
   requireSchoolAdmin,
-  validate(parentIdParamSchema, "params"),
+  validate(studentParentParamsSchema, "params"),
   validate(updateParentSchema),
   updateParentController
 );
 
 studentRoute.put(
-  "/parents/:parentId/primary",
+  "/students/:id/parents/:parentId/primary",
   authenticate,
   requireSchoolAdmin,
-  validate(parentIdParamSchema, "params"),
+  validate(studentParentParamsSchema, "params"),
   validate(setPrimaryParentSchema),
   setPrimaryParentController
 );
 
 studentRoute.delete(
-  "/parents/:parentId",
+  "/students/:id/parents/:parentId",
   authenticate,
   requireSchoolAdmin,
-  validate(parentIdParamSchema, "params"),
+  validate(studentParentParamsSchema, "params"),
   removeParentController
 );
 
@@ -295,8 +407,16 @@ studentRoute.get(
   getCohortsController
 );
 
+// Two segments, so it can never be shadowed by `/cohorts/:schoolId` above.
+//
+// Those two routes were `/cohorts/:schoolId` and `/cohorts/:cohortId`, both
+// registered on the same path shape. Express matches in order, so the list route
+// caught every request: a cohort id reached `schoolIdParamSchema`, which
+// demands 24 hex characters, and 422'd. On top of that, the detail route's own
+// schema demanded 24 hex while its service consumed `cohort_2026`, so even a
+// request that reached the right handler could not have succeeded.
 studentRoute.get(
-  "/cohorts/:cohortId",
+  "/cohorts/detail/:cohortId",
   authenticate,
   validate(cohortIdParamSchema, "params"),
   validate(cohortDetailQuerySchema, "query"),
