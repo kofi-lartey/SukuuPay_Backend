@@ -943,18 +943,73 @@ The same class of hazard applies in production: `bulkCreateStudents` validates
 each row with Joi before inserting, which is what protects it, but a bulk write
 that skips that step fails silently.
 
+## 14. Bugs found by driving the live API
+
+Four features were reported as broken and none of them was where the report said.
+Each was reproduced against a running server with a real bearer token, which is
+the only way to catch them — a service-level test calls `getCohorts` directly and
+never passes through route validation, and that difference was the whole of two
+of these bugs.
+
+**6. The cohort and alumni endpoints answered 422 to every request.**
+`cohortsQuerySchema` and `alumniQuerySchema` both declared `schoolId` as
+`required()` and both ran against the **query**, while the route carries the
+school in the **path** — `/cohorts/:schoolId`. So every correct request failed
+with `"schoolId" is required`. The service-level tests in
+`tests/studentModule.test.js` passed throughout, because they never went near
+route validation. `schoolId` is now optional in the query and the path is
+authoritative.
+
+**7. No school with a hyphenated code could be addressed by its human id.**
+`studentReference` allowed `[A-Za-z0-9]{1,20}` for the school-code part, but
+school codes are free text and most are hyphenated — `SCH-DEMO-01-2026-8054`
+failed the pattern, so `GET /students/:studentId` returned 422 for every student
+in the school. The `_id` path still worked, so any test that used one passed. The
+code part now permits internal hyphens.
+
+**8. There was no endpoint for a manual payment at all.**
+`POST /payments/record` did not exist, so the dashboard's "Record Manual Payment"
+had nothing to call, and the button was also disabled because the Overview
+served fixtures. Added, with the parts that make it more than a wrapper:
+transactional settlement of `totalPaid`/`balance` alongside the payment row, a
+refusal on an amount above the balance unless `allowOverpayment` is set, a
+counter-allocated `paymentId`, `settlement.appliedAt` so a later webhook cannot
+credit twice, and `momo` excluded from the method enum because a gateway-confirmed
+payment has no business being hand-recorded.
+
+**9. The parent-facing fee page did not exist.**
+The backend has had `GET /pay/:token`, `POST /pay/:token/initiate` and
+`POST /pay/:token/verify` throughout; the frontend had no route for any of them,
+so every link a school sent to a parent landed on the marketing 404. Built as
+`/pay/:token`, a sibling of `AppChrome` — a parent has no account, so the
+marketing navbar and its "Sign in" link have no place on the page.
+
+**10. The mock disagreed with the real API about `status=all`.**
+`listStudentsQuerySchema` accepts `all`, `buildRosterFilter` treats it as "no
+filter", and the mock compared `s.status === 'all'` — so the Students module's
+"All Records" option returned an empty roster under `npm run dev:mock` and the
+whole roster in production. The same divergence that produced bug 1, in the
+opposite direction: a mock that disagrees with the backend about a value both
+accept is worse than no mock.
+
 ---
 
-## 13. Verification
+## 15. Verification
 
 | Layer | Command | Result |
 |---|---|---|
 | Backend unit | `npm test` (in `Backend/`) | 130 passing, 41 new |
 | Seed integrity | `npm run seed:verify` (in `Backend/`) | all checks passed |
 | Frontend build | `npm run build` | clean |
-| Shell + Overview + roster render | `npm run check:dashboard` | 18 passing |
-| Mock API contract | `npm run check:mock` | 97 passing, 3 new for cohorts |
+| Shell + Overview + roster + pay page render | `npm run check:dashboard` | 21 passing |
+| Mock API contract | `npm run check:mock` | 102 passing, 8 new for cohorts, pay and manual payments |
 | Auth render | `npm run check:auth` | 8 passing |
+
+The live API was also driven end to end for each of the four reported issues:
+`POST /students/single` → 201, `GET /cohorts/:schoolId` → 200 with four cohorts,
+`GET /cohorts/detail/cohort_2026` → 200 with counts matching the list,
+`GET /alumni/:schoolId` → 200, `GET /pay/:token` → 200, and
+`POST /payments/record` → 201 with the student's balance moving 76000 → 51000.
 
 `check:dashboard` gained four checks during this work, each covering a bug the
 build could not see because `vite build` never executes a component body:

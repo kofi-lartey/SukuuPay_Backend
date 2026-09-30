@@ -109,18 +109,25 @@ export const bulkUploadMetaSchema = Joi.object({
 /**
  * A student reference: the Mongo `_id` **or** the human `studentId`.
  *
- * Every screen shows `studentId` (`PBS-2026-0001`), so requiring 24 hex
+ * Every screen shows `studentId` (`SCH-DEMO-01-2026-8054`), so requiring 24 hex
  * characters meant the obvious client code — look the student up, send their id
  * back — always 400'd. Accepting both costs one indexed lookup and removes the
  * trap.
+ *
+ * The school-code part allows internal hyphens, and it has to. The code is free
+ * text and most are hyphenated, so a first attempt at
+ * `[A-Za-z0-9]{1,20}-[0-9]{4}-[0-9]{4,}` rejected `SCH-DEMO-01-2026-8054`
+ * outright — which made *every* human-id lookup on a real school 422 while
+ * looking correct, because the `_id` path still worked and so did every test
+ * that happened to use one.
  */
 const studentReference = Joi.string()
   .trim()
-  .pattern(/^([0-9a-fA-F]{24}|[A-Za-z0-9]{1,20}-[0-9]{4}-[0-9]{4,})$/)
+  .pattern(/^([0-9a-fA-F]{24}|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*-[0-9]{4}-[0-9]{4,})$/)
   .required()
   .messages({
     "string.pattern.base":
-      "Invalid student reference — expected a 24-character id or a student number like PBS-2026-0001",
+      "Invalid student reference — expected a 24-character id or a student number like SCH-DEMO-01-2026-0001",
   });
 
 export const studentIdParamSchema = Joi.object({
@@ -304,8 +311,20 @@ export const transferOutSchema = Joi.object({
   notes: Joi.string().trim().max(500).optional().allow("", null),
 });
 
+// `schoolId` is OPTIONAL in the query on both of these.
+//
+// The routes carry it in the path — `/cohorts/:schoolId`, `/alumni/:schoolId` —
+// and these schemas also ran against the query, where `.required()` then failed
+// with `"schoolId" is required`. So both endpoints answered **422 to every
+// request**, including correct ones. The cohort tab and the alumni tab were
+// unreachable over HTTP no matter what the client sent, and the service-level
+// tests passed because they called the service directly and never went through
+// route validation.
+//
+// Keeping it optional rather than deleting it: a `super_admin` reading another
+// school's cohorts can still pass it, and the service prefers the explicit value.
 export const alumniQuerySchema = Joi.object({
-  schoolId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
+  schoolId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).optional(),
   page: Joi.number().integer().min(1).default(1),
   limit: Joi.number().integer().min(1).max(100).default(20),
   graduationYear: Joi.number().integer().min(1900).max(2100).optional(),
@@ -316,7 +335,7 @@ export const alumniQuerySchema = Joi.object({
 });
 
 export const cohortsQuerySchema = Joi.object({
-  schoolId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
+  schoolId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).optional(),
   page: Joi.number().integer().min(1).default(1),
   limit: Joi.number().integer().min(1).max(100).default(20),
   year: Joi.number().integer().min(1900).max(2100).optional(),

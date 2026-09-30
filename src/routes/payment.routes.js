@@ -10,6 +10,7 @@ import {
   hubtelWebhookController,
   refundPaymentController,
 } from "../controllers/payment.controller.js";
+import { recordManualPaymentController } from "../controllers/manualPayment.controller.js";
 import { authenticate, authorize } from "../middleware/authenticate.js";
 import { validate } from "../middleware/validate.js";
 import {
@@ -22,6 +23,7 @@ import {
   paymentDetailQuerySchema,
   refundPaymentSchema,
 } from "../validations/payment.validation.js";
+import { recordManualPaymentSchema } from "../validations/manualPayment.validation.js";
 
 export const paymentRoute = Router();
 
@@ -68,6 +70,20 @@ paymentRoute.post(
 );
 
 // ──────────────────── Admin endpoints (auth required) ────────────────────
+
+// POST /payments/record - Cash, cheque or bank transfer taken at the desk
+//
+// Registered before `/payments/:paymentId` so the literal segment is not
+// captured as an id. It had no endpoint at all, which is why the dashboard's
+// "Record Manual Payment" button had nothing to call.
+paymentRoute.post(
+  "/payments/record",
+  authenticate,
+  requireSchoolAdmin,
+  validate(recordManualPaymentSchema),
+  recordManualPaymentController
+);
+
 // GET /payments - List payments with filters
 paymentRoute.get(
   "/payments",
