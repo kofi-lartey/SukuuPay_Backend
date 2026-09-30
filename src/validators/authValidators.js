@@ -12,12 +12,31 @@ const password = Joi.string()
 
 const email = Joi.string().email().lowercase().trim().required();
 
+/**
+ * Roles a user may claim for themselves at signup.
+ *
+ * A strict subset of the User model's role enum, and the exclusion is the point:
+ * `super_admin` is a platform operator with no school, and letting an anonymous
+ * form field mint one would be a complete compromise of the platform. The client
+ * constrains the same list in `SIGNUP_ROLES`, but that is convenience — this is
+ * the control, and it must not trust the request.
+ */
+export const SELF_SIGNUP_ROLES = ["school_admin", "accountant", "teacher", "viewer"];
+
 export const signupSchema = Joi.object({
   name: Joi.string().trim().min(2).max(100).required(),
   email,
   phone: Joi.string().trim().min(7).max(20).required(),
   password,
-  position: Joi.string().trim().max(80).allow('').optional(),
+  /**
+   * Job title. An unconstrained string rather than an enum: schools have titles
+   * no fixed list anticipates, and forcing a bursar into a wrong one to get their
+   * own job recorded is worse than a free-text field. The UI offers a curated
+   * list with an "Other" escape, but the stored value is whatever they typed.
+   */
+  position: Joi.string().trim().max(80).allow("").optional(),
+  role: Joi.string().valid(...SELF_SIGNUP_ROLES).default("school_admin"),
+
   /**
    * What the bursar typed about their school on the signup form.
    *

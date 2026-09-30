@@ -95,6 +95,20 @@ export const provisionSchoolForUser = async (data, user) => {
     );
   }
 
+  // Only a school administrator registers a school. The upload endpoint agrees:
+  // `POST /upload/school-logo` is guarded by `authorize("super_admin",
+  // "school_admin")`, so an accountant who created their own school would finish
+  // provisioning and then be refused their own logo — a state with no way out.
+  // Non-admins are sent to `POST /schools/join` instead, which routes them
+  // through the existing school's approval flow.
+  if (user.role !== "school_admin") {
+    throw new ApiError(
+      "Only a school administrator can create a school. Enter your school code to join one instead.",
+      403,
+      "ROLE_CANNOT_CREATE_SCHOOL"
+    );
+  }
+
   if (user.schoolId) {
     const existing = await School.findOne({ _id: user.schoolId, deletedAt: null });
     if (existing) {

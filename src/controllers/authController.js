@@ -12,6 +12,7 @@ import {
 } from '../config/env.js';
 import { School } from '../models/schoolModel.js';
 import { resolveAccountLinkState } from '../utils/accountLink.js';
+import { SELF_SIGNUP_ROLES } from '../validators/authValidators.js';
 import {
   emailOtpExpiry,
   generateEmailOtp,
@@ -75,7 +76,7 @@ const onboardingBlock = async (user) => {
  */
 export const signup = async (req, res) => {
   try {
-    const { name, email, phone, password, position, school } = req.body;
+    const { name, email, phone, password, position, role, school } = req.body;
 
     const existingUser = await User.findOne({ email });
     if (existingUser) {
@@ -85,21 +86,34 @@ export const signup = async (req, res) => {
       });
     }
 
+    // Re-asserted here even though the validator already restricts it. The
+    // controller is reachable from anywhere a future route forgets to attach the
+    // schema, and a self-granted `super_admin` is the single most damaging field
+    // on this model. Cheap to check, impossible to un-check.
+    const safeRole = SELF_SIGNUP_ROLES.includes(role) ? role : 'school_admin';
+
     const user = await User.create({
       name,
       email,
       phone,
       password,
       position: position || null,
+      // Defaults to `school_admin` when the field is absent or not a permitted
+      // value. A malformed request loses its choice rather than being refused,
+      // which keeps the failure on a field the user can actually fix.
+      role: safeRole,
       // Retained, not discarded. This is what prefills Step 1 so the bursar is
       // not asked for the same details twice — see the note on the signup
       // schema. `schoolIntent` is not a School: the address is still unverified.
+      //
+      // Only recorded for roles that register a school. An accountant joining an
+      // existing one has no school to describe, and writing a blank intent would
+      // make Step 1 prefill empty strings rather than admit it has nothing.
       schoolIntent: {
         name: school?.name || '',
         classification: school?.classification || '',
         region: school?.region || '',
       },
-      role: 'school_admin',
       status: 'active',
       isEmailVerified: false,
     });
