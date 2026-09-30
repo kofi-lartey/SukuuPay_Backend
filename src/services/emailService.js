@@ -43,11 +43,22 @@ const toRecipients = (list) => (list || []).map(toRecipient).filter((r) => r.ema
  * Validates a Brevo credential before it is sent anywhere.
  *
  * Brevo issues two unrelated credentials and they are easy to swap:
- *   v3 API key -> `xkeys-...`  — sent in the `api-key` header
- *   SMTP key   -> `xsmtpsib-...` — used only to log in over SMTP
+ *   v3 API key -> `xkeysib-…` — sent in the `api-key` header
+ *   SMTP key   -> `xsmtpsib-…` — used only to log in over SMTP
  * An SMTP key sent as an API key is rejected with a bare
  * `401 {"message":"Key not found"}`, which reads like an expired credential and
  * sends you hunting through the deployment's environment settings.
+ *
+ * The API-key prefix is matched as `xkeys` and not the full `xkeysib-`. Real
+ * Brevo API keys start `xkeysib-` — the `ib` is a Sendinblue holdover — and
+ * this guard originally required `xkeys-`, which rejected a perfectly good key
+ * with "does not look like a Brevo v3 API key". That is the same mistake as
+ * testing for `xsmtps-` and missing `xsmtpsib-`; both are avoided by matching
+ * the stable leading stem and treating the suffix as variable.
+ *
+ * Note this only recognises a key's *shape*. It cannot tell a valid key from a
+ * revoked, truncated, or copy-paste-mangled one; Brevo answers all of those
+ * with the same 401, and only a real request distinguishes them.
  *
  * Exported so it can be tested against each credential shape directly, without
  * the env bootstrap re-reading `.env` and swapping the value back mid-run.
@@ -68,7 +79,7 @@ export const validateBrevoApiKey = (key) => {
     return {
       code: 'EMAIL_KEY_IS_SMTP_NOT_API',
       message:
-        'BREVO_API_KEY is an SMTP key (xsmtpsib-…), not a v3 API key (xkeys-…). ' +
+        'BREVO_API_KEY is an SMTP key (xsmtpsib-…), not a v3 API key (xkeysib-…). ' +
         'Create an API key under Brevo → SMTP & API → API Keys → Generate a new API key, ' +
         'and set that here. The current value is the SMTP password, which the v3 REST API ' +
         'never accepts.',
@@ -76,11 +87,11 @@ export const validateBrevoApiKey = (key) => {
     };
   }
 
-  if (!key.startsWith('xkeys-')) {
+  if (!/^xkeys/i.test(key)) {
     return {
       code: 'EMAIL_KEY_MALFORMED',
       message:
-        'BREVO_API_KEY does not look like a Brevo v3 API key (expected an xkeys-… prefix). ' +
+        'BREVO_API_KEY does not look like a Brevo v3 API key (expected an xkeysib-… prefix). ' +
         'Check that the right value was copied from Brevo → SMTP & API → API Keys.',
       status: 500,
     };

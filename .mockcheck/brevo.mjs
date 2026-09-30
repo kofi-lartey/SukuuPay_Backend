@@ -62,8 +62,15 @@ for (const { name, key, expected } of rejected) {
 }
 
 const accepted = [
+  {
+    // The real API-key prefix. A guard that required `xkeys-` rejected this and
+    // reported a valid key as malformed, which is the second time an assumed
+    // prefix caused a false diagnosis. `xkeysib-` is what Brevo actually issues.
+    name: 'API key, real xkeysib- prefix',
+    key: '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',
+  },
   { name: 'well-formed API key', key: 'xkeys-abc123-real-looking-key' },
-  { name: 'API key with the full shape', key: 'xkeys-1a2b3c4d5e6f-real-key-value-0123456789abcdef' },
+  { name: 'API key with the full shape', key: 'xkeysib-1a2b3c4d5e6f-real-key-value-0123456789abcdef' },
 ];
 
 for (const { name, key } of accepted) {
