@@ -10,6 +10,8 @@ import {
   EMAIL_OTP_EXPIRE_MINUTES,
   PASSWORD_RESET_EXPIRE_MINUTES,
 } from '../config/env.js';
+import { School } from '../models/schoolModel.js';
+import { resolveAccountLinkState } from '../utils/accountLink.js';
 import {
   emailOtpExpiry,
   generateEmailOtp,
@@ -30,12 +32,50 @@ const sendAuthResponse = (res, status, message, user, tokens) =>
   });
 
 /**
+ * The machine-readable onboarding state attached to every authenticated
+ * response.
+ *
+ * The client used to infer this from `schoolId === null`, which is why it could
+ * only respond with an error: there was no second possibility to branch into.
+ * Reporting `linked` and `nextRoute` explicitly is what lets the frontend grant
+ * an unlinked account the provisioning step instead of a dead end — and it is
+ * the only place that knows about the `super_admin` exception or about a
+ * `schoolId` pointing at an archived school.
+ */
+const onboardingBlock = async (user) => {
+  // `me` and `login` both run this on the request path, so the existence check
+  // is a single indexed `_id` lookup on an already-loaded id — cheaper than the
+  // extra round trip a dangling reference would otherwise cost the bursar on
+  // every page load.
+  const state = await resolveAccountLinkState(user, async (schoolId) => {
+    const found = await School.exists({ _id: schoolId, deletedAt: null });
+    return Boolean(found);
+  });
+
+  const completed = state.linked && user.onboardingCompleted === true;
+
+  return {
+    ...state,
+    completed,
+    highestStep: user.onboardingHighestStep ?? 0,
+    // One source of truth for "where does this user go next". The guard and the
+    // post-signup redirect both read it instead of reimplementing the ordering.
+    nextRoute: state.linked
+      ? completed
+        ? '/dashboard'
+        : '/onboarding/school-profile'
+      : '/onboarding/school-profile',
+  };
+};
+
+
+/**
  * POST /auth/signup
  * Creates a new account and sends an email verification OTP.
  */
 export const signup = async (req, res) => {
   try {
-    const { name, email, phone, password, position } = req.body;
+    const { name, email, phone, password, position, school } = req.body;
 
     const existingUser = await User.findOne({ email });
     if (existingUser) {
@@ -51,6 +91,14 @@ export const signup = async (req, res) => {
       phone,
       password,
       position: position || null,
+      // Retained, not discarded. This is what prefills Step 1 so the bursar is
+      // not asked for the same details twice — see the note on the signup
+      // schema. `schoolIntent` is not a School: the address is still unverified.
+      schoolIntent: {
+        name: school?.name || '',
+        classification: school?.classification || '',
+        region: school?.region || '',
+      },
       role: 'school_admin',
       status: 'active',
       isEmailVerified: false,
@@ -144,7 +192,16 @@ export const login = async (req, res) => {
     if (user.status === 'invited') user.status = 'active';
 
     const tokens = await issueSession(user);
-    return sendAuthResponse(res, 200, 'Signed in successfully', user, tokens);
+    return res.status(200).json({
+      success: true,
+      message: 'Signed in successfully',
+      user: user.toJSON(),
+      tokens,
+      // Reported here as well as from `/auth/me` so a fresh login can route
+      // straight to the right screen without a second round trip.
+      onboarding: await onboardingBlock(user),
+    });
+
   } catch (error) {
     return res.status(500).json({
       success: false,
@@ -364,6 +421,7 @@ export const me = async (req, res) => {
     success: true,
     message: 'Current user retrieved',
     user: req.user.toJSON(),
+    onboarding: await onboardingBlock(req.user),
   });
 };
 

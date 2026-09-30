@@ -161,7 +161,7 @@ export const getUser = async (req, res) => {
 export const updateUser = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { name, email, role } = req.body;
+    const { name, email, role, position, phone, onboardingCompleted, onboardingHighestStep } = req.body;
 
     const user = await User.findOne({ _id: userId, deletedAt: null });
     if (!user) {
@@ -198,6 +198,19 @@ export const updateUser = async (req, res) => {
 
     if (name) user.name = name;
     if (role) user.role = role;
+    if (position !== undefined) user.position = position || null;
+    if (phone) user.phone = phone;
+
+    // Wizard progress. Restricted to the account itself: `sameSchoolOrAdmin`
+    // above lets a school_admin edit their colleagues, and letting one admin
+    // mark another's onboarding complete would skip a bursar straight into a
+    // dashboard for a school they never configured.
+    if (req.user._id.toString() === user._id.toString()) {
+      if (onboardingCompleted !== undefined) user.onboardingCompleted = onboardingCompleted;
+      if (onboardingHighestStep !== undefined) {
+        user.onboardingHighestStep = onboardingHighestStep;
+      }
+    }
 
     await user.save();
 
@@ -205,7 +218,12 @@ export const updateUser = async (req, res) => {
       success: true,
       message: 'User updated successfully',
       user: user.toJSON(),
+      onboarding: {
+        completed: user.onboardingCompleted === true,
+        highestStep: user.onboardingHighestStep ?? 0,
+      },
     });
+
   } catch (error) {
     if (error.name === 'CastError') {
       return res.status(400).json({

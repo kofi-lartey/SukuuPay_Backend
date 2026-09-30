@@ -8,6 +8,9 @@ const NOTIFICATION_TYPES = [
   "student.imported",
   "sms.sent",
   "subscription.expiring",
+  // An unlinked account asking to join this school. Routed to existing admins
+  // because a school code alone must never grant access — see SchoolJoinRequest.
+  "school.join_request",
   "system.alert",
 ];
 

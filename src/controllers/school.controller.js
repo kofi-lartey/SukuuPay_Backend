@@ -7,6 +7,11 @@ import {
   updateSchoolStamp,
   suspendSchool,
   archiveSchool,
+  unsuspendSchool,
+  provisionSchoolForUser,
+  requestToJoinSchool,
+  listJoinRequests,
+  decideJoinRequest,
 } from "../services/school.service.js";
 import { extractPublicId, deleteFromCloudinary } from "../middleware/upload.js";
 
@@ -40,8 +45,132 @@ export const createSchoolController = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────
+// PROVISION OWN SCHOOL (self-service)
+// ─────────────────────────────────────────────
+
+/**
+ * `POST /schools/me`
+ *
+ * The endpoint that gives an unlinked account a way forward. It is not
+ * `POST /schools`: that route stays super_admin-only, because it takes an
+ * arbitrary `createdBy` and creates schools on someone else's behalf. This one
+ * takes the school identity from the caller's own body and can only ever link
+ * the caller to it.
+ *
+ * Returns `201` when it created the school and `200` when the caller was already
+ * linked (idempotent replay) — both carry the refreshed `user` so the client
+ * does not need a second request to learn its new `schoolId`.
+ */
+export const createMySchoolController = async (req, res) => {
+  try {
+    const result = await provisionSchoolForUser(req.body, req.user);
+
+    return res.status(result.created ? 201 : 200).json({
+      success: true,
+      message: result.created
+        ? "School created and linked to your account"
+        : "School already linked to your account",
+      data: result.school,
+      user: result.user,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+      code: error.code,
+    });
+  }
+};
+
+// ─────────────────────────────────────────────
+// JOIN AN EXISTING SCHOOL
+// ─────────────────────────────────────────────
+
+/**
+ * `POST /schools/join`
+ *
+ * `202`: the request is recorded and the school's admins have been notified.
+ * The applicant is not linked yet and will not be until someone approves — the
+ * school code identifies the school, it does not authenticate the person.
+ */
+export const joinSchoolController = async (req, res) => {
+  try {
+    const { schoolCode, applicantName, applicantPosition } = req.body;
+    const result = await requestToJoinSchool(req.user, {
+      schoolCode,
+      applicantName,
+      applicantPosition,
+    });
+
+    return res.status(202).json({
+      success: true,
+      message: result.created
+        ? "Request sent. Your headteacher must approve it before you get access."
+        : "Your request is already awaiting approval.",
+      data: {
+        requestId: result.request._id,
+        status: result.request.status,
+        schoolName: result.school.name,
+      },
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+      code: error.code,
+    });
+  }
+};
+
+/** `GET /schools/join-requests` — pending and decided requests for my school. */
+export const listJoinRequestsController = async (req, res) => {
+  try {
+    const data = await listJoinRequests(req.user);
+
+    return res.status(200).json({
+      success: true,
+      message: "Join requests retrieved successfully",
+      data,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+      code: error.code,
+    });
+  }
+};
+
+/** `PUT /schools/join-requests/:requestId` — approve or reject. */
+export const decideJoinRequestController = async (req, res) => {
+  try {
+    const { decision, note } = req.body;
+    const result = await decideJoinRequest(req.user, req.params.requestId, {
+      decision,
+      note,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message:
+        decision === "approved"
+          ? "Request approved and the applicant can now access the school"
+          : "Request rejected",
+      data: result.request,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+      code: error.code,
+    });
+  }
+};
+
+// ─────────────────────────────────────────────
 // LIST SCHOOLS
 // ─────────────────────────────────────────────
+
 export const listSchoolsController = async (req, res) => {
   try {
     const result = await listSchools(req.query);

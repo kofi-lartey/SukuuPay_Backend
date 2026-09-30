@@ -92,6 +92,31 @@ const schoolModel = new mongoose.Schema(
       trim: true,
       default: "",
     },
+    /**
+     * Coordinates for the school gate.
+     *
+     * Separate from `gpsAddress` on purpose. The digital address is the legally
+     * meaningful identifier and is what Ghana Post and couriers quote; lat/lng is
+     * what a map can render and what a "near me" sort can use. Storing one
+     * without the other is normal — plenty of schools know their digital address
+     * and not their coordinates — so neither is required and neither is derived
+     * from the other automatically.
+     *
+     * `source` records how the pin was set, which is the difference between a
+     * dropper that put the marker on the school's gate and one that put it at
+     * the district centroid. Showing a wrong pin as authoritative is the failure
+     * mode worth avoiding.
+     */
+    location: {
+      latitude: { type: Number, default: null, min: -90, max: 90 },
+      longitude: { type: Number, default: null, min: -180, max: 180 },
+      source: {
+        type: String,
+        enum: ["gps_address", "map_pin", "device", "manual", null],
+        default: null,
+      },
+      updatedAt: { type: Date, default: null },
+    },
     logo: {
       type: String,
       default: null,

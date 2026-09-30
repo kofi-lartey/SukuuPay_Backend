@@ -1,6 +1,8 @@
 import mongoose from "mongoose";
 import { School } from "../models/schoolModel.js";
 import { User } from "../models/userModel.js";
+import { SchoolJoinRequest } from "../models/SchoolJoinRequest.js";
+import { Notification } from "../models/Notification.js";
 import { generateSchoolCode, generateUniqueSlug, validateGhanaPhone } from "../utils/generateCode.js";
 
 class ApiError extends Error {
@@ -63,6 +65,328 @@ export const createSchool = async (data, createdBy, stampUrl = null) => {
   });
 
   return school.toJSON();
+};
+
+/**
+ * Create the caller's own school and link them to it in one atomic operation.
+ *
+ * This is the action that was missing behind the "contact support" dead end.
+ * Before it, the only way to obtain a `schoolId` was `POST /schools`, which is
+ * gated on `authorize("super_admin")` — so a self-service signup could never
+ * finish onboarding no matter how much of the wizard it completed.
+ *
+ * Idempotent by design (FR-7). A double-clicked Continue, a replayed request, or
+ * an admin who provisioned on a laptop and comes back on a phone all arrive
+ * here with a `schoolId` already set. Returning the existing school is the
+ * correct answer in every one of those cases; creating a second School would
+ * leave the bursar administering a duplicate of their own institution.
+ *
+ * The link write and the School insert share a session so a failure cannot
+ * leave an orphan School that nobody administers — the failure mode that would
+ * be worst here, because the retry would then collide with the orphan on
+ * `School.email`.
+ */
+export const provisionSchoolForUser = async (data, user) => {
+  if (user.role === "super_admin") {
+    throw new ApiError(
+      "Platform staff accounts are not linked to a school",
+      403,
+      "FORBIDDEN"
+    );
+  }
+
+  if (user.schoolId) {
+    const existing = await School.findOne({ _id: user.schoolId, deletedAt: null });
+    if (existing) {
+      return { school: existing.toJSON(), user: user.toJSON(), created: false };
+    }
+    // Dangling reference — the school was archived out from under this account.
+    // Fall through and let them provision again, which is what D6 in the
+    // onboarding decision table calls for.
+  }
+
+  const { email, phone } = data;
+
+  const existingEmail = await School.findOne({ email });
+  if (existingEmail) {
+    // Not a generic 409. This is the second-bursar case, and the response names
+    // the only route that resolves it so the client can offer a join sheet
+    // instead of showing an error the user cannot act on.
+    throw new ApiError(
+      "A school with this email is already registered. Enter your school code to join it instead.",
+      409,
+      "SCHOOL_ALREADY_REGISTERED"
+    );
+  }
+
+  const validatedPhone = validateGhanaPhone(phone);
+  if (!validatedPhone) {
+    throw new ApiError("Invalid Ghana phone number format", 400, "INVALID_PHONE");
+  }
+
+  const slug = await generateUniqueSlug(data.name);
+  const schoolCode = await generateSchoolCode(data.name);
+
+  const trialEndsAt = new Date();
+  trialEndsAt.setDate(trialEndsAt.getDate() + 30);
+
+  const session = await mongoose.startSession();
+  let result;
+
+  try {
+    result = await session.withTransaction(async () => {
+      const [school] = await School.create(
+        [
+          {
+            ...data,
+            phone: validatedPhone,
+            slug,
+            schoolCode,
+            createdBy: user._id,
+            status: "active",
+            subscription: {
+              plan: "trial",
+              status: "trial",
+              trialEndsAt,
+              currentPeriodStart: new Date(),
+              currentPeriodEnd: trialEndsAt,
+            },
+          },
+        ],
+        { session }
+      );
+
+      user.schoolId = school._id;
+      await user.save({ session });
+
+      return { school: school.toJSON(), user: user.toJSON(), created: true };
+    });
+  } catch (error) {
+    // A unique-index violation here means two submissions raced. The loser gets
+    // the same 409 as a deliberate duplicate, so the client behaves identically.
+    if (error.code === 11000) {
+      throw new ApiError(
+        "A school with this email is already registered. Enter your school code to join it instead.",
+        409,
+        "SCHOOL_ALREADY_REGISTERED"
+      );
+    }
+    throw error;
+  } finally {
+    await session.endSession();
+  }
+
+  await auditService.log({
+    action: "PROVISION",
+    entity: "School",
+    entityId: result.school._id,
+    userId: user._id,
+    details: {
+      name: result.school.name,
+      schoolCode: result.school.schoolCode,
+    },
+  });
+
+  return result;
+};
+
+/**
+ * Ask to join a school that already exists.
+ *
+ * The school code identifies the school; it does not authenticate the applicant.
+ * Codes are initials plus a three-digit counter, so they are guessable, and
+ * `School` grants full bursary access. The request therefore parks as `pending`
+ * until an admin of that school decides — see models/SchoolJoinRequest.js.
+ */
+export const requestToJoinSchool = async (user, { schoolCode, applicantName, applicantPosition }) => {
+  if (user.schoolId) {
+    throw new ApiError("Your account is already linked to a school", 409, "ALREADY_LINKED");
+  }
+
+  const code = schoolCode.trim().toUpperCase();
+  const school = await School.findOne({ schoolCode: code, deletedAt: null });
+  if (!school) {
+    throw new ApiError("That school code is not recognised", 404, "INVALID_SCHOOL_CODE");
+  }
+  if (school.status !== "active") {
+    throw new ApiError(
+      "That school is not accepting new staff right now",
+      409,
+      "SCHOOL_NOT_ACCEPTING"
+    );
+  }
+
+  const alreadyPending = await SchoolJoinRequest.findOne({
+    userId: user._id,
+    schoolId: school._id,
+    status: "pending",
+  });
+  if (alreadyPending) {
+    // Idempotent, so a bursar who taps "resend" is not told they have applied
+    // twice or left staring at a duplicate-request error.
+    return { request: alreadyPending.toJSON(), school, created: false };
+  }
+
+  const request = await SchoolJoinRequest.create({
+    userId: user._id,
+    schoolId: school._id,
+    applicantName: applicantName || user.name,
+    applicantPosition: applicantPosition || user.position || "",
+    status: "pending",
+  });
+
+  // Tell the people who can actually approve. Best-effort: a notification
+  // failure must not lose the request, which is already committed.
+  try {
+    const approvers = await User.find({
+      schoolId: school._id,
+      role: { $in: ["school_admin", "accountant"] },
+      status: "active",
+      deletedAt: null,
+    })
+      .select("_id")
+      .lean();
+
+    await Notification.insertMany(
+      approvers.map((approver) => ({
+        userId: approver._id,
+        schoolId: school._id,
+        type: "school.join_request",
+        title: `${request.applicantName || "Someone"} wants to join ${school.name}`,
+        message:
+          "Review the request and approve or reject their access. Your school code was used to apply.",
+        link: "/dashboard/settings/staff",
+        meta: { requestId: request._id, applicantId: user._id },
+      })),
+      { ordered: false }
+    );
+  } catch (error) {
+    console.error("Join-request notification failed:", error.message);
+  }
+
+  await auditService.log({
+    action: "JOIN_REQUEST",
+    entity: "School",
+    entityId: school._id,
+    userId: user._id,
+    details: { requestId: request._id, schoolCode: code },
+  });
+
+  return { request: request.toJSON(), school, created: true };
+};
+
+/** Pending requests for the caller's own school. Admins only. */
+export const listJoinRequests = async (user) => {
+  if (!user.schoolId) {
+    throw new ApiError("No school in scope", 403, "NO_SCHOOL_SCOPE");
+  }
+  if (user.role !== "super_admin" && !["school_admin", "accountant"].includes(user.role)) {
+    throw new ApiError("Only school admins can review join requests", 403, "FORBIDDEN");
+  }
+
+  const requests = await SchoolJoinRequest.find({ schoolId: user.schoolId })
+    .sort({ createdAt: -1 })
+    .limit(100)
+    .populate("userId", "name email phone position status")
+    .lean();
+
+  return requests.map((row) => ({
+    ...row,
+    userId: row.userId || null,
+  }));
+};
+
+/**
+ * Approve or reject a pending join request.
+ *
+ * On approval the applicant is linked inside the same transaction that flips the
+ * status, so a crash cannot leave a request marked approved whose applicant
+ * still has no school — which would strand them on Step 1 with a request the
+ * bursar believes they already handled.
+ */
+export const decideJoinRequest = async (user, requestId, { decision, note }) => {
+  if (!user.schoolId) {
+    throw new ApiError("No school in scope", 403, "NO_SCHOOL_SCOPE");
+  }
+  if (user.role !== "super_admin" && !["school_admin", "accountant"].includes(user.role)) {
+    throw new ApiError("Only school admins can review join requests", 403, "FORBIDDEN");
+  }
+
+  const request = await SchoolJoinRequest.findOne({
+    _id: requestId,
+    schoolId: user.schoolId,
+  });
+  if (!request) {
+    throw new ApiError("Join request not found", 404, "NOT_FOUND");
+  }
+  if (request.status !== "pending") {
+    throw new ApiError(
+      `This request was already ${request.status}`,
+      409,
+      "ALREADY_DECIDED"
+    );
+  }
+
+  const applicant = await User.findOne({ _id: request.userId, deletedAt: null });
+  if (!applicant) {
+    throw new ApiError("That account no longer exists", 404, "USER_NOT_FOUND");
+  }
+  // An applicant who provisioned their own school in the meantime must not be
+  // silently moved into someone else's — that would hand them access to data
+  // they never asked for.
+  if (decision === "approved" && applicant.schoolId) {
+    throw new ApiError(
+      "That account already belongs to a school",
+      409,
+      "APPLICANT_ALREADY_LINKED"
+    );
+  }
+
+  if (decision !== "approved") {
+    request.status = "rejected";
+    request.decidedBy = user._id;
+    request.decidedAt = new Date();
+    request.decidedNote = note || "";
+    await request.save();
+
+    await auditService.log({
+      action: "JOIN_REJECTED",
+      entity: "SchoolJoinRequest",
+      entityId: request._id,
+      userId: user._id,
+      details: { applicantId: applicant._id },
+    });
+
+    return { request: request.toJSON(), linked: false };
+  }
+
+  const session = await mongoose.startSession();
+  try {
+    const saved = await session.withTransaction(async () => {
+      request.status = "approved";
+      request.decidedBy = user._id;
+      request.decidedAt = new Date();
+      request.decidedNote = note || "";
+      await request.save({ session });
+
+      applicant.schoolId = user.schoolId;
+      await applicant.save({ session });
+
+      return request.toJSON();
+    });
+
+    await auditService.log({
+      action: "JOIN_APPROVED",
+      entity: "SchoolJoinRequest",
+      entityId: request._id,
+      userId: user._id,
+      details: { applicantId: applicant._id, schoolId: user.schoolId },
+    });
+
+    return { request: saved, linked: true };
+  } finally {
+    await session.endSession();
+  }
 };
 
 export const listSchools = async (query) => {
@@ -176,6 +500,17 @@ export const updateSchool = async (schoolId, data, requester) => {
     delete updates[field];
   });
 
+  // Paths that address a nested field rather than a top-level one. Joi accepts
+  // them as dotted keys, and `School` has no literal `"location.latitude"`
+  // property, so writing them straight onto the document would invent one.
+  // `academic.classes` already needed this; `location.*` is the second member.
+  const NESTED_PATHS = ["academic.", "location."];
+
+  // Read before the write loop below, so the freshness stamp can tell a moved
+  // pin from an unchanged one.
+  const previousLatitude = school.location?.latitude;
+  const previousLongitude = school.location?.longitude;
+
   if (updates.email && updates.email !== school.email) {
     const emailConflict = await School.findOne({ email: updates.email, _id: { $ne: schoolId } });
     if (emailConflict) {
@@ -196,13 +531,27 @@ export const updateSchool = async (schoolId, data, requester) => {
   }
 
   Object.keys(updates).forEach((key) => {
-    if (key.startsWith("academic.")) {
-      const subKey = key.split(".")[1];
-      school.academic[subKey] = updates[key];
+    const nested = NESTED_PATHS.find((prefix) => key.startsWith(prefix));
+    if (nested) {
+      const subKey = key.slice(nested.length);
+      const parent = key.slice(0, nested.length - 1); // strip the trailing dot
+      school[parent][subKey] = updates[key];
     } else {
       school[key] = updates[key];
     }
   });
+
+  // Stamped whenever coordinates actually change, so the dashboard can show how
+  // fresh a pin is. A pin a bursar set two years ago should not be presented
+  // with the same confidence as one they just dropped.
+  const lat = school.location?.latitude;
+  const lng = school.location?.longitude;
+  const hadCoords = Boolean(previousLatitude != null && previousLongitude != null);
+  if (typeof lat === "number" && typeof lng === "number") {
+    if (!hadCoords || lat !== previousLatitude || lng !== previousLongitude) {
+      school.location.updatedAt = new Date();
+    }
+  }
 
   await school.save();
 

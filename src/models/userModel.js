@@ -55,6 +55,46 @@ export const userModel = new mongoose.Schema(
       default: false, // true ONLY for you (founder)
     },
 
+    // ─────────────── Onboarding ───────────────
+    /**
+     * What the bursar told us at signup, before any School exists.
+     *
+     * The signup form has always collected school name, classification and
+     * region, but the payload was stripped by `stripUnknown` (the schema had no
+     * `school` key) and thrown away — so the user was asked for it twice, or
+     * rather the second time they hit a dead end. Storing it here rather than in
+     * the browser means it survives a device change and can prefill Step 1.
+     *
+     * Deliberately not a School: nothing here is verified, and creating a
+     * School for an unverified email address would let anyone register a school
+     * with a throwaway inbox. The real record appears at Step 1 via
+     * `POST /schools/me`, once the address is verified and the account is
+     * authenticated.
+     */
+    schoolIntent: {
+      name: { type: String, trim: true, maxlength: 150, default: "" },
+      classification: { type: String, trim: true, maxlength: 40, default: "" },
+      region: { type: String, trim: true, maxlength: 40, default: "" },
+    },
+    /**
+     * Replaces the `sukuupay_onboarding_completed_<userId>` localStorage flag.
+     *
+     * The flag could not survive a device change, so an admin who onboarded on a
+     * laptop was asked to walk the wizard again on their phone. With
+     * self-service provisioning that stopped being cosmetic: re-running Step 1
+     * would have meant re-creating a school.
+     */
+    onboardingCompleted: {
+      type: Boolean,
+      default: false,
+    },
+    onboardingHighestStep: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 3, // ONBOARDING_STEPS has four entries, zero-indexed
+    },
+
     // ─────────────── Status ───────────────
     status: {
       type: String,

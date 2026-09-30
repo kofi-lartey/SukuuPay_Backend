@@ -9,7 +9,16 @@
 # environment variables at runtime.
 services:
   - type: web
-    name: sukuupay-api
+    # The service name determines the hostname Render assigns. This MUST match
+    # the service that actually exists, or every self-referential URL below
+    # points at a host that serves nothing.
+    #
+    # It was `sukuupay-api`, which is where the dead hostname came from:
+    # `sukuupay-api.onrender.com` returns 404 on every path, so the keep-alive
+    # health check reported an outage that was never real, and anyone copying
+    # API_URL or ARKESEL_CALLBACK_URL from the comments here registered a
+    # callback address no provider could reach.
+    name: sukuupay-backend
     runtime: node
     plan: starter # see the note on free tier below
     region: frankfurt # Ghana-adjacent; change to oregon/us-east if you prefer
@@ -39,22 +48,26 @@ services:
       # API_URL and WEBHOOK_BASE_URL are the BACKEND origin. Provider callbacks
       # are server-to-server POSTs and must land here, not on the frontend.
       #
-      # Set these to https://sukuupay-api.onrender.com after the first deploy,
-      # then trigger a redeploy. Until WEBHOOK_BASE_URL points at this service,
-      # Hubtel settlement callbacks go nowhere.
+      # These have concrete values, not `sync: false`. They are the API's own
+      # hostname, which is knowable from the service name, and leaving them for
+      # manual entry is how a stale value outlives a rename: a wrong API_URL
+      # makes the keep-alive check probe a host that 404s, and a wrong
+      # WEBHOOK_BASE_URL means Hubtel settlement callbacks go nowhere and
+      # payments sit in `processing` forever with no error.
       - key: API_URL
-        sync: false
+        value: https://sukuupay-backend.onrender.com
       - key: WEBHOOK_BASE_URL
-        sync: false
+        value: https://sukuupay-backend.onrender.com
       - key: API_BASE_URL
-        sync: false
+        value: https://sukuupay-backend.onrender.com
       # Frontend. CORS and parent-facing redirects only — no provider calls this.
       - key: CLIENT_URL
-        sync: false
+        value: https://sukuupay.netlify.app
       # The parent-facing /pay/<token> page. FRONTEND origin, not backend.
       - key: PAY_LINK_BASE_URL
         sync: false
-      # Optional: probe something other than API_URL.
+      # Optional: probe something other than API_URL. Unset means "use API_URL",
+      # which is correct.
       - key: HEALTH_CHECK_URL
         sync: false
 

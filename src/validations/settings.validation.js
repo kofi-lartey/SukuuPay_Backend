@@ -1,6 +1,9 @@
 import Joi from "joi";
+import { gpsAddressValidator } from "./gpsAddress.validation.js";
 
 const objectId = Joi.string().pattern(/^[0-9a-fA-F]{24}$/);
+
+export { gpsAddressValidator };
 
 export const schoolIdParamSchema = Joi.object({
   schoolId: objectId.required().messages({
@@ -15,7 +18,7 @@ export const updateSettingsSchema = Joi.object({
   motto: Joi.string().trim().max(200).allow("").optional(),
   yearFounded: Joi.number().integer().min(1800).max(2099).optional(),
   website: Joi.string().uri().trim().allow("").optional(),
-  gpsAddress: Joi.string().trim().max(200).allow("").optional(),
+  gpsAddress: gpsAddressValidator.optional(),
   classes: Joi.array()
     .items(Joi.string().trim().max(50))
     .min(1)
@@ -27,6 +30,7 @@ export const updateSettingsSchema = Joi.object({
     .valid("WAEC", "IB", "Cambridge", "Custom")
     .optional(),
 }).min(1);
+
 
 // YYYY/YYYY where the second year is the first year + 1 (e.g. 2025/2026)
 const academicYearPattern = /^\d{4}\/\d{4}$/;
