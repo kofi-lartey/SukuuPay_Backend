@@ -42,6 +42,7 @@ export const AUDIT_ACTIONS = {
   SMS_TEMPLATE_DELETE: "sms.template_delete",
   SMS_CREDIT_TOPUP: "sms.credit_topup",
   SMS_TEST_SEND: "sms.test_send",
+  REPORT_VIEWED: "report.viewed",
 };
 
 // Notification types — matches the Notification `type` field enum.

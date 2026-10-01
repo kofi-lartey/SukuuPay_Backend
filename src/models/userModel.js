@@ -19,8 +19,19 @@ export const userModel = new mongoose.Schema(
     },
     phone: {
       type: String,
-      required: true,
       trim: true,
+      default: null,
+      // Was `required: true`. Team invitations take name + email only, so a
+      // school admin inviting a colleague has no phone number to hand — often
+      // no accurate one, since staff phones are frequently personal handsets.
+      // Requiring it meant the invitation flow could only ever be satisfied by
+      // inventing a placeholder, which is worse than recording none.
+      //
+      // Relaxing a required flag is backward compatible: Mongoose only enforces
+      // path presence for documents written after the change, and every
+      // existing account already carries a phone. Nothing in the codebase reads
+      // `user.phone` — it was only ever written (see `updateUser`) — so there is
+      // no consumer that can now receive `null` and mishandle it.
     },
     password: {
       type: String,
@@ -164,6 +175,60 @@ export const userModel = new mongoose.Schema(
       ref: "User",
       default: null,
     },
+
+    // ─────────────── Invitation lifecycle ───────────────
+    //
+    // Additive and every field defaults, so no migration is required: existing
+    // documents simply read as "never invited through this flow", which is
+    // true of every account created before the User Management module.
+    //
+    // `invitedBy` above already existed and was written by the old
+    // `POST /users/invite`, but nothing recorded *when* the invitation went out
+    // or whether the mail actually left. That gap is why the old endpoint could
+    // swallow a Brevo failure and still answer 201: there was no field whose
+    // value would have been a lie.
+    invitedAt: {
+      type: Date,
+      default: null,
+    },
+
+    /**
+     * Set when the invitation email was accepted by the provider, cleared when a
+     * resend fails. Distinguishes "the admin sent it" from "Brevo took it" —
+     * the difference between an invitee who never checked their junk folder and
+     * one whose address is simply wrong.
+     */
+    inviteEmailSentAt: {
+      type: Date,
+      default: null,
+    },
+
+    /**
+     * How many invitations have been issued for this account. Greater than one
+     * means the default password was re-minted, so the first one is dead and
+     * only the newest mail carries a working credential.
+     */
+    inviteCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    /**
+     * True while the account still holds an admin-minted default password.
+     *
+     * Advisory, not enforced: `login` does not gate on it, because doing so
+     * would lock the invitee out of the only page that could let them change it.
+     * It is surfaced on the login and `/auth/me` payloads so the client can
+     * prompt a change through the existing `/forgot-password` route, and so an
+     * auditor can see at a glance which staff accounts are still running on a
+     * password their administrator knows.
+     */
+    mustChangePassword: {
+      type: Boolean,
+      default: false,
+    },
+
     deletedAt: {
       type: Date,
       default: null,

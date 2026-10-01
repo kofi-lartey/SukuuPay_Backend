@@ -11,6 +11,8 @@ import {
   differenceInDays,
 } from "../utils/dateHelpers.js";
 import { formatCedis } from "../utils/formatters.js";
+import * as auditService from "../utils/auditService.js";
+import { AUDIT_ACTIONS } from "../config/constants.js";
 
 class ApiError extends Error {
   constructor(message, status = 500, code = "INTERNAL_ERROR") {
@@ -20,12 +22,6 @@ class ApiError extends Error {
     Error.captureStackTrace(this, this.constructor);
   }
 }
-
-const auditService = {
-  log: async ({ action, entity, entityId, userId, details }) => {
-    console.log(`[AUDIT] ${action} | ${entity}:${entityId} | User:${userId} |`, details);
-  },
-};
 
 const resolveSchoolId = (user, explicitSchoolId) => {
   if (user && user.role === "super_admin") {
@@ -270,11 +266,12 @@ export const getDailyReport = async (schoolIdParam, query, user) => {
   };
 
   await auditService.log({
-    action: "REPORT_VIEWED",
+    action: AUDIT_ACTIONS.REPORT_VIEWED,
     entity: "DailyReport",
     entityId: schoolId,
     userId: user._id,
-    details: { query },
+    schoolId,
+    meta: { query },
   });
 
   return result;
@@ -397,11 +394,12 @@ export const getTermReport = async (schoolIdParam, query, user) => {
   };
 
   await auditService.log({
-    action: "REPORT_VIEWED",
+    action: AUDIT_ACTIONS.REPORT_VIEWED,
     entity: "TermReport",
     entityId: schoolId,
     userId: user._id,
-    details: { query },
+    schoolId,
+    meta: { query },
   });
 
   return result;
@@ -512,11 +510,12 @@ export const getOutstandingReport = async (schoolIdParam, query, user) => {
   };
 
   await auditService.log({
-    action: "REPORT_VIEWED",
+    action: AUDIT_ACTIONS.REPORT_VIEWED,
     entity: "OutstandingReport",
     entityId: schoolId,
     userId: user._id,
-    details: { query },
+    schoolId,
+    meta: { query },
   });
 
   return result;
@@ -651,11 +650,12 @@ export const getComplianceReport = async (schoolIdParam, query, user) => {
   };
 
   await auditService.log({
-    action: "REPORT_VIEWED",
+    action: AUDIT_ACTIONS.REPORT_VIEWED,
     entity: "ComplianceReport",
     entityId: schoolId,
     userId: user._id,
-    details: { query },
+    schoolId,
+    meta: { query },
   });
 
   return result;
@@ -749,11 +749,12 @@ export const getPaymentMethodsReport = async (schoolIdParam, query, user) => {
   };
 
   await auditService.log({
-    action: "REPORT_VIEWED",
+    action: AUDIT_ACTIONS.REPORT_VIEWED,
     entity: "PaymentMethodsReport",
     entityId: schoolId,
     userId: user._id,
-    details: { query },
+    schoolId,
+    meta: { query },
   });
 
   return result;
@@ -865,11 +866,12 @@ export const getClassCollectionsReport = async (schoolIdParam, query, user) => {
   };
 
   await auditService.log({
-    action: "REPORT_VIEWED",
+    action: AUDIT_ACTIONS.REPORT_VIEWED,
     entity: "ClassCollectionsReport",
     entityId: schoolId,
     userId: user._id,
-    details: { query },
+    schoolId,
+    meta: { query },
   });
 
   return result;
@@ -944,11 +946,12 @@ export const getParentContactsReport = async (schoolIdParam, query, user) => {
   };
 
   await auditService.log({
-    action: "REPORT_VIEWED",
+    action: AUDIT_ACTIONS.REPORT_VIEWED,
     entity: "ParentContactsReport",
     entityId: schoolId,
     userId: user._id,
-    details: { query },
+    schoolId,
+    meta: { query },
   });
 
   return result;
@@ -1073,11 +1076,12 @@ export const getOverdueReport = async (schoolIdParam, query, user) => {
   };
 
   await auditService.log({
-    action: "REPORT_VIEWED",
+    action: AUDIT_ACTIONS.REPORT_VIEWED,
     entity: "OverdueReport",
     entityId: schoolId,
     userId: user._id,
-    details: { query },
+    schoolId,
+    meta: { query },
   });
 
   return result;
@@ -1175,11 +1179,12 @@ export const getHeadmasterMonthlyReport = async (schoolIdParam, query, user) => 
   };
 
   await auditService.log({
-    action: "REPORT_VIEWED",
+    action: AUDIT_ACTIONS.REPORT_VIEWED,
     entity: "HeadmasterMonthlyReport",
     entityId: schoolId,
     userId: user._id,
-    details: { query },
+    schoolId,
+    meta: { query },
   });
 
   return result;

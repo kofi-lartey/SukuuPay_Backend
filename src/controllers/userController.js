@@ -1,13 +1,13 @@
-import crypto from 'node:crypto';
 import { User } from '../models/userModel.js';
+import { School } from '../models/schoolModel.js';
 import { sendEmail } from '../services/emailService.js';
-import { verificationEmail, invitationEmail } from '../templates/emails.js';
-import { EMAIL_OTP_EXPIRE_MINUTES } from '../config/env.js';
-import {
-  generateEmailOtp,
-  hashToken,
-  emailOtpExpiry,
-} from '../utils/tokens.js';
+import { invitationEmail } from '../templates/emails.js';
+import { CLIENT_URL } from '../config/env.js';
+import { AUDIT_ACTIONS } from '../config/constants.js';
+import { logRequest as auditLog } from '../utils/auditService.js';
+import { createNotification } from '../services/notification.service.js';
+import { generateDefaultPassword } from '../utils/defaultPassword.js';
+import { INVITABLE_BY_SCHOOL_ADMIN } from '../validators/userValidators.js';
 
 const sameSchoolOrAdmin = (requester, target) => {
   if (requester.role === 'super_admin') return true;
@@ -16,62 +16,378 @@ const sameSchoolOrAdmin = (requester, target) => {
     target.schoolId.toString() === requester.schoolId.toString();
 };
 
+/**
+ * Resolves which school a new account belongs to, and loads it.
+ *
+ * The School document is needed rather than just its id, because the default
+ * password is derived from `schoolCode` and the invitation email names the
+ * school. Two failure modes are separated deliberately, because they mean
+ * different things to the admin reading the error:
+ *
+ *   - no school at all      → 403, the caller is not in a position to invite
+ *   - schoolId points nowhere → 404, it is a data problem, not a permissions one
+ *
+ * A `super_admin` may target any school by passing `schoolId`; for everyone else
+ * the field is ignored rather than rejected, matching `listUsers`, so a client
+ * that echoes the current school id does not break on a 422.
+ */
+const resolveTargetSchool = async (requester, requestedSchoolId) => {
+  const targetSchoolId =
+    requester.role === 'super_admin' ? requestedSchoolId || requester.schoolId : requester.schoolId;
+
+  if (!targetSchoolId) {
+    return { error: { status: 403, message: 'Your account is not linked to a school yet', code: 'NO_SCHOOL' } };
+  }
+
+  const school = await School.findOne({ _id: targetSchoolId, deletedAt: null }).select('name schoolCode');
+  if (!school) {
+    return { error: { status: 404, message: 'School not found', code: 'SCHOOL_NOT_FOUND' } };
+  }
+
+  return { school };
+};
+
+/**
+ * Which role the invited account may be granted.
+ *
+ * A `school_admin` is confined to `INVITABLE_BY_SCHOOL_ADMIN`. The load-bearing
+ * case is `super_admin`: it is a platform-operator tier, and letting a school
+ * admin mint one means one compromised school-admin session is enough to create
+ * an account that is outside that school's boundary entirely — able to read any
+ * school's data and, worse, invisible in the audit logs of the schools it
+ * touched. `signup` and `changeUserRole` already refuse the same grant; this
+ * endpoint previously accepted it, because the old controller copied `role`
+ * straight off the body.
+ */
+const resolveInvitableRole = (requester, requestedRole) => {
+  if (requester.role === 'super_admin') return { role: requestedRole || 'teacher' };
+
+  if (!INVITABLE_BY_SCHOOL_ADMIN.includes(requestedRole)) {
+    return {
+      error: {
+        status: 403,
+        message: 'You cannot grant that role',
+        code: 'ROLE_NOT_GRANTABLE',
+      },
+    };
+  }
+
+  return { role: requestedRole };
+};
+
+/**
+ * Builds and delivers the invitation email.
+ *
+ * Returns `{ sent, reason }` instead of throwing: the account already exists by
+ * the time this runs, and a mail failure must not unwind that. The caller
+ * surfaces it as `emailSent: false` and raises an in-app notification so the
+ * admin has somewhere to go from, because "the invite silently failed" is the
+ * one outcome that leaves a real teacher unable to work and nobody aware of it.
+ */
+const deliverInvitationEmail = async ({
+  user,
+  school,
+  password,
+  inviter,
+  role,
+  isResend = false,
+}) => {
+  const { subject, html, text } = invitationEmail({
+    name: user.name,
+    email: user.email,
+    password,
+    schoolCode: school.schoolCode || '—',
+    schoolName: school.name,
+    inviter: inviter.name,
+    inviterRole: inviter.role,
+    inviterPosition: inviter.position,
+    role,
+    loginUrl: `${CLIENT_URL}/login`,
+    isResend,
+  });
+
+  try {
+    await sendEmail({ to: user.email, toName: user.name, subject, html, text });
+    return { sent: true };
+  } catch (error) {
+    return { sent: false, reason: error.message };
+  }
+};
+
 export const inviteUser = async (req, res) => {
   try {
     const { name, email, phone, role, position, schoolId } = req.body;
 
+    const roleCheck = resolveInvitableRole(req.user, role);
+    if (roleCheck.error) {
+      return res.status(roleCheck.error.status).json({
+        success: false,
+        message: roleCheck.error.message,
+        code: roleCheck.error.code,
+      });
+    }
+    const targetRole = roleCheck.role;
+
+    const { school, error: schoolError } = await resolveTargetSchool(req.user, schoolId);
+    if (schoolError) {
+      return res.status(schoolError.status).json({
+        success: false,
+        message: schoolError.message,
+        code: schoolError.code,
+      });
+    }
+
+    // Scoped to `deletedAt: null` on purpose. A soft-deleted account keeps the
+    // unique email index occupied, so inviting that address again dies on a
+    // duplicate-key error that reads as a 500. Catching it here turns that into
+    // the accurate answer: the address is taken by a removed account.
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(409).json({
         success: false,
-        message: 'An account with this email already exists',
+        message: existingUser.deletedAt
+          ? 'That email belongs to a removed account. Restore it or use a different address.'
+          : 'An account with this email already exists',
+        code: existingUser.deletedAt ? 'EMAIL_ON_DELETED_ACCOUNT' : 'EMAIL_TAKEN',
       });
     }
 
-    const tempPassword = crypto.randomBytes(16).toString('hex');
-    const targetSchoolId =
-      req.user.role === 'super_admin' ? (schoolId || req.user.schoolId) : req.user.schoolId;
+    // The default password. Derived from the School ID so an admin can recognise
+    // which institution issued it, plus a random suffix so it is not a secret
+    // the whole staff share. See utils/defaultPassword.js for why neither half
+    // works alone.
+    const defaultPassword = generateDefaultPassword(school);
 
     const user = await User.create({
       name,
       email,
-      phone,
-      password: tempPassword,
-      role,
+      phone: phone || null,
+      password: defaultPassword,
+      role: targetRole,
       position: position || null,
       status: 'invited',
-      schoolId: targetSchoolId,
+      // Marked verified here, deliberately, and this is the single most
+      // consequential judgement in the flow.
+      //
+      // `login` refuses any account where `isEmailVerified` is false, and the
+      // only remedy it offers is an emailed OTP. Since this flow's entire
+      // purpose is to hand the recipient a working password in one email,
+      // leaving verification to a second message would mean the credentials in
+      // that email do not work — the invitee would read a valid password, enter
+      // it, and get "Please verify your email address before signing in", with
+      // no indication that the fix is to go and check for another email.
+      //
+      // The address is therefore treated as verified on the strength of the
+      // inviting admin: they are authenticated, school-scoped, and asserting it
+      // by hand. That is the standard admin-provisioned account model, and its
+      // real cost is that a mis-typed address is only discovered when the
+      // invitee reports they got nothing — which is what the `emailSent`
+      // response flag and the resend endpoint exist to make recoverable.
+      isEmailVerified: true,
+      schoolId: school._id,
       invitedBy: req.user._id,
+      invitedAt: new Date(),
+      inviteCount: 1,
+      mustChangePassword: true,
     });
 
-    const otp = generateEmailOtp();
-    user.emailVerificationToken = hashToken(otp);
-    user.emailVerificationExpires = emailOtpExpiry();
+    const delivery = await deliverInvitationEmail({
+      user,
+      school,
+      password: defaultPassword,
+      inviter: req.user,
+      role: targetRole,
+    });
+
+    user.inviteEmailSentAt = delivery.sent ? new Date() : null;
     await user.save();
 
-    const { subject, html } = invitationEmail({
-      name: user.name,
-      otp,
-      expiresInMinutes: EMAIL_OTP_EXPIRE_MINUTES,
-      inviter: req.user.name,
-    });
+    if (delivery.sent) {
+      await auditLog(req, {
+        action: AUDIT_ACTIONS.USER_INVITE,
+        entity: 'User',
+        entityId: user._id,
+        schoolId: school._id,
+        meta: {
+          email: user.email,
+          role: user.role,
+          position: user.position,
+          isResend: false,
+        },
+      });
+    } else {
+      // Logged too, and marked as a failure: an invitation that created a
+      // credential but never delivered it is exactly the kind of gap the audit
+      // trail exists to surface, and a success-only log would hide it.
+      await auditLog(req, {
+        action: AUDIT_ACTIONS.USER_INVITE,
+        entity: 'User',
+        entityId: user._id,
+        schoolId: school._id,
+        meta: {
+          email: user.email,
+          role: user.role,
+          emailSent: false,
+          failureReason: delivery.reason,
+          isResend: false,
+        },
+      });
 
-    try {
-      await sendEmail({ to: user.email, toName: user.name, subject, html });
-    } catch (emailError) {
-      console.error('Invitation email failed:', emailError.message);
+      // Wrapped: `createNotification` throws on its own validation failure, and
+      // an unhandled throw here would escape into the outer catch and turn a
+      // created-but-undelivered invitation into a 500 — telling the admin the
+      // invite failed entirely, when the only thing that failed is the alert
+      // about the failure.
+      try {
+        await createNotification({
+          userId: req.user._id,
+          schoolId: school._id,
+          type: 'system.alert',
+          title: `Invitation to ${user.name} was not delivered`,
+          message: `The account was created, but the email to ${user.email} failed to send. Re-send the invitation so ${user.name.split(' ')[0]} can sign in.`,
+          link: '/dashboard/user-management',
+        });
+      } catch (notificationError) {
+        console.error('Invite failure notification failed:', notificationError.message);
+      }
     }
 
+    // 201 even when the mail failed. The account *was* created, and the caller
+    // can only retry by re-sending — a 5xx here would invite a naive client to
+    // repeat the whole request and collide with its own 409. The distinction is
+    // carried in the body, where the UI can act on it, rather than in a status
+    // code that would misrepresent what happened.
     return res.status(201).json({
       success: true,
-      message: 'Invitation sent successfully. A verification code has been emailed to the invitee.',
+      message: delivery.sent
+        ? `Invitation sent to ${user.email}`
+        : `${user.name} was added, but the invitation email could not be sent. Re-send it from this page.`,
       user: user.toJSON(),
+      emailSent: delivery.sent,
+      ...(delivery.sent ? {} : { code: 'INVITE_EMAIL_FAILED' }),
     });
   } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: 'An account with this email already exists',
+        code: 'EMAIL_TAKEN',
+      });
+    }
+    if (error.name === 'CastError') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid school ID',
+        code: 'INVALID_SCHOOL_ID',
+      });
+    }
     return res.status(500).json({
       success: false,
       message: error.message,
     });
+  }
+};
+
+/**
+ * `POST /users/:userId/resend-invite`
+ *
+ * Re-mints the default password and re-sends the mail.
+ *
+ * Exists because `inviteUser` deliberately does not roll back on a mail
+ * failure, so there has to be a supported way to retry without inviting a second
+ * person. Scoped to accounts still in `invited` status: re-sending to someone
+ * who has already signed in would change a password out from under a working
+ * user, which is a support incident, not a resend.
+ *
+ * `mustChangePassword` stays true regardless — it is cleared when the password
+ * is changed, not when the invitation is re-issued.
+ */
+export const resendUserInvite = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const user = await User.findOne({ _id: userId, deletedAt: null });
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found', code: 'USER_NOT_FOUND' });
+    }
+
+    if (!sameSchoolOrAdmin(req.user, user)) {
+      return res.status(403).json({
+        success: false,
+        message: 'You do not have access to this resource',
+        code: 'FORBIDDEN',
+      });
+    }
+
+    if (user.status !== 'invited') {
+      return res.status(409).json({
+        success: false,
+        message: 'This user has already accepted their invitation',
+        code: 'ALREADY_ACCEPTED',
+      });
+    }
+
+    const { school, error: schoolError } = await resolveTargetSchool(req.user, user.schoolId);
+    if (schoolError) {
+      return res.status(schoolError.status).json({
+        success: false,
+        message: schoolError.message,
+        code: schoolError.code,
+      });
+    }
+
+    const defaultPassword = generateDefaultPassword(school);
+
+    // Assigned before hashing, and `save()` before the mail goes out, so a
+    // delivered email always describes a credential that is already live. The
+    // reverse order would let a mail arrive carrying a password that a failed
+    // write never stored.
+    user.password = defaultPassword;
+    user.mustChangePassword = true;
+    user.invitedAt = new Date();
+    user.inviteCount = (user.inviteCount || 0) + 1;
+    await user.save();
+
+    const delivery = await deliverInvitationEmail({
+      user,
+      school,
+      password: defaultPassword,
+      inviter: req.user,
+      role: user.role,
+      isResend: true,
+    });
+
+    user.inviteEmailSentAt = delivery.sent ? new Date() : null;
+    await user.save();
+
+    await auditLog(req, {
+      action: AUDIT_ACTIONS.USER_INVITE,
+      entity: 'User',
+      entityId: user._id,
+      schoolId: school._id,
+      meta: {
+        email: user.email,
+        role: user.role,
+        isResend: true,
+        emailSent: delivery.sent,
+        ...(delivery.sent ? {} : { failureReason: delivery.reason }),
+      },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: delivery.sent
+        ? `Invitation re-sent to ${user.email}`
+        : 'The invitation still could not be sent. Check the address and try again.',
+      user: user.toJSON(),
+      emailSent: delivery.sent,
+      ...(delivery.sent ? {} : { code: 'INVITE_EMAIL_FAILED' }),
+    });
+  } catch (error) {
+    if (error.name === 'CastError') {
+      return res.status(400).json({ success: false, message: 'Invalid user ID' });
+    }
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 

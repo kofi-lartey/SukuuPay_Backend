@@ -1,5 +1,15 @@
 import mongoose from "mongoose";
 
+/**
+ * The closed set of audit actions.
+ *
+ * Re-exported at the foot of this file, because it is a *contract*, not a local
+ * detail: the validation layer filters on it, and the Activity Log screen offers
+ * it as a dropdown. It used to be reachable only as the schema's own enum while
+ * `validations/auditLog.validation.js` held a hand-copied 14 of these 27 — so
+ * every action added below after that copy was written was unwritable through
+ * the only endpoint that can filter on it.
+ */
 const AUDIT_ACTIONS = [
   "student.create",
   "student.update",
@@ -28,6 +38,12 @@ const AUDIT_ACTIONS = [
   "sms.template_delete",
   "sms.credit_topup",
   "sms.test_send",
+  // Reading a report is an auditable act, and it was the one financial action
+  // with a stub logger: nine report endpoints called a local `console.log` and
+  // wrote nothing, so a bursar exporting the arrears ledger left no trace. For a
+  // GES-facing audit trail, who looked at a debtors list is as much evidence as
+  // who changed it.
+  "report.viewed",
 ];
 
 const auditLogSchema = new mongoose.Schema(

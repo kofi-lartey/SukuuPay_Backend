@@ -65,6 +65,40 @@ const button = (url, label) => {
 
 const buttonText = (url, label) => `${label}: ${url}`;
 
+/**
+ * A two-column key/value table, for the one email that has to carry a
+ * credential. Credentials get a table rather than a paragraph because a
+ * recipient copying `email` and `password` out of running prose reliably
+ * captures a trailing full stop, and the difference between a working sign-in
+ * and a 401 is the sentence's last character.
+ *
+ * `password` is rendered in a monospace face at a deliberate size so the
+ * case-sensitive characters can be told apart — `l` from `1`, `O` from `0`. The
+ * generator already avoids the ambiguous glyphs (see utils/defaultPassword.js),
+ * but a reader should not have to know that to read it correctly.
+ */
+const credentialsTable = ({ email, password, loginUrl, schoolCode }) => `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:24px 0;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
+    <tr>
+      <td style="padding:12px 16px;background:#f9fafb;border-bottom:1px solid #e5e7eb;width:38%;font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#6b7280;font-weight:700;">Email</td>
+      <td style="padding:12px 16px;border-bottom:1px solid #e5e7eb;font-size:14px;font-weight:600;color:#111827;word-break:break-all;">${escapeHtml(email)}</td>
+    </tr>
+    <tr>
+      <td style="padding:12px 16px;background:#f9fafb;border-bottom:1px solid #e5e7eb;font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#6b7280;font-weight:700;">Temporary password</td>
+      <td style="padding:12px 16px;border-bottom:1px solid #e5e7eb;font-family:'Courier New',Consolas,monospace;font-size:16px;font-weight:700;letter-spacing:1px;color:#111827;word-break:break-all;">${escapeHtml(password)}</td>
+    </tr>
+    <tr>
+      <td style="padding:12px 16px;background:#f9fafb;font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#6b7280;font-weight:700;">School ID</td>
+      <td style="padding:12px 16px;font-family:'Courier New',Consolas,monospace;font-size:14px;font-weight:700;color:#111827;">${escapeHtml(schoolCode)}</td>
+    </tr>
+  </table>`;
+
+const credentialsTableText = ({ email, password, schoolCode, loginUrl }) => [
+  `Email: ${email}`,
+  `Temporary password: ${password}`,
+  `School ID: ${schoolCode}`,
+  `Sign in: ${loginUrl}`,
+];
+
 // ──────────────────── Placeholder handling ────────────────────
 
 const TOKEN_PATTERN = /\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g;
@@ -160,24 +194,105 @@ export const passwordChangedEmail = ({ name }) => ({
   ]),
 });
 
-export const invitationEmail = ({ name, otp, expiresInMinutes, inviter }) => ({
-  subject: 'You have been invited to join SukuuPay',
-  html: shell(
-    'You have been invited to join SukuuPay',
-    `${paragraph(`Hi ${escapeHtml(name)},`)}
-     ${paragraph(
-       `${escapeHtml(inviter || 'A school administrator')} has invited you to join SukuuPay. Enter the code below to verify your email address and complete your registration. This code expires in ${escapeHtml(expiresInMinutes)} minutes.`
-     )}
-     ${codeBlock(otp)}
-     ${paragraph('If you did not expect this invitation, you can safely ignore this email.')}`
-  ),
-  text: textShell('You have been invited to join SukuuPay', [
-    `Hi ${name},`,
-    `${inviter || 'A school administrator'} has invited you to join SukuuPay. Enter the code below to verify your email address and complete your registration. This code expires in ${expiresInMinutes} minutes.`,
-    `Verification code: ${otp}`,
-    'If you did not expect this invitation, you can safely ignore this email.',
-  ]),
-});
+/**
+ * The team invitation.
+ *
+ * Replaces the OTP-only version this used to be. That email asked the recipient
+ * to "enter the code to complete your registration" — which is self-service
+ * signup language, applied to a user an administrator had already created. The
+ * account existed; `status: 'invited'` and `isEmailVerified: false` meant the
+ * only way forward was to prove they controlled the mailbox. It worked, but it
+ * handed a person who had just been hired a second puzzle before they could see
+ * the system they were hired into, and the default password that had been
+ * generated was never mentioned — so a teacher who never checked their junk
+ * folder was simply stuck.
+ *
+ * This version carries the three things the flow actually needs:
+ *
+ *   1. A formal notification of the invitation, naming the administrator who
+ *      issued it. That name is load-bearing rather than decorative: a stranger
+ *      from "SukuuPay" asking for a password is a phishing pattern that every
+ *      security-awareness training teaches people to recognise, and "Kweku
+ *      Mensah, Bursar, Prampram Basic" appearing above the credentials is
+ *      precisely what distinguishes this mail from that one.
+ *   2. The login credentials — email and the temporary default password.
+ *   3. That administrator's name and position, stated twice (once in the
+ *      opening, once in the signature) because a recipient who skim-reads is
+ *      far more likely to act on either than on both.
+ *
+ * The change-password instruction is not optional garnish. The password is a
+ * default the recipient did not choose and an administrator already knows, so
+ * every property of it is a property of *two* people knowing it. It has to be
+ * changed on first sign-in, and the `mustChangePassword` flag the controller
+ * writes is what a client would use to enforce that.
+ */
+export const invitationEmail = ({
+  name,
+  email,
+  password,
+  schoolCode,
+  schoolName,
+  inviter,
+  inviterRole,
+  inviterPosition,
+  role,
+  loginUrl,
+  isResend = false,
+}) => {
+  const inviterName = inviter || 'A school administrator';
+  // "Headteacher" reads as a title; "Headmaster" does not. Used only when the
+  // inviter recorded no position of their own.
+  const inviterTitle = inviterPosition || (inviterRole === 'school_admin' ? 'School Administrator' : 'SukuuPay Administrator');
+  const inviteeRoleLine = role
+    ? ` You have been added to the school's SukuuPay account with the <strong>${escapeHtml(role)}</strong> role.`
+    : '';
+
+  const opening = isResend
+    ? `This is a re-send of your SukuuPay invitation from <strong>${escapeHtml(inviterName)}</strong>${schoolName ? ` of <strong>${escapeHtml(schoolName)}</strong>` : ''}. Your previous temporary password has been replaced with the one below — the earlier one no longer works.`
+    : `${escapeHtml(inviterName)} has formally invited you to join SukuuPay${schoolName ? ` on behalf of <strong>${escapeHtml(schoolName)}</strong>` : ''}.${inviteeRoleLine} Your account has been created and is ready to use.`;
+
+  const subject = isResend
+    ? 'Your SukuuPay invitation has been re-sent'
+    : `You have been invited to join SukuuPay${schoolName ? ` — ${schoolName}` : ''}`;
+
+  return {
+    subject,
+    html: shell(
+      isResend ? 'Your SukuuPay invitation (re-sent)' : 'You have been invited to join SukuuPay',
+      `${paragraph(`Dear ${escapeHtml(name)},`)}
+       ${paragraph(opening)}
+       ${paragraph(
+         'Please sign in with the credentials below. They have been generated for you by your school administrator.'
+       )}
+       ${credentialsTable({ email, password, schoolCode, loginUrl })}
+       ${button(loginUrl, 'Sign in to SukuuPay')}
+       ${paragraph(
+         '<strong>Change this password after signing in.</strong> It is a temporary default and is known to your school administrator, so it must not be left as your working password.'
+       )}
+       ${paragraph(
+         'If you were not expecting this invitation, do not sign in — ignore this email and contact your school administrator.'
+       )}
+       ${paragraph(
+         `Yours faithfully,<br /><strong>${escapeHtml(inviterName)}</strong><br />${escapeHtml(inviterTitle)}${schoolName ? `<br />${escapeHtml(schoolName)}` : ''}`
+       )}`
+    ),
+    text: textShell(isResend ? 'Your SukuuPay invitation (re-sent)' : 'You have been invited to join SukuuPay', [
+      `Dear ${name},`,
+      isResend
+        ? `This is a re-send of your SukuuPay invitation from ${inviterName}${schoolName ? ` of ${schoolName}` : ''}. Your previous temporary password has been replaced with the one below — the earlier one no longer works.`
+        : `${inviterName} has formally invited you to join SukuuPay${schoolName ? ` on behalf of ${schoolName}` : ''}.${role ? ` You have been added with the ${role} role.` : ''} Your account has been created and is ready to use.`,
+      'Please sign in with the credentials below. They have been generated for you by your school administrator.',
+      ...credentialsTableText({ email, password, schoolCode, loginUrl }),
+      'Change this password after signing in. It is a temporary default and is known to your school administrator.',
+      'If you were not expecting this invitation, do not sign in — ignore this email and contact your school administrator.',
+      '',
+      'Yours faithfully,',
+      inviterName,
+      inviterTitle,
+      ...(schoolName ? [schoolName] : []),
+    ]),
+  };
+};
 
 // ──────────────────── School communication templates ────────────────────
 

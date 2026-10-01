@@ -19,6 +19,32 @@ export const PASSWORD_RESET_EXPIRE_MINUTES = Number(
   process.env.PASSWORD_RESET_EXPIRE_MINUTES || 30
 );
 
+// ─────────────── Team invitations ───────────────
+// Length of the random suffix appended to the School ID when minting an
+// invitee's default password (see utils/defaultPassword.js). Eight gives ~2.8e11
+// distinct suffixes at 31^8, which is far beyond the number of staff any one
+// school will ever invite, while keeping the whole password short enough to be
+// read aloud over a phone without error.
+export const INVITE_PASSWORD_SUFFIX_LENGTH = Number(
+  process.env.INVITE_PASSWORD_SUFFIX_LENGTH || 8
+);
+
+// How many invitations a single admin may send per hour.
+//
+// An invite mints a *working credential* and emails it, so the endpoint is a
+// credential-minting surface: without a ceiling one compromised admin session
+// turns into a mail cannon pointed at an arbitrary list of addresses. 25/hour is
+// well above a real hiring day (a school invites a handful of staff a term) and
+// still bounds the blast radius.
+//
+// Counted per admin identity rather than per IP — see the `inviteLimiter` in
+// routes/userRoutes.js for why the anonymous `emailLimiter` on the auth routes
+// is the wrong limiter to reuse here. Shared with `/users/:userId/resend-invite`
+// so resending cannot be used to walk around it.
+export const INVITE_RATE_LIMIT_PER_HOUR = Number(
+  process.env.INVITE_RATE_LIMIT_PER_HOUR || 25
+);
+
 // ─────────────── Client ───────────────
 // Origin the browser is on. Every link that lands a human on a page is built
 // from this: the email-verification link in authController and the
