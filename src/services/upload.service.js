@@ -71,14 +71,25 @@ export const uploadStudentPhoto = async (file, studentId, user) => {
     .toFormat(file.mimetype === "image/png" ? "png" : "webp")
     .toBuffer();
 
-  // If studentId provided, update the student record and clean up old image.
+  // Resolve the student up front, and read the old public id *without mutating
+  // the record*.
+  //
+  // This used to null `studentImage` and save **before** the upload, and its
+  // failure path then deleted the old Cloudinary asset. So any failed replace —
+  // a dropped connection, a Cloudinary outage — left the student with
+  // `studentImage: null` *and* no asset behind the old URL: the photo was gone
+  // permanently, from a request the user was told had simply errored. The old
+  // reference is now held only in memory and the record is written once, after
+  // the new image is known to exist.
   let oldPublicId = null;
+  let student = null;
+
   if (studentId) {
     if (!mongoose.Types.ObjectId.isValid(studentId)) {
       throw new ApiError("Invalid student ID", 400, "INVALID_ID");
     }
 
-    const student = await Student.findOne({
+    student = await Student.findOne({
       _id: studentId,
       schoolId,
       deletedAt: null,
@@ -88,8 +99,6 @@ export const uploadStudentPhoto = async (file, studentId, user) => {
     }
 
     oldPublicId = student.studentImage ? extractPublicId(student.studentImage) : null;
-    student.studentImage = null; // will be set after upload
-    await student.save({ validateBeforeSave: false });
   }
 
   let uploadResult;
@@ -104,26 +113,23 @@ export const uploadStudentPhoto = async (file, studentId, user) => {
       resourceType: "image",
     });
   } catch (cloudinaryError) {
-    // Clean up old image if we had captured a reference but failed to upload.
-    if (oldPublicId) {
-      await deleteFromCloudinary(oldPublicId).catch(() => {});
-    }
+    // Nothing has been written and nothing is deleted: the student's existing
+    // photo is still both referenced and stored, which is the whole point of
+    // only mutating after a successful upload.
     throw new ApiError("Failed to upload image to Cloudinary", 500, "UPLOAD_FAILED");
   }
 
   const imageUrl = uploadResult?.secure_url || uploadResult?.url;
   const publicId = uploadResult?.public_id;
 
-  // Update the student with the new image URL.
-  if (studentId) {
-    const student = await Student.findById(studentId);
-    if (student) {
-      student.studentImage = imageUrl;
-      await student.save({ validateBeforeSave: false });
-    }
+  // Update the student with the new image URL, now that the asset exists.
+  if (student) {
+    student.studentImage = imageUrl;
+    await student.save({ validateBeforeSave: false });
   }
 
-  // Clean up the old Cloudinary image.
+  // Clean up the old Cloudinary image — only after the new one is safely
+  // recorded, so the record can never point at a deleted asset.
   if (oldPublicId) {
     await deleteFromCloudinary(oldPublicId).catch(() => {});
   }

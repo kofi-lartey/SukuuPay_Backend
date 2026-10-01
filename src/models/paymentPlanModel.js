@@ -73,6 +73,31 @@ const paymentPlanModel = new mongoose.Schema(
       index: true,
     },
 
+    // ── Term scope ──
+    //
+    // A plan *is* term-scoped — "3-Month Plan" means "these three months of
+    // Term 1 fees" — but nothing recorded that, so the compliance dashboard had
+    // no way to answer the only question a school asks about its plans: how is
+    // Term 1 going? Every plan ever written was in scope at once, which made
+    // the figures a rolling total across years rather than a term's position.
+    //
+    // Denormalised from `School.academic` at creation rather than resolved on
+    // read, because a school's current term moves on and a plan does not: a plan
+    // created in Term 1 was always a Term 1 plan, even after the school rolls
+    // over to Term 2.
+    term: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+    academicYear: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+
     // ── Plan basics ──
     planName: {
       type: String, // e.g. "3-Month Plan", "Term 1 Split"
@@ -241,6 +266,10 @@ paymentPlanModel.index({ studentId: 1, planStatus: 1 });
 paymentPlanModel.index({ schoolId: 1, planStatus: 1 });
 paymentPlanModel.index({ schoolId: 1, "installments.dueDate": 1 });
 paymentPlanModel.index({ endDate: 1, planStatus: 1 });
+// The compliance dashboard's term filter, and the `{schoolId, term}` shape the
+// term's compliance card reads. Without this the filter is a scan of every plan
+// the school has ever written.
+paymentPlanModel.index({ schoolId: 1, term: 1, planStatus: 1 });
 // Unique across plans. The partial filter keeps plans without a token (they
 // store an explicit null) out of the index so they never collide.
 paymentPlanModel.index(

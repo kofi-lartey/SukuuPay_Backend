@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { SMS_DELIVERY_STATUSES, SMS_PROVIDERS } from '../config/constants.js';
+import { SMS_DELIVERY_STATUSES, SMS_CATEGORIES, SMS_PROVIDERS } from '../config/constants.js';
 
 // ──────────────────── SMS message ────────────────────
 // One document per SMS the platform hands to a gateway. It exists so the
@@ -22,8 +22,175 @@ const smsMessageSchema = new mongoose.Schema(
     studentId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Student',
+      required: true,
+      index: true,
+    },
+    // The specific parent sub-document this went to. A student record holds
+    // several parents and they each have their own number and their own
+    // household, so "which parent is this" cannot be answered from `to` alone:
+    // one guardian can parent three children in the same school, and all three
+    // sends share a number. Recording the parent keeps that from reading as
+    // three unrelated messages to one person.
+    parentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
+    // Business category, so history can be filtered by *why* something was sent
+    // without parsing the body text. See SMS_CATEGORIES.
+    type: {
+      type: String,
+      enum: SMS_CATEGORIES,
+      default: 'custom',
+      index: true,
+    },
+    // Which reusable body rendered this. Null for a free-form send, which is
+    // also what makes the two distinguishable in the history view.
+    templateId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'SmsTemplate',
+      default: null,
+    },
+    // The bulk run this belongs to. Null for a direct single send. Set on the
+    // one-to-many side rather than resolved by date range, so a job's progress
+    // is a single indexed count instead of a scan of the whole school's
+    // messages.
+    jobId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'SmsJob',
       default: null,
       index: true,
+    },
+    // The carrier the gateway handed this to. Only known after submission, so it
+    // is null while queued — and it is what splits a school's coverage report
+    // by operator.
+    network: {
+      type: String,
+      enum: ['mtn', 'telecel', 'airteltigo', null],
+      default: null,
+    },
+    // A test send goes to a number the school controls, to prove the copy and
+    // the sender ID render correctly. It is billed at nothing and must be
+    // excluded from delivery rates, or a school's "98% delivered" is partly a
+    // measurement of its own phone.
+    isTest: {
+      type: Boolean,
+      default: false,
+    },
+    scheduledAt: {
+      type: Date,
+      default: null,
+    },
+    // The moment the gateway accepted the message. Distinct from `submittedAt`
+    // only in intent — this is the field the SMS Reminders UI reads, and the
+    // send path writes both.
+    sentAt: {
+      type: Date,
+      default: null,
+    },
+    // Credit accounting, per message rather than per job.
+    //
+    // Refunds are tracked separately from charges so a message can be charged
+    // once and refunded once, and so the history of a failed send stays
+    // readable afterwards. The school balance is the single source of truth;
+    // these are the audit trail explaining how it got there.
+    creditsCharged: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    creditsRefunded: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    // The Idempotency-Key in force when this was created, so a replay can be
+    // traced back to the attempt it replayed.
+    idempotencyKey: {
+      type: String,
+      default: null,
+    },
+    // The specific parent sub-document this went to. A student record holds
+    // several parents and they each have their own number and their own
+    // household, so "which parent is this" cannot be answered from `to` alone:
+    // one guardian can parent three children in the same school, and all three
+    // sends share a number. Recording the parent keeps that from reading as
+    // three unrelated messages to one person.
+    parentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
+    // Business category, so history can be filtered by *why* something was sent
+    // without parsing the body text. See SMS_CATEGORIES.
+    type: {
+      type: String,
+      enum: SMS_CATEGORIES,
+      default: "custom",
+      index: true,
+    },
+    // Which reusable body rendered this. Null for a free-form send, which is
+    // also what makes the two distinguishable in the history view.
+    templateId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "SmsTemplate",
+      default: null,
+    },
+    // The bulk run this belongs to. Null for a direct single send. Set on the
+    // one-to-many side rather than queried for, so a job's progress is a single
+    // indexed count instead of a scan of the whole school's messages.
+    jobId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "SmsJob",
+      default: null,
+      index: true,
+    },
+    // The carrier the gateway handed this to. Only known after submission, so
+    // it is null while queued — and it is what splits a school's coverage
+    // report by operator.
+    network: {
+      type: String,
+      enum: ["mtn", "telecel", "airteltigo", null],
+      default: null,
+    },
+    // A test send goes to a number the school controls, to prove the copy and
+    // the sender ID render correctly. It is billed at nothing and must be
+    // excluded from delivery rates, or a school's "98% delivered" is partly a
+    // measurement of its own phone.
+    isTest: {
+      type: Boolean,
+      default: false,
+    },
+    scheduledAt: {
+      type: Date,
+      default: null,
+    },
+    // The moment the gateway accepted the message. Distinct from
+    // `submittedAt` in intent only: this is the record the SMS Reminders UI
+    // reads, and the two are written together by the send path.
+    sentAt: {
+      type: Date,
+      default: null,
+    },
+    // Credit accounting, per message rather than per job.
+    //
+    // Refunds are tracked separately from charges so a message can be charged
+    // once and refunded once, and so the history of a failed send is readable
+    // after the fact. The school balance is the single source of truth; these
+    // are the audit trail explaining how it got there.
+    creditsCharged: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    creditsRefunded: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    // Idempotency key in force when this was created, so a replay can be
+    // traced back to the original attempt.
+    idempotencyKey: {
+      type: String,
+      default: null,
     },
     paymentPlanId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -151,12 +318,40 @@ smsMessageSchema.index({ schoolId: 1, status: 1 });
 smsMessageSchema.index({ provider: 1, providerMessageId: 1 });
 // Lets a report that only carries a phone number still find its message.
 smsMessageSchema.index({ to: 1, createdAt: -1 });
+// The history view's default query: one school's sends, newest first, filtered
+// by business category. The two single-field indexes above can only intersect at
+// high cost, and this is the query behind every page of the SMS Reminders
+// history tab.
+smsMessageSchema.index({ schoolId: 1, type: 1, createdAt: -1 });
+// A bulk run's progress rollup. Covered on the one-to-many side so the job poll
+// is a count on an equality match, not an aggregation over the school's history.
+smsMessageSchema.index({ jobId: 1, status: 1 });
+// Resolving "who still owes" from a message history screen by student.
+smsMessageSchema.index({ studentId: 1, createdAt: -1 });
 
 // ── Pre-save hooks ──
 smsMessageSchema.pre('save', function () {
   if (this.status === 'submitted' && !this.submittedAt) this.submittedAt = new Date();
   if (this.status === 'delivered' && !this.deliveredAt) this.deliveredAt = new Date();
   if (['failed', 'rejected'].includes(this.status) && !this.failedAt) this.failedAt = new Date();
+
+  // `sentAt` mirrors `submittedAt` rather than being set independently: the two
+  // name the same event, and the delivery-report path only ever moves
+  // `status`/`submittedAt`, so a sender that sets one and not the other would
+  // produce a message the history list files under "queued" forever.
+  if (this.submittedAt) {
+    if (!this.sentAt) this.sentAt = this.submittedAt;
+  } else if (this.sentAt) {
+    this.submittedAt = this.sentAt;
+  }
+
+  // A message cannot claim a refund it was never charged for. Clamped on the
+  // document rather than trusted from the caller, because the DLR webhook
+  // computes this from fields it read a moment earlier and a double-settled
+  // webhook could otherwise credit a school twice.
+  if ((this.creditsRefunded || 0) > (this.creditsCharged || 0)) {
+    this.creditsRefunded = this.creditsCharged || 0;
+  }
 });
 
 smsMessageSchema.set('toJSON', {

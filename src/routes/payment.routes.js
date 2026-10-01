@@ -5,6 +5,8 @@ import {
   verifyPaymentController,
   getReceiptController,
   listPaymentsController,
+  getPaymentSummaryController,
+  exportPaymentsController,
   getPaymentDetailController,
   getPaymentReceiptController,
   hubtelWebhookController,
@@ -20,6 +22,7 @@ import {
   verifyPaymentSchema,
   hubtelWebhookSchema,
   paymentsQuerySchema,
+  paymentExportQuerySchema,
   paymentDetailQuerySchema,
   refundPaymentSchema,
 } from "../validations/payment.validation.js";
@@ -91,6 +94,39 @@ paymentRoute.get(
   requireSchoolAdmin,
   validate(paymentsQuerySchema, "query"),
   listPaymentsController
+);
+
+// GET /payments/summary - Collection KPIs for the dashboard
+//
+// Declared before `/payments/:paymentId` for the same reason `/payments/record`
+// is, and with the same consequence: `paymentIdParamSchema` demands at least 5
+// characters, so a `summary` request that reached the detail route would have
+// 422'd with a message about a payment id. Express matches in registration
+// order, so moving either literal route below the parameterised one silently
+// breaks it and the dashboard's KPI band reports a validation error.
+//
+// It validates against `paymentsQuerySchema` rather than a narrower schema, so
+// `page`/`limit`/`sortBy`/`sortOrder` arrive with their defaults and are simply
+// unused: the summary aggregates the whole filtered set, and a client that
+// deep-links its current page must not have to strip it first.
+paymentRoute.get(
+  "/payments/summary",
+  authenticate,
+  requireSchoolAdmin,
+  validate(paymentsQuerySchema, "query"),
+  getPaymentSummaryController
+);
+
+// GET /payments/export - The filtered payment list as a CSV file
+//
+// Same ordering constraint as `/payments/summary` above: declared ahead of
+// `/payments/:paymentId` so "export" is a route and not a payment id.
+paymentRoute.get(
+  "/payments/export",
+  authenticate,
+  requireSchoolAdmin,
+  validate(paymentExportQuerySchema, "query"),
+  exportPaymentsController
 );
 
 // GET /payments/:paymentId - Payment detail

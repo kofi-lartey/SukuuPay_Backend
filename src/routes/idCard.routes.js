@@ -3,6 +3,7 @@ import {
   createIdCardBatchController,
   getStudentIdCardController,
   getIdCardBatchPreviewController,
+  getIdCardBatchPdfController,
   getQrLinksExportController,
 } from "../controllers/idCard.controller.js";
 import { authenticate, authorize } from "../middleware/authenticate.js";
@@ -35,6 +36,20 @@ idCardRoute.get(
   requireSchoolAdmin,
   validate(studentIdParamSchema, "params"),
   getStudentIdCardController
+);
+
+// GET /id-cards/batch/:batchId/pdf — download the generated batch PDF
+//
+// Registered before `/batch/:batchId` for the same reason the preview route is
+// not: both are three segments, but this one is four, so it cannot collide with
+// `/id-cards/:studentId` (two) regardless of order. It is placed adjacent to its
+// sibling so the pair reads as the batch's two endpoints.
+idCardRoute.get(
+  "/batch/:batchId/pdf",
+  authenticate,
+  requireSchoolAdmin,
+  validate(batchIdParamSchema, "params"),
+  getIdCardBatchPdfController
 );
 
 // GET /id-cards/batch/:batchId — batch print preview (HTML)

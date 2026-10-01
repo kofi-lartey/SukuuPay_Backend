@@ -21,6 +21,13 @@ const AUDIT_ACTIONS = [
   "whatsapp.template_create",
   "webhook.received",
   "sms.dlr_update",
+  "sms.bulk_send",
+  "sms.job_cancel",
+  "sms.template_create",
+  "sms.template_update",
+  "sms.template_delete",
+  "sms.credit_topup",
+  "sms.test_send",
 ];
 
 const auditLogSchema = new mongoose.Schema(

@@ -1,10 +1,40 @@
 import {
   createIdCardBatch,
   getIdCardBatchPreview,
+  getIdCardBatchPdf,
   getQrLinksExport,
   generateSingleStudentIdCard,
 } from "../services/idCard.service.js";
 import { streamCsv } from "../utils/csvWriter.js";
+
+// ── GET /id-cards/batch/:batchId/pdf — download a generated batch PDF ──────
+export const getIdCardBatchPdfController = async (req, res) => {
+  try {
+    const result = await getIdCardBatchPdf(req.params.batchId, req.user);
+
+    // Same polling contract as the preview endpoint: 202 with `status:
+    // "pending"` while the background job is still running. The client is
+    // expected to retry, so this must not look like a failure.
+    if (result.status === "pending") {
+      return res.status(202).json({
+        success: true,
+        message: "Batch is still being generated",
+        data: { status: "pending" },
+      });
+    }
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${result.filename}"`);
+    res.set("Content-Length", String(result.buffer.length));
+
+    return res.send(result.buffer);
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
 
 // ── POST /id-cards/batch — create a batch and trigger background PDF generation ──
 export const createIdCardBatchController = async (req, res) => {

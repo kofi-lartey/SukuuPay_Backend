@@ -1,4 +1,5 @@
 import { SmsMessage } from '../models/smsMessageModel.js';
+import { School } from '../models/schoolModel.js';
 import { handleHubtelWebhook, handleMtnResult } from './payment.service.js';
 import { log as auditLog } from '../utils/auditService.js';
 import { verifyHubtelSignature, verifyArkeselAuth } from '../utils/signatures.js';
@@ -375,6 +376,18 @@ const applyReport = async (report) => {
     network: report.network ? String(report.network) : null,
     raw: report.raw ?? null,
   };
+
+  // Promote the carrier's own report to the top level when the submit response
+  // did not name one. Arkesel accepts a message without echoing the network, and
+  // the DLR is often the only place it appears — so without this a school's
+  // coverage report silently excludes most of its MTN traffic.
+  if (!message.network && report.network) {
+    const carrier = String(report.network).trim().toLowerCase();
+    if (carrier.includes('mtn')) message.network = 'mtn';
+    else if (carrier.includes('telecel') || carrier.includes('vod')) message.network = 'telecel';
+    else if (carrier.includes('airtel') || carrier.includes('tigo')) message.network = 'airteltigo';
+  }
+
   if (report.status === 'failed') {
     message.failureReason = (report.description || report.rawStatus || 'Reported failed').slice(0, 500);
   }
@@ -383,6 +396,34 @@ const applyReport = async (report) => {
   if (report.reportedAt) {
     if (report.status === 'delivered') message.deliveredAt = report.reportedAt;
     if (report.status === 'failed') message.failedAt = report.reportedAt;
+  }
+
+  // ── Credit refund ──
+  // A message the carrier could not deliver was never delivered, so the school
+  // should not be paying for it. This is the one place a balance can be
+  // returned without a bursar asking, and it is the difference between a
+  // metered product and a billing dispute.
+  //
+  // Two guards, both necessary:
+  //   - `isTest`: a test send was never charged, so refunding it would be a gift.
+  //   - `creditsRefunded === 0`: a report that arrives twice, or a late report
+  //     for a message already refunded, must not credit the school twice. The
+  //     model clamps the field on save, but the check has to happen before the
+  //     school's balance is touched.
+  const refundable =
+    report.status === 'failed' &&
+    !message.isTest &&
+    (message.creditsCharged || 0) > 0 &&
+    (message.creditsRefunded || 0) === 0
+      ? message.creditsCharged
+      : 0;
+
+  if (refundable > 0) {
+    message.creditsRefunded = refundable;
+    await School.findOneAndUpdate(
+      { _id: message.schoolId },
+      { $inc: { 'sms.balance': refundable } }
+    );
   }
 
   await message.save();
@@ -398,6 +439,8 @@ const applyReport = async (report) => {
       status: report.status,
       matchedBy,
       rawCode: report.rawCode,
+      network: message.network,
+      creditsRefunded: refundable,
     },
   });
 
@@ -406,6 +449,7 @@ const applyReport = async (report) => {
     matchedBy,
     status: report.status,
     previousStatus,
+    creditsRefunded: refundable,
     messageId: message._id,
   };
 };

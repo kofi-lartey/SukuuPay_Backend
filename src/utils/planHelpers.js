@@ -28,10 +28,24 @@ export const generateAcceptanceToken = async () => {
 
 // ──────────────────── Installment schedule ────────────────────
 
-// Business rule #3: base = floor(total / N); the last installment absorbs the
-// remainder so the installments always sum back to totalAmount exactly.
+/**
+ * Business rule #3: base = floor(total / N); the last installment absorbs the
+ * remainder so the installments always sum back to totalAmount exactly.
+ *
+ * Guarded against a non-positive count. `createPlanSchema` caps plans at 2–6, so a
+ * call site cannot currently pass one — but unguarded, `splitAmount(x, -1)` did not
+ * return an empty array as it looks like it should. `Array.from({ length: -1 })`
+ * produces `[]`, and the next line then *assigns* to `amounts[-2]`, which in JS
+ * attaches a property to the array rather than writing an element. The result is an
+ * array carrying a stray `'-2': Infinity` key, which passes a `length` check, sums
+ * to `0`, and looks like a valid schedule to anything that iterates it. A guard in
+ * a shared arithmetic primitive is cheaper than working out which future caller
+ * would notice.
+ */
 export const splitAmount = (totalAmount, numberOfInstallments) => {
   const count = Number(numberOfInstallments);
+  if (!Number.isInteger(count) || count < 1) return [];
+
   const base = Math.floor(totalAmount / count);
   const amounts = Array.from({ length: count }, () => base);
   amounts[count - 1] = totalAmount - base * (count - 1);

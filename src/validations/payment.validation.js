@@ -63,6 +63,13 @@ export const paymentsQuerySchema = Joi.object({
   status: Joi.string().valid(...PAYMENT_STATUS_ENUM, "all").default("all"),
   paymentMethod: Joi.string().valid(...PAYMENT_METHOD_ENUM).optional(),
   provider: Joi.string().valid(...PAYMENT_PROVIDER_ENUM).optional(),
+  // `class` is a class *name* (`School.academic.classes` is `[String]`; there are
+  // no class ids in this system), so it is validated as a plain string and
+  // resolved to student ids by the service rather than cast to an ObjectId.
+  // `.allow("")` because the dashboard's filter bar submits every control on
+  // save, and an empty class box must mean "no filter" rather than a 422.
+  class: Joi.string().trim().max(50).allow("").optional(),
+  network: Joi.string().valid(...MOMO_NETWORK_ENUM).optional(),
   startDate: Joi.date().optional(),
   endDate: Joi.date().optional(),
   minAmount: Joi.number().integer().min(0).optional(),
@@ -72,6 +79,24 @@ export const paymentsQuerySchema = Joi.object({
   limit: Joi.number().integer().min(1).max(100).default(20),
   sortBy: Joi.string().valid("createdAt", "amount", "completedAt", "paymentId").default("createdAt"),
   sortOrder: Joi.string().valid("asc", "desc").default("desc"),
+});
+
+/**
+ * The export takes the same filters as the list, plus a format.
+ *
+ * `page`, `limit`, `sortBy` and `sortOrder` are inherited and then ignored by
+ * the service on purpose: a client that deep-links "export this view" should not
+ * be rejected for carrying the page it is on, and a file that silently carried
+ * only that page's rows would be the failure `paginationFor()` in
+ * `reports.service.js` exists to prevent. The file is always the whole filtered
+ * set.
+ *
+ * CSV is the only format wired up, so the enum is single-valued for now; the
+ * service still falls back to CSV for a direct caller, because refusing a caller
+ * that asked for a file is worse than handing it the one file we can make.
+ */
+export const paymentExportQuerySchema = paymentsQuerySchema.keys({
+  format: Joi.string().valid("csv").default("csv"),
 });
 
 export const paymentDetailQuerySchema = Joi.object({

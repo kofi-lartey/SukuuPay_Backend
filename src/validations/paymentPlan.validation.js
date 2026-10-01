@@ -171,10 +171,21 @@ export const complianceQuerySchema = Joi.object({
   status: Joi.string()
     .valid(...COMPLIANCE_STATUS_ENUM, "all")
     .optional(),
+  // The term a plan belongs to, as snapshotted at creation. Optional because
+  // plans written before the field existed have none, and a school with legacy
+  // plans must still be able to read its compliance; the UI sends it only when
+  // the user has actually chosen a term.
+  term: Joi.string().trim().max(30).optional().allow("", null),
+  academicYear: Joi.string().trim().max(20).optional().allow("", null),
+  // Free text over the student's name, the public student id, and the parent's
+  // name. Resolved against the Student collection server-side — the plan does
+  // not carry any of those strings, so there is nothing here to match against
+  // without a join.
+  search: Joi.string().trim().max(120).optional().allow("", null),
   page: Joi.number().integer().min(1).default(1),
   perPage: Joi.number().integer().min(1).max(100).default(20),
   sortBy: Joi.string()
-    .valid("createdAt", "endDate", "progressPercent", "totalAmount")
+    .valid("createdAt", "endDate", "progressPercent", "totalAmount", "complianceStatus")
     .default("endDate"),
   sortOrder: Joi.string().valid("asc", "desc").default("asc"),
 });

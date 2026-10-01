@@ -1209,6 +1209,13 @@ export const exportStudents = async (query, user) => {
   // different set of rows than the screen it was exported from. The shared
   // builder keeps the two in step. `format` is not part of the filter, so it is
   // read separately below.
+  //
+  // The call itself was missing when the duplicated block was deleted, so the
+  // `Student.find(filter)` below was reading a `filter` that no longer existed
+  // and every `GET /students/export` failed with a ReferenceError. The comment
+  // claimed the two paths were in step; the code did not compile into a request
+  // that could run.
+  const filter = buildRosterFilter(query, schoolId);
 
   const students = await Student.find(filter)
     .sort({ createdAt: -1 })
@@ -1718,7 +1725,10 @@ export const graduateStudent = async (id, data, user) => {
   }
 
   const school = await fetchSchool(schoolId);
-  const finalClasses = school.academic?.classes?.slice(-3) || [];
+  // The shared helper, for the same reason as the bulk path: a school that has
+  // named `finalYearClasses` gets its own answer rather than whatever three
+  // classes happen to be last on its list.
+  const finalClasses = getFinalYearClassesFrom(school);
   if (!finalClasses.includes(student.studentClass)) {
     throw new ApiError("Student is not in a final year class", 409, "NOT_ELIGIBLE");
   }
@@ -1794,17 +1804,25 @@ export const bulkGraduateStudents = async (schoolId, data, user) => {
 
   await fetchSchool(resolvedSchoolId);
 
-  const { cohortId, classIds, graduationDate, graduationType, autoAssignCertificates, certificatePrefix, dryRun, notes } = data;
+  // `classNames` — class *names*, matching `bulkPromoteStudents` and the
+  // `bulkGraduateSchema` that validates this payload. This destructured
+  // `classIds`, a field the schema does not define, so it was always
+  // `undefined`: graduating a whole class took the `else` branch and threw
+  // MISSING_CRITERIA, and the only route that ever worked was `cohortId` —
+  // which filters on `graduationYear`, i.e. students who had *already*
+  // graduated. So the batch graduation the wizard's final step depends on was
+  // unreachable for a real final-year class.
+  const { cohortId, classNames, graduationDate, graduationType, autoAssignCertificates, certificatePrefix, dryRun, notes } = data;
 
   let filter = { schoolId: resolvedSchoolId, deletedAt: null, status: "active" };
 
   if (cohortId) {
     const cohortYear = cohortId.replace("cohort_", "");
     filter.graduationYear = cohortYear;
-  } else if (classIds && classIds.length > 0) {
-    filter.studentClass = { $in: classIds };
+  } else if (classNames && classNames.length > 0) {
+    filter.studentClass = { $in: classNames };
   } else {
-    throw new ApiError("Either cohortId or classIds must be provided", 400, "MISSING_CRITERIA");
+    throw new ApiError("Either cohortId or classNames must be provided", 400, "MISSING_CRITERIA");
   }
 
   // The `.limit(300)` here truncated silently: a cohort of 400 produced 300
@@ -1824,7 +1842,12 @@ export const bulkGraduateStudents = async (schoolId, data, user) => {
   }
 
   const school = await fetchSchool(resolvedSchoolId);
-  const finalClasses = school.academic?.classes?.slice(-3) || [];
+  // The shared helper, not a bare `slice(-3)`: it honours
+  // `School.academic.finalYearClasses` when the school has named its final
+  // years. The inline version ignored that field, so a school which had
+  // correctly named JHS 3 as its only final year still had the guard evaluate
+  // against whichever three classes happened to sit last on the list.
+  const finalClasses = getFinalYearClassesFrom(school);
 
   const gradDate = new Date(graduationDate);
   const graduated = [];

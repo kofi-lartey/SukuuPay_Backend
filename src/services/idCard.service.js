@@ -333,6 +333,73 @@ export const getQrLinksExport = async (schoolId, requester, query) => {
 };
 
 // ──────────────────── Generate PDF for a batch (called by the job) ────────────────────
+// ──────────────────── Download a generated batch PDF ────────────────────
+//
+// `generateIdCardPdf` uploads the finished PDF to Cloudinary and stores the URL
+// on the batch, and then nothing served it: the only batch endpoints were the
+// create call and an HTML *preview*. So a batch could be generated, report
+// "ready", notify the requester that their cards were ready — and there was no
+// URL anywhere a user could open. The artefact existed and was unreachable.
+//
+// The file is proxied rather than redirected. A redirect would hand the
+// Cloudinary URL to the browser, and that URL is the only thing standing between
+// a scoped record and a publicly-fetchable PDF of one school's entire student
+// body. Proxying keeps the scope check meaningful.
+export const getIdCardBatchPdf = async (batchId, requester) => {
+  const schoolId = resolveSchoolId(requester);
+  if (!schoolId) {
+    throw new ApiError("No school in scope", 403, "NO_SCHOOL_SCOPE");
+  }
+
+  const batch = await IdCardBatch.findOne({ _id: batchId, schoolId }).lean();
+  if (!batch) throw new ApiError("Batch not found", 404, "NOT_FOUND");
+
+  if (
+    batch.status === ID_CARD_BATCH_STATUS.PENDING ||
+    batch.status === ID_CARD_BATCH_STATUS.GENERATING
+  ) {
+    // Not an error: the client polls on this, exactly as it does for the
+    // preview. Returning "still working" beats a 409 the caller cannot act on.
+    return { status: ID_CARD_BATCH_STATUS.PENDING };
+  }
+
+  if (batch.status === ID_CARD_BATCH_STATUS.FAILED) {
+    throw new ApiError(
+      batch.generationError || "ID card batch generation failed",
+      409,
+      "BATCH_FAILED"
+    );
+  }
+
+  if (!batch.pdfUrl) {
+    throw new ApiError(
+      "This batch is marked ready but has no generated file",
+      409,
+      "PDF_UNAVAILABLE"
+    );
+  }
+
+  const response = await fetch(batch.pdfUrl);
+  if (!response.ok) {
+    throw new ApiError(
+      "The generated file could not be retrieved",
+      502,
+      "PDF_FETCH_FAILED"
+    );
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const slug = (requester.schoolSlug || "id-cards")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-");
+
+  return {
+    status: ID_CARD_BATCH_STATUS.READY,
+    buffer,
+    filename: `id-cards-${slug}-${batch.totalCards}.pdf`,
+  };
+};
+
 export const generateIdCardPdf = async (batchId) => {
   const batch = await IdCardBatch.findById(batchId);
   if (!batch) throw new ApiError("Batch not found", 404, "NOT_FOUND");

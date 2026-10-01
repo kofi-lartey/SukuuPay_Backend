@@ -16,6 +16,7 @@ import { settingsRoute } from './settings.routes.js';
 import { adminRoute } from './admin.routes.js';
 import { healthRoute } from './health.routes.js';
 import { whatsappRoute } from './whatsapp.routes.js';
+import { smsRoute } from './sms.routes.js';
 import { webhookRoute } from './webhooks.routes.js';
 import { publicAdRoute } from './schoolAd.routes.js';
 
@@ -42,11 +43,12 @@ router.use('/settings', settingsRoute);
 router.use('/admin', adminRoute);
 router.use('/', publicAdRoute);
 
-// WhatsApp and the third-party callback routers declare absolute paths, so they
-// are mounted at the root of this router: they answer /api/whatsapp/* and
-// /api/webhooks/* as well as the root-level URLs their providers are
-// configured with.
+// WhatsApp, SMS and the third-party callback routers declare absolute paths, so
+// they are mounted at the root of this router: they answer /api/whatsapp/*,
+// /api/sms/* and /api/webhooks/* as well as the root-level URLs their providers
+// are configured with.
 router.use('/', whatsappRoute);
+router.use('/', smsRoute);
 router.use('/', webhookRoute);
 
 export default router;

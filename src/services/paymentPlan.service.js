@@ -37,8 +37,28 @@ const auditService = {
 
 // ──────────────────── Helpers ────────────────────
 
-// A plan is "live" while it is running or still awaiting parent acceptance.
+/** A plan is "live" while it is running or still awaiting parent acceptance. */
 const LIVE_STATUSES = ["active", "pending_acceptance"];
+
+/**
+ * The buckets that count as a plan "in flight".
+ *
+ * Everything else — completed, cancelled, expired, defaulted-with-nothing-to-
+ * chase — is a plan the school is not actively collecting on, so it must not
+ * inflate the compliance rate. Getting this wrong in the inclusive direction is
+ * how a compliance dashboard reports 94% for a school that is 40% in default:
+ * the finished and abandoned plans pad the denominator.
+ *
+ * **These are the `summary` keys, not the classifier's return values.** The
+ * classifier answers `on_track` / `approaching_due`; the summary counts them under
+ * `onTrack` / `approachingDue`. Summing the first three into a summary keyed by
+ * the last three yields three `undefined`s, and `|| 0` turns that into a
+ * confident, wrong `activePlans: 0` with a `complianceRate` of `null` — a
+ * dashboard that renders "—" everywhere and never says why. The two vocabularies
+ * are deliberately kept distinct, so the mapping is stated here rather than
+ * inferred at three call sites.
+ */
+const ACTIVE_COMPLIANCE_KEYS = ["onTrack", "approachingDue", "overdue"];
 
 const resolveSchoolId = (user, explicitSchoolId) => {
   if (user && user.role === "super_admin") {
@@ -49,7 +69,7 @@ const resolveSchoolId = (user, explicitSchoolId) => {
 
 const fetchSchool = async (schoolId) => {
   const school = await School.findById(schoolId)
-    .select("name schoolCode sms payment")
+    .select("name schoolCode sms payment academic")
     .lean();
   if (!school) throw new ApiError("School not found", 404, "NOT_FOUND");
   return school;
@@ -57,6 +77,15 @@ const fetchSchool = async (schoolId) => {
 
 const getPrimaryParent = (student) =>
   (student?.parents || []).find((p) => p.isPrimary) || student?.parents?.[0] || null;
+
+/**
+ * Escapes a string for literal use inside a RegExp.
+ *
+ * Needed for the compliance search box, which builds a pattern from whatever
+ * someone typed. A parent named "A+" or a student id containing a bracket would
+ * otherwise either throw or match far more than intended.
+ */
+const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // All money in the system is integer pesewas; SMS copy needs cedis.
 const toCedis = (pesewas) => (Math.round(Number(pesewas) || 0) / 100).toFixed(2);
@@ -190,6 +219,14 @@ export const createPaymentPlan = async (studentId, data, user) => {
     );
   }
 
+  // The balance to structure is whatever the ledger says is outstanding. The
+  // deposit the design shows alongside it is the part already collected, so a
+  // bursar can see at a glance that a "GH₵ 850 fee" is really "GH₵ 300 paid,
+  // GH₵ 550 to structure" — the plan is written against the second number and
+  // writing it against the first would collect the deposit twice.
+  const totalOwed = student.totalOwed ?? totalAmount;
+  const paidDeposit = Math.max(totalOwed - totalAmount, 0);
+
   // Business rule #1: only one live plan per student.
   const existing = await PaymentPlan.findOne({
     studentId: student._id,
@@ -229,6 +266,24 @@ export const createPaymentPlan = async (studentId, data, user) => {
     installment.installmentNumber = index + 1;
   });
 
+  // A balance too small to divide into whole pesewas.
+  //
+  // `splitAmount` floors and gives the remainder to the last tranche, so a
+  // GH₵ 0.01 balance across six tranches is five zero-pesewa tranches and a
+  // one-pesewa one. `installmentSchema.amount` is `min: 1`, so the save fails —
+  // with a Mongoose validation error naming `installments.0.amount`, which says
+  // nothing about the bursar's actual mistake and nothing about how to fix it.
+  // GH₵ 0.01 is not a balance anyone structures, so the refusal is the honest
+  // answer and it names the remedy.
+  const smallest = Math.min(...schedule.map((i) => i.amount));
+  if (smallest < 1) {
+    throw new ApiError(
+      `A balance of GHS ${toCedis(totalAmount)} cannot be split into ${data.numberOfInstallments} positive tranches. Use fewer installments, or record the amount as a direct payment.`,
+      400,
+      "BALANCE_TOO_SMALL_TO_SPLIT"
+    );
+  }
+
   const acceptanceToken = await generateAcceptanceToken();
 
   const plan = await PaymentPlan.create({
@@ -244,6 +299,11 @@ export const createPaymentPlan = async (studentId, data, user) => {
     startDate: startOfDayAccra(data.startDate),
     endDate: schedule[schedule.length - 1].dueDate,
     adminNotes: data.adminNotes || "",
+    // Snapshotted from the school, not from the request: a client that could
+    // choose the term could file a plan under a term it is not collecting for,
+    // and the compliance dashboard would then report two terms' arrears as one.
+    term: school.academic?.currentTerm || "",
+    academicYear: school.academic?.currentYear || "",
     createdBy: user._id,
     updatedBy: user._id,
   });
@@ -870,6 +930,40 @@ const withNextInstallment = (plan) => {
     : null;
 };
 
+/**
+ * What a plan still owes, in pesewas.
+ *
+ * Summed from the installments rather than read from the plan's `totalRemaining`
+ * field, because that field is a pre-save denormalisation: a plan whose
+ * installment was edited outside a save (a webhook applying a payment, a manual
+ * database fix) would report a stale remainder, and the compliance dashboard's
+ * money figures are exactly what a bursar reconciles against. Deriving it costs
+ * one reduce over an array already in memory.
+ */
+const outstandingOnPlan = (plan) =>
+  (plan.installments || []).reduce(
+    (sum, installment) =>
+      sum + Math.max((installment.amount || 0) - (installment.amountPaid || 0), 0),
+    0
+  );
+
+/**
+ * What a plan's slipped tranches owe, in pesewas.
+ *
+ * Separate from `outstandingOnPlan` because the compliance dashboard asks two
+ * different questions: "how much is in flight" (all of it) and "how much is late"
+ * (only the slipped tranches). A plan can be entirely current *and* carry a
+ * missed tranche only in the sense of a waived one, so the two are genuinely
+ * different sums and not derivable from each other.
+ */
+const arrearsOnPlan = (plan, now) =>
+  (plan.installments || []).reduce((sum, installment) => {
+    const unsettled = installment.status === "pending" || installment.status === "partial" || installment.status === "overdue";
+    if (!unsettled) return sum;
+    if (new Date(installment.dueDate).getTime() > now.getTime()) return sum;
+    return sum + Math.max((installment.amount || 0) - (installment.amountPaid || 0), 0);
+  }, 0);
+
 export const getSchoolCompliance = async (schoolIdParam, query, user) => {
   const schoolId = resolveSchoolId(user, schoolIdParam);
   if (!schoolId) {
@@ -880,6 +974,12 @@ export const getSchoolCompliance = async (schoolIdParam, query, user) => {
 
   const filter = { schoolId, deletedAt: null };
 
+  if (query.term) filter.term = query.term;
+  if (query.academicYear) filter.academicYear = query.academicYear;
+
+  // Both of these narrow by *student*, so the plan filter is derived from a
+  // student query rather than applied directly: a plan stores only `studentId`,
+  // and there is nothing on it to match a class name or a parent's name against.
   if (query.class) {
     const students = await Student.find({
       schoolId,
@@ -889,6 +989,34 @@ export const getSchoolCompliance = async (schoolIdParam, query, user) => {
       .select("_id")
       .lean();
     filter.studentId = { $in: students.map((s) => s._id) };
+  }
+
+  if (query.search) {
+    // Escaped before it reaches the regex engine. An unescaped user-supplied
+    // pattern is a ReDoS vector on every keystroke of a search box, and the
+    // terms here (a name, an id) have no legitimate use for a wildcard.
+    const pattern = new RegExp(escapeRegExp(query.search), "i");
+
+    const matched = await Student.find({
+      schoolId,
+      deletedAt: null,
+      $or: [
+        { studentName: pattern },
+        { studentId: pattern },
+        { "parents.parentName": pattern },
+      ],
+    })
+      .select("_id")
+      .lean();
+
+    // Intersect rather than replace: a class filter and a search filter are
+    // both constraints on the same set, and applying the second with `$in` would
+    // silently discard the first — a bursar searching within "JHS 2A" would get
+    // the whole school's matches.
+    const ids = matched.map((student) => student._id);
+    filter.studentId = filter.studentId
+      ? { $in: filter.studentId.$in.filter((id) => ids.some((other) => other.equals(id))) }
+      : { $in: ids };
   }
 
   const plans = await PaymentPlan.find(filter).lean();
@@ -904,6 +1032,25 @@ export const getSchoolCompliance = async (schoolIdParam, query, user) => {
     completed: 0,
     defaulted: 0,
     pendingAcceptance: 0,
+
+    // ── Money, by bucket ──
+    //
+    // Computed here rather than in the client because the only way to get them
+    // client-side is to ship every plan in the school to the browser and sum it
+    // there — which is both a pagination bug (the endpoint returns 20 plans, so
+    // a client-side sum would total 20 plans' worth of money and label it as the
+    // school's) and a slow one. The dashboard's headline figures are
+    // aggregates over the whole school, so they belong next to the query that
+    // sees the whole school.
+    onTrackValue: 0,
+    approachingDueValue: 0,
+    overdueValue: 0,
+    /** Every plan still in flight, worth this much. The "committed" figure. */
+    committedAmount: 0,
+    /** Only the slipped tranches. What a chaser is actually owed today. */
+    overdueArrears: 0,
+    /** Only the next tranche of the plans approaching their date. */
+    approachingInflow: 0,
   };
 
   const decorated = plans.map((plan) => {
@@ -915,12 +1062,52 @@ export const getSchoolCompliance = async (schoolIdParam, query, user) => {
     else if (bucket === "defaulted") summary.defaulted += 1;
     else if (bucket === "pending_acceptance") summary.pendingAcceptance += 1;
 
+    const next = withNextInstallment(plan);
+
+    if (ACTIVE_COMPLIANCE_KEYS.includes(
+      bucket === "on_track" ? "onTrack" : bucket === "approaching_due" ? "approachingDue" : bucket
+    )) {
+      const outstanding = outstandingOnPlan(plan);
+      summary.committedAmount += outstanding;
+
+      if (bucket === "on_track") summary.onTrackValue += outstanding;
+      else if (bucket === "approaching_due") {
+        summary.approachingDueValue += outstanding;
+        // The inflow is the *next* tranche, not the whole plan: the school's
+        // expectation for this week is the money that falls due this week, and
+        // quoting the plan total would tell a bursar to expect GH₵ 200,000 in
+        // five days.
+        summary.approachingInflow += next
+          ? Math.max(next.amount - (next.amountPaid || 0), 0)
+          : 0;
+      } else {
+        summary.overdueValue += outstanding;
+        summary.overdueArrears += arrearsOnPlan(plan, now);
+      }
+    }
+
     return {
       ...plan,
       complianceStatus: bucket,
-      nextInstallment: withNextInstallment(plan),
+      nextInstallment: next,
+      outstandingAmount: outstandingOnPlan(plan),
     };
   });
+
+  // ── The rate, and the denominator it is measured against ──
+  //
+  // Both are the server's to compute. A client that divided `onTrack` by
+  // `totalPlans` would be dividing by a number that includes completed and
+  // cancelled plans, and would report a school that finished every plan it ever
+  // wrote as 40% compliant.
+  summary.activePlans = ACTIVE_COMPLIANCE_KEYS.reduce(
+    (sum, key) => sum + (summary[key] || 0),
+    0
+  );
+  summary.complianceRate = summary.activePlans
+    ? Math.round((summary.onTrack / summary.activePlans) * 1000) / 10
+    : null;
+  summary.atRiskPlans = summary.overdue + summary.approachingDue;
 
   const filtered =
     query.status && query.status !== "all"
@@ -945,7 +1132,7 @@ export const getSchoolCompliance = async (schoolIdParam, query, user) => {
   const students = await Student.find({
     _id: { $in: pagePlans.map((p) => p.studentId) },
   })
-    .select("studentId studentName studentClass balance")
+    .select("studentId studentName studentClass balance parents")
     .lean();
   const studentById = new Map(students.map((s) => [s._id.toString(), s]));
 
@@ -961,6 +1148,14 @@ export const getSchoolCompliance = async (schoolIdParam, query, user) => {
             studentName: student.studentName,
             studentClass: student.studentClass,
             balance: student.balance,
+            // The primary parent, denormalised onto the row. The compliance table
+            // shows "Parent: K. O. Mensah" on every line, and without this the
+            // client has to fetch a student per row to fill it in — twenty
+            // requests for one screen, against a lookup this function was already
+            // doing. The *phone* is deliberately not included: a compliance list
+            // has no use for twenty parents' numbers, and a full page of them is
+            // exactly the kind of thing a bursar pastes into a spreadsheet.
+            parentName: getPrimaryParent(student)?.parentName || null,
           }
         : null,
     };

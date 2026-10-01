@@ -13,6 +13,8 @@ import {
   MtnTransportError,
 } from "../utils/mtnApi.js";
 import { resolveGateway } from "../utils/paymentGateway.js";
+import { escapeRegExp } from "../utils/generateStudentId.js";
+import { startOfDayAccra, endOfDayAccra } from "../utils/dateHelpers.js";
 import { WEBHOOK_BASE_URL } from "../config/env.js";
 
 class ApiError extends Error {
@@ -32,7 +34,7 @@ const auditService = {
 
 const fetchSchool = async (schoolId) => {
   const school = await School.findById(schoolId)
-    .select("schoolCode name payment hubtelClientId hubtelClientSecret hubtelApiKey")
+    .select("schoolCode slug name payment hubtelClientId hubtelClientSecret hubtelApiKey")
     .lean();
   if (!school) throw new ApiError("School not found", 404, "NOT_FOUND");
   return school;
@@ -363,8 +365,48 @@ export const getReceipt = async (token, paymentId) => {
   };
 };
 
-// ──────────────────── Admin: List payments ────────────────────
-export const listPayments = async (query, user) => {
+// ──────────────────── Shared filter ────────────────────
+
+/** Human names for the `momoNetwork` enum, and the labels the summary sorts by. */
+const NETWORK_ORDER = ["MTN", "VODAFONE", "AIRTELTELIGO", "UNKNOWN"];
+const NETWORK_LABELS = {
+  MTN: "MTN MoMo",
+  // `VODAFONE` is the stored value and `Vodafone Cash` the real product. This
+  // said "Telecel Cash", which is a different Ghanaian network — Vodafone
+  // Red/Vodafone Cash and Telecel Cash are separate brands with separate
+  // shortcodes, and a bursar reconciling a Vodafone charge against a statement
+  // line labelled "Telecel" has been handed a contradiction by the app.
+  VODAFONE: "Vodafone Cash",
+  AIRTELTELIGO: "AT Money",
+  UNKNOWN: "Unidentified",
+};
+
+/** Human names for the `paymentMethod` enum. */
+const METHOD_LABELS = {
+  momo: "Mobile Money",
+  cash: "Cash",
+  card: "Card",
+  bank_transfer: "Bank transfer",
+  unknown: "Unknown",
+};
+
+/**
+ * The one filter behind the payments list, the dashboard summary and the CSV
+ * export.
+ *
+ * Extracted for the same reason `student.service.js` extracted
+ * `buildRosterFilter`: the list and the export each rebuilt the filter
+ * independently and drifted, so "export what I am looking at" returned a
+ * different set of rows than the screen it was exported from. Here there are
+ * three readers, and a filter added to one and forgotten in the other two is a
+ * report that quietly disagrees with the table above it. The school scope is
+ * returned alongside the filter because the export needs it for the filename.
+ */
+const buildPaymentFilter = async (query, user) => {
+  // Unchanged from the inline filter this replaces. A `super_admin` may act
+  // inside a named school; every other user is confined to their own, and a user
+  // with no school is never given a scope rather than being handed one by a
+  // query parameter they supplied themselves.
   const schoolId = user.role === "super_admin" && query.schoolId
     ? new mongoose.Types.ObjectId(query.schoolId)
     : user.schoolId
@@ -376,15 +418,49 @@ export const listPayments = async (query, user) => {
   }
 
   const filter = { schoolId, deletedAt: null };
-  if (query.studentId) filter.studentId = new mongoose.Types.ObjectId(query.studentId);
   if (query.status && query.status !== "all") filter.status = query.status;
   if (query.paymentMethod) filter.paymentMethod = query.paymentMethod;
   if (query.provider) filter.provider = query.provider;
+  // Collected rather than assigned, because `search` also needs an `$or` and two
+  // separate assignments to `filter.$or` mean whichever is written second silently
+  // wins. That is not hypothetical: `filter.$or` was assigned for `UNKNOWN` and
+  // again for `search`, so filtering "Unidentified" and typing a receipt number
+  // together dropped the network half and showed every network. One `$or`, both
+  // sets of clauses, `$and`-ed together.
+const orClauses = [];
+
+  if (query.network) {
+    // `UNKNOWN` is a *bucket*, not a stored value.
+    //
+    // `getPaymentSummary` groups by network with
+    // `$ifNull: ["$momoNetwork", "UNKNOWN"]`, so cash, card and hand-recorded rows
+    // land in its "Unidentified" tile with a count and a share — which is what
+    // makes the filter bar offer it as a chip. The list filter was an exact
+    // `momoNetwork` match, so selecting that chip returned an empty table under a
+    // heading that said there were payments in it. The two surfaces have to agree
+    // on what `UNKNOWN` means, so this expands it to the rows that actually fall
+    // into it: a null, missing, or literally-`UNKNOWN` network.
+    if (query.network === "UNKNOWN") {
+      orClauses.push({ momoNetwork: null }, { momoNetwork: "UNKNOWN" });
+    } else {
+      filter.momoNetwork = query.network;
+    }
+  }
 
   if (query.startDate || query.endDate) {
     filter.createdAt = {};
-    if (query.startDate) filter.createdAt.$gte = new Date(query.startDate);
-    if (query.endDate) filter.createdAt.$lte = new Date(query.endDate);
+    if (query.startDate) filter.createdAt.$gte = startOfDayAccra(query.startDate);
+    // Snapped to the end of the day, not passed through as `new Date(endDate)`.
+    //
+    // `?endDate=2026-09-30` is `2026-09-30T00:00:00Z`, which excludes every
+    // payment made on the 30th — so "This month" on 30 September excluded
+    // today, and a bursar reconciling the last day of term could not see it.
+    // Worse, it disagreed with the summary: `getPaymentSummary` snapped the same
+    // window with `endOfDayAccra`, so the KPI band above the table could report
+    // an inflow the table below it had no rows for. Two endpoints reading one
+    // query parameter are one definition of a date range, and that definition is
+    // an inclusive calendar day in Accra.
+    if (query.endDate) filter.createdAt.$lte = endOfDayAccra(query.endDate);
   }
 
   if (query.minAmount || query.maxAmount) {
@@ -393,13 +469,75 @@ export const listPayments = async (query, user) => {
     if (query.maxAmount) filter.amount.$lte = query.maxAmount;
   }
 
-  if (query.search) {
-    filter.$or = [
-      { paymentId: { $regex: query.search, $options: "i" } },
-      { hubtelTransactionId: { $regex: query.search, $options: "i" } },
-      { receiptNumber: { $regex: query.search, $options: "i" } },
-    ];
+  // ── The student-side conditions ──
+  // `class` and the student half of `search` are properties of the *Student*
+  // document; a Payment stores no copy of `studentClass` or `studentName`, so
+  // there is nothing on this collection to match them against. They are resolved
+  // to the matching student `_id`s here and applied as `studentId: { $in: ids }`
+  // — the same shape `reports.service.js` uses in its `classScope`, so a
+  // payments table filtered to "JHS 2" and a JHS 2 report cover the same rows.
+  //
+  // All three conditions (an explicit `studentId`, `class`, `search`) go into one
+  // Student query and one `$in`. Resolving them separately and merging the id
+  // lists afterwards would have taken the union, so "class JHS 2 AND search
+  // Ama" would have returned every payment for any student in the school.
+  const studentMatch = {};
+  if (query.studentId) studentMatch._id = new mongoose.Types.ObjectId(query.studentId);
+  if (query.class) studentMatch.studentClass = query.class;
+
+  // The search term is escaped before it reaches `$regex`. It used to be spliced
+  // in raw, so `?search=.*` matched every payment in the school and `?search=[`
+  // threw a driver error that surfaced as a 500 — a search box is an injection
+  // point until it is escaped, and escaping also makes it the literal substring
+  // search a user typing into one actually expects.
+  const searchTerm = query.search ? escapeRegExp(String(query.search).trim()) : "";
+  if (searchTerm) {
+    const rx = { $regex: searchTerm, $options: "i" };
+    studentMatch.$or = [{ studentName: rx }, { studentId: rx }];
   }
+
+  let studentIds = null;
+  if (Object.keys(studentMatch).length > 0) {
+    // `deletedAt: null` matches `classScope`: an archived student is not "in"
+    // any class, so their payments are not reachable through the student side
+    // of a filter. The list without a student-side filter still shows them —
+    // a payment is never hidden by the archiving of the student it paid for.
+    studentIds = (
+      await Student.find({ schoolId, deletedAt: null, ...studentMatch })
+        .select("_id")
+        .lean()
+    ).map((s) => s._id);
+    filter.studentId = { $in: studentIds };
+  }
+
+  // `searchTerm`, not `query.search`: the schema allows `?search=` and the
+  // query string can carry a lone space, and an empty `$regex` matches every
+  // document — so a whitespace-only search box would have silently turned the
+  // filter off's opposite, listing the whole school. No term means no `$or`,
+  // which is the same rule `searchClause` applies in `student.service.js`.
+  if (searchTerm) {
+    // The payment-side fields first — the transaction refs a bursar is actually
+    // pasted in from a receipt or a gateway dashboard — then the students whose
+    // name or human id matched. An empty `studentIds` is not an error here: that
+    // branch simply matches nothing while the reference branches still work, so
+    // searching for a receipt number is unaffected by a student search finding
+    // nothing.
+    orClauses.push(
+      { paymentId: { $regex: searchTerm, $options: "i" } },
+      { hubtelTransactionId: { $regex: searchTerm, $options: "i" } },
+      { receiptNumber: { $regex: searchTerm, $options: "i" } },
+      { studentId: { $in: studentIds || [] } }
+    );
+  }
+
+  if (orClauses.length) filter.$or = orClauses;
+
+  return { filter, schoolId };
+};
+
+// ──────────────────── Admin: List payments ────────────────────
+export const listPayments = async (query, user) => {
+  const { filter } = await buildPaymentFilter(query, user);
 
   const sortBy = query.sortBy || "createdAt";
   const sortOrder = query.sortOrder === "asc" ? 1 : -1;
@@ -410,7 +548,12 @@ export const listPayments = async (query, user) => {
       .sort({ [sortBy]: sortOrder })
       .skip(skip)
       .limit(Number(query.limit))
-      .populate("studentId", "studentId studentName studentClass")
+      // `parents` is populated for the guardian column the table shows. The
+      // numbers are *not* masked: unlike the roster, this surface exists to let
+      // a bursar chase a payment that did not arrive, and the route is already
+      // behind `authenticate` + `requireSchoolAdmin`. The export takes them
+      // unmasked for the same reason (see `exportStudents`' comment).
+      .populate("studentId", "studentId studentName studentClass parents")
       .lean(),
     Payment.countDocuments(filter),
   ]);
@@ -423,6 +566,358 @@ export const listPayments = async (query, user) => {
       total,
       totalPages: Math.ceil(total / Number(query.limit)),
     },
+  };
+};
+
+// ──────────────────── Admin: Payment summary ────────────────────
+
+// Mirrors of the helpers in `reports.service.js`, deliberately not a shared
+// import: that module keeps both private, and a share percentage that rounds
+// differently in two modules is worse than a duplicated two-line function.
+const round = (num, dp = 2) => {
+  const factor = Math.pow(10, dp);
+  return (Math.round((Number(num) || 0) * factor)) / factor;
+};
+
+// `rate(collected, expected)` — the same argument order and the same guard as
+// `reports.service.js`. An empty window has no percentage, and returning 0
+// rather than NaN keeps the KPI row renderable instead of showing "NaN%".
+const rate = (collected, expected) => {
+  if (!expected || expected === 0) return 0;
+  return round((collected / expected) * 100);
+};
+
+/** An ISO timestamp, or an empty cell when the date is missing or unparseable. */
+const toIsoOrBlank = (value) => {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+};
+
+/**
+ * The window the summary is actually measured over, and the window immediately
+ * before it.
+ *
+ * **Default: 1st of the current calendar month (00:00 Accra) through now.**
+ *
+ * Chosen to match `monthWindow()` in `reports.service.js`, so an unfiltered
+ * dashboard and the headmaster monthly report cover exactly the same dates —
+ * two modules answering "collected this month" with different defaults is how a
+ * bursar ends up with two figures on two screens that disagree. A term window
+ * was the other candidate, but `School.academic.currentYear` is optional and
+ * `termsPerYear` is frequently unset, so a term default would quietly fall back
+ * to a calendar year for exactly the schools that had not configured one — and
+ * a term that opens mid-month would compare a part-week against a full term in
+ * the trend figure.
+ *
+ * `endDate` defaults to *now* rather than to the end of the month, so a payment
+ * made a minute ago is inside the window. An explicit date is snapped to the
+ * day with `startOfDayAccra` / `endOfDayAccra`, matching every other report
+ * here, so `?endDate=2026-09-30` includes the whole of the 30th.
+ *
+ * The previous window is derived by *length*, not by calendar: it ends one
+ * millisecond before the current window opens and is exactly as long as it. The
+ * obvious alternative — "the previous calendar month" — compares a half-finished
+ * month against a full one and reports a collapse in income that never happened.
+ * The one-millisecond gap is deliberate: with both sides inclusive on `start`,
+ * a payment landing exactly on the boundary would be counted in both.
+ */
+const resolveSummaryPeriod = (query, now) => {
+  const start = query.startDate
+    ? startOfDayAccra(new Date(query.startDate))
+    : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+  const end = query.endDate ? endOfDayAccra(new Date(query.endDate)) : now;
+  const span = end.getTime() - start.getTime();
+
+  return {
+    start,
+    end,
+    previousStart: new Date(start.getTime() - span),
+    previousEnd: new Date(start.getTime() - 1),
+  };
+};
+
+/**
+ * The dashboard's KPI row, computed by the database over the same filter the
+ * list uses.
+ *
+ * Not a sum over one page of the list above it. That list is paginated at 20
+ * rows and capped at 100, so a client that added up what it was holding
+ * reported the first twenty payments in the school as the school's income — the
+ * same trap `getStudentStats` documents for the roster. Every figure below is
+ * produced by one aggregation, so the KPI band and the table beneath it are
+ * computed from the same filter and cannot disagree.
+ *
+ * There is deliberately no "escrow cleared", "pending sweep" or "next sweep
+ * time" figure. Nothing in this backend banks money: `Payment.settlement.
+ * appliedAt` is the stamp that says the money was *credited to the student's
+ * balance*, not that it reached a bank account, and there is no settlement batch
+ * or sweep job anywhere in the codebase to compute a sweep from. A dashboard
+ * tile implying otherwise would be a number this system cannot honestly produce.
+ */
+export const getPaymentSummary = async (query, user) => {
+  const now = new Date();
+  const { start, end, previousStart, previousEnd } = resolveSummaryPeriod(query, now);
+
+  // Built through the shared builder with the *resolved* window substituted in,
+  // so every other filter is inherited rather than re-derived here. `createdAt`
+  // is then lifted back out because each facet below applies its own window —
+  // the current one and the preceding one, which a single top-level `$match`
+  // could not express.
+  const { filter } = await buildPaymentFilter(
+    { ...query, startDate: start, endDate: end },
+    user
+  );
+  const scoped = { ...filter };
+  delete scoped.createdAt;
+
+  const inWindow = { createdAt: { $gte: start, $lte: end } };
+  const completed = { ...inWindow, status: "completed" };
+
+  const [facets] = await Payment.aggregate(
+    [
+      { $match: scoped },
+      {
+        $facet: {
+          completedTotals: [
+            { $match: completed },
+            { $group: { _id: null, amount: { $sum: "$amount" }, count: { $sum: 1 } } },
+          ],
+          // `wallets` per network, so the summary can say how many distinct
+          // MSISDNs paid through each network without a second round trip.
+          byNetwork: [
+            { $match: completed },
+            {
+              $group: {
+                _id: { $ifNull: ["$momoNetwork", "UNKNOWN"] },
+                amount: { $sum: "$amount" },
+                count: { $sum: 1 },
+                wallets: { $addToSet: "$momoPhoneNumber" },
+              },
+            },
+          ],
+          byMethod: [
+            { $match: completed },
+            {
+              $group: {
+                _id: { $ifNull: ["$paymentMethod", "unknown"] },
+                amount: { $sum: "$amount" },
+                count: { $sum: 1 },
+              },
+            },
+          ],
+          walletCount: [
+            // `$ne: null` also excludes documents where the field is absent,
+            // which is what a cash payment recorded before the number existed
+            // looks like. Counting distinct numbers here rather than summing
+            // the per-network counts is what makes it "wallets", not
+            // "wallet-network pairs".
+            { $match: { ...completed, momoPhoneNumber: { $ne: null } } },
+            { $group: { _id: "$momoPhoneNumber" } },
+            { $count: "value" },
+          ],
+          awaiting: [
+            { $match: { ...inWindow, status: { $in: ["pending", "processing"] } } },
+            { $group: { _id: null, amount: { $sum: "$amount" }, count: { $sum: 1 } } },
+          ],
+          previous: [
+            {
+              $match: {
+                createdAt: { $gte: previousStart, $lte: previousEnd },
+                status: "completed",
+              },
+            },
+            { $group: { _id: null, amount: { $sum: "$amount" } } },
+          ],
+        },
+      },
+    ],
+    // `allowDiskUse` because a school with a term's worth of payments can push
+    // this facet past the 100MB in-memory grouping limit; without it the whole
+    // KPI band fails with an error rather than degrading.
+    { allowDiskUse: true }
+  );
+
+  const totals = facets?.completedTotals?.[0] || { amount: 0, count: 0 };
+  const awaiting = facets?.awaiting?.[0] || { amount: 0, count: 0 };
+  const totalInflow = totals.amount || 0;
+  const previousTotalInflow = facets?.previous?.[0]?.amount || 0;
+
+  const networkBuckets = new Map((facets?.byNetwork || []).map((row) => [row._id, row]));
+
+  // Every network is returned, including the ones with no money in the window.
+  // A KPI row that only lists the networks present makes the client invent the
+  // missing ones, and "MTN collected nothing" and "MTN does not appear because
+  // the query omitted it" have to be told apart. Ties fall back to the enum
+  // order so the array is stable between two calls with the same data.
+  const networks = NETWORK_ORDER
+    .map((network) => {
+      const row = networkBuckets.get(network);
+      const amount = row?.amount || 0;
+      return {
+        network,
+        label: NETWORK_LABELS[network],
+        amount,
+        count: row?.count || 0,
+        sharePercent: rate(amount, totalInflow),
+        // `$addToSet` collects `null` for a payment with no MSISDN, which is
+        // every non-Mobile-Money row; those are not wallets.
+        wallets: (row?.wallets || []).filter(Boolean).length,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.amount - a.amount ||
+        NETWORK_ORDER.indexOf(a.network) - NETWORK_ORDER.indexOf(b.network)
+    );
+
+  const byMethod = (facets?.byMethod || [])
+    .map((row) => ({
+      method: row._id,
+      label: METHOD_LABELS[row._id] || row._id,
+      amount: row.amount || 0,
+      count: row.count || 0,
+      sharePercent: rate(row.amount || 0, totalInflow),
+    }))
+    .sort((a, b) => b.amount - a.amount);
+
+  return {
+    period: { startDate: start, endDate: end },
+    totalInflow,
+    totalTransactions: totals.count || 0,
+    previousTotalInflow,
+    // `null` rather than 0 or Infinity when there is no prior window to compare
+    // against: "we collected money this month and there is nothing to compare it
+    // to" is a different statement from "we collected nothing".
+    trendPercent: previousTotalInflow
+      ? round(((totalInflow - previousTotalInflow) / previousTotalInflow) * 100)
+      : null,
+    networks,
+    walletCount: facets?.walletCount?.[0]?.value || 0,
+    awaitingConfirmation: { amount: awaiting.amount || 0, count: awaiting.count || 0 },
+    byMethod,
+    // There is no `fees` field on Payment. `feesBreakdown` is a breakdown *of*
+    // the amount — summing it would restate the inflow, not add a fee to it —
+    // so this is `null` rather than a number that looks like a figure and is
+    // not one.
+    feesCollected: null,
+  };
+};
+
+// ──────────────────── Admin: Export payments ────────────────────
+/**
+ * The payments table as a CSV file.
+ *
+ * Uses the shared filter, so "export what I am looking at" is literally the
+ * rows on screen — the drift `student.service.js` had to fix in its own export,
+ * and the reason this file cannot have a filter of its own.
+ */
+export const exportPayments = async (query, user) => {
+  const { filter, schoolId } = await buildPaymentFilter(query, user);
+  const school = await fetchSchool(schoolId);
+
+  // CSV is the only format wired up. `paymentExportQuerySchema` already rejects
+  // anything else with a 422; the fallback here is for a direct service caller,
+  // and it still produces a CSV rather than a file named `.xlsx` that is not one.
+  const format = "csv";
+
+  // Unbounded on purpose. `page`/`limit` stay in the query schema so an
+  // "export this view" link can carry them without being rejected, and they are
+  // ignored here: a file that silently carried only the first page of rows is
+  // the failure `paginationFor()` in `reports.service.js` exists to prevent,
+  // because a bursar reconciling it would be reconciling a partial file.
+  const payments = await Payment.find(filter)
+    .sort({ createdAt: -1 })
+    .populate("studentId", "studentId studentName studentClass parents")
+    .lean();
+
+  const slug = school.slug || school.schoolCode || "payments";
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const filename = `payments-${slug}-${dateStr}.${format}`;
+
+  // Declared up front rather than derived from the first row, for the reason
+  // `exportStudents` gives: a header derived from row zero makes an export that
+  // matched nothing produce an empty file, which opens as one blank line and
+  // reads to a bursar as data loss. `streamCsv` writes this header before any
+  // row, so the zero-match case is a correct, distinguishable header-only file.
+  const columns = [
+    { key: "transactionRef", header: "Transaction Ref" },
+    { key: "dateTime", header: "Date/Time" },
+    { key: "studentId", header: "Student ID" },
+    { key: "studentName", header: "Student Name" },
+    { key: "studentClass", header: "Class" },
+    { key: "guardianName", header: "Guardian Name" },
+    { key: "guardianPhone", header: "Guardian Phone" },
+    { key: "channel", header: "Channel" },
+    { key: "method", header: "Method" },
+    { key: "provider", header: "Provider" },
+    { key: "status", header: "Status" },
+    { key: "amountCedis", header: "Amount (Cedis)" },
+    { key: "receiptNumber", header: "Receipt Number" },
+    { key: "description", header: "Description" },
+  ];
+
+  const rows = payments.map((payment) => {
+    const student = payment.studentId || {};
+    const parents = student.parents || [];
+    // The primary parent, falling back to the first: business rule #4 keeps
+    // exactly one `isPrimary`, but a record written before that rule was
+    // enforced can have none, and an empty guardian column is worse than a
+    // second parent's name.
+    const guardian = parents.find((p) => p.isPrimary) || parents[0] || null;
+    const isMomo = payment.paymentMethod === "momo";
+
+    return {
+      transactionRef: payment.paymentId || "",
+      // `completedAt` when the payment settled, `createdAt` otherwise. A refund
+      // and a failed attempt are not "when it completed", and a reconciliation
+      // file that dates them all to the moment the row was created is wrong for
+      // exactly the rows a bursar most wants to find. The guard is not
+      // decorative: `new Date("").toISOString()` throws, and one row with both
+      // timestamps missing would fail the whole export.
+      dateTime: toIsoOrBlank(payment.completedAt || payment.createdAt),
+      studentId: student.studentId || "",
+      studentName: student.studentName || "",
+      studentClass: student.studentClass || "",
+      // Unmasked, for the reason `exportStudents` gives: an export is taken
+      // off-system and reconciled against a statement, so a masked number makes
+      // the file useless for the one thing it is exported for.
+      guardianName: guardian?.parentName || "",
+      guardianPhone: guardian?.phone || "",
+      // The network for a Mobile Money payment, and the method for everything
+      // else. A cash payment has `momoNetwork: "UNKNOWN"` on the record, so
+      // printing that would tell the bursar the network was unknown when the
+      // real answer is that no network was involved. The raw method sits in the
+      // next column, so the file is still filterable in a spreadsheet.
+      channel: isMomo
+        ? NETWORK_LABELS[payment.momoNetwork] || NETWORK_LABELS.UNKNOWN
+        : METHOD_LABELS[payment.paymentMethod] || payment.paymentMethod || "",
+      method: payment.paymentMethod || "",
+      provider: payment.provider || "",
+      status: payment.status || "",
+      // Cedis, named in the header. The stored integer is pesewas (85000 =
+      // GH₵ 850.00), and a header that says `amount` for a pesewa count gets
+      // read as a hundredfold error by anyone who opens the file — the same
+      // correction `exportStudents` made with `totalOwedCedis`.
+      //
+      // A refund is stored as a negative amount, and `streamCsv` prefixes any
+      // cell starting with "-" as a spreadsheet-formula guard, so that one row
+      // arrives as the text `'-50.00` rather than the number -50.00. That is the
+      // shared writer doing its job and it is not worked around here; the
+      // Status column carries the meaning, and the JSON list shows the raw
+      // integer.
+      amountCedis: ((payment.amount || 0) / 100).toFixed(2),
+      receiptNumber: payment.receiptNumber || "",
+      description: payment.description || "",
+    };
+  });
+
+  return {
+    filename,
+    rowCount: rows.length,
+    mimeType: "text/csv; charset=utf-8",
+    columns,
+    rows,
   };
 };
 
@@ -843,9 +1338,17 @@ export const refundPayment = async (paymentId, data, user) => {
     $inc: { totalPaid: -refundAmount, balance: refundAmount },
   });
 
-  // Update school stats
+  // Update school stats.
+  //
+  // By **one**, not by `refundAmount`. `stats.totalPaymentsThisMonth` is a count:
+  // `manualPayment.service.js` increments it by `1` when a payment is recorded,
+  // and the webhook paths increment it by `1` as well. Subtracting the cedi value
+  // here drove the counter thousands below zero after a single GH₵ 850 refund,
+  // and it is read straight off the School document by the dashboard. A statistic
+  // that reads -849998 is worse than one that is never updated, because it is
+  // believed.
   await School.findByIdAndUpdate(payment.schoolId, {
-    $inc: { "stats.totalPaymentsThisMonth": -refundAmount },
+    $inc: { "stats.totalPaymentsThisMonth": -1 },
   });
 
   await auditService.log({

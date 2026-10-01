@@ -147,6 +147,33 @@ export const formatPhone = (e164) => {
 };
 
 /**
+ * The mobile network a Ghanaian number belongs to, from its prefix.
+ *
+ * Ghana's operators hold overlapping but distinct 2-digit blocks, and the blocks
+ * are the *only* way to tell MTN from Telecel from AirtelTigo without asking the
+ * carrier. Used for the operator split on a broadcast — "68% of these parents
+ * are on MTN" is the figure a school argues about coverage with — and so that
+ * a school's delivery report can be read by operator.
+ *
+ * Returns null for anything unrecognised rather than guessing. A misattributed
+ * number in a coverage split is worse than an absent one: it makes a real
+ * pattern look like noise.
+ */
+export const networkForGhanaNumber = (input) => {
+  const { valid, national } = toGhanaE164(input);
+  if (!valid) return null;
+
+  const prefix = national.slice(0, 2);
+  // MTN
+  if (['24', '54', '55', '59'].includes(prefix)) return 'mtn';
+  // Telecel
+  if (['22', '72'].includes(prefix)) return 'telecel';
+  // AirtelTigo — the two brands share the 20/02/057/058 ranges since the merger.
+  if (['20', '26', '27', '57', '58'].includes(prefix)) return 'airteltigo';
+  return null;
+};
+
+/**
  * Masks the middle of a number for logs and admin lists: `+233 ••••• 567`.
  *
  * The country code is kept so a reader can still tell which market a number

@@ -41,7 +41,20 @@ const paymentSchema = new mongoose.Schema(
     amount: {
       type: Number,
       required: true,
-      min: 0,
+      // **No `min`**, because a refund row is written with a negative amount.
+      //
+      // `refundPayment` in payment.service.js records the reversal as its own
+      // Payment with `amount: -refundAmount` — a deliberate design choice, so the
+      // ledger stays additive and a full reversal shows up alongside the original
+      // row that cancelled it. `min: 0` rejected that document at validation, so
+      // `POST /payments/:paymentId/refund` failed with a 500 on *every* refund,
+      // including partial ones. The invariant this field actually has is "a
+      // payment is not zero", which is asserted below; the sign is meaningful and
+      // carries the direction of the entry.
+      validate: {
+        validator: (value) => value !== 0,
+        message: "A payment amount cannot be zero — use the status field to void a payment",
+      },
       validate: {
         validator: (v) => Number.isInteger(v),
         message: "Amount must be an integer number of pesewas",
