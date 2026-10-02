@@ -65,6 +65,111 @@ const platformSettingsSchema = new mongoose.Schema(
       trialDays: { type: Number, default: 30, min: 0, max: 365 },
     },
 
+    /**
+     * What a Mode B school is billed for using SukuuPay.
+     *
+     * Charged per month on the school's own gateway volume, never taken from a
+     * parent payment — which is why it is a separate field and not a second markup.
+     * See `School.platformFeePercent`, which carries the per-school value; this one
+     * only decides what a *new* school gets.
+     *
+     * Capped at 5% where `defaultMarkupPercent` allows 100. A percentage of a
+     * school's own collected volume is a much larger number of cedis than the same
+     * percentage skimmed off one payment, and a 100% default here would bill a
+     * tenant everything they collect. The cap is the guard against a typo that
+     * looks like a valid value.
+     */
+    defaultPlatformFeePercent: {
+      type: Number,
+      default: 0.5,
+      min: 0,
+      max: 5,
+    },
+
+    /**
+     * The monthly subscription a new paid school starts on.
+     *
+     * In **pesewas**, like every other money field: 15000 is GHS 150.0, not GHS
+     * 15,000. A cedi-denominated field sitting among integer pesewas fields is the
+     * single easiest place in this schema to be off by 100, and the error is
+     * invisible until a school is invoiced.
+     */
+    defaultMonthlyFee: {
+      type: Number,
+      default: 15000,
+      min: 0,
+    },
+
+    /**
+     * How schools get paid, and whether a person signs it off.
+     *
+     * Grouped rather than three top-level fields because they are one decision:
+     * when a payout runs, and who may let it. Splitting them invites a
+     * configuration with a frequency and no day, which cannot be scheduled at all.
+     *
+     * `autoApprove` defaults **false**, and that default is the product's most
+     * consequential value in this file. It is the difference between a payout run
+     * needing one human click and money leaving the platform unattended; turning it
+     * on is an explicit act by the owner, recorded in `updatedBy` and in the audit
+     * trail, and it is never inherited from a previous setting.
+     */
+    disbursement: {
+      frequency: {
+        type: String,
+        enum: ["daily", "weekly", "biweekly", "monthly"],
+        default: "weekly",
+      },
+      /**
+       * 0 = Sunday … 6 = Saturday, matching JavaScript's `Date#getDay`.
+       *
+       * That index, not 1–7, because it is what `cron` and `Date#getDay` both use,
+       * so a schedule written here needs no off-by-one translation at the one place
+       * it is consumed. Default 1 = Monday, which is when Ghanaian schools close
+       * their books for the week.
+       */
+      dayOfWeek: { type: Number, default: 1, min: 0, max: 6 },
+      autoApprove: { type: Boolean, default: false },
+    },
+
+    /**
+     * The platform's own SMS configuration.
+     *
+     * Distinct from `School.sms`, which is a tenant's gateway and key. The platform
+     * sends its own messages — payment receipts, payout confirmations, maintenance
+     * notices to school admins — and those come out of one master account, so the
+     * rate and provider have to be configurable in one place rather than summed
+     * across every school's own balance.
+     *
+     * `ratePesewas` is the cost of one SMS in pesewas and is the number both the
+     * cost-to-date figure and the "estimated cost" in any composer are computed
+     * from. It defaults to 25 (GHS 0.25) rather than to the existing per-school
+     * `SMS_CREDIT_RATE_PES`, because a platform-wide broadcast is priced
+     * differently from a school's reminder to its own parents.
+     */
+    sms: {
+      provider: {
+        type: String,
+        // Arkesel is the primary gateway everywhere else in the product; the
+        // option is kept because a provider change is a support action, not a
+        // deploy.
+        enum: ["arke", "hubtel"],
+        default: "arke",
+      },
+      ratePesewas: { type: Number, default: 25, min: 0 },
+    },
+
+    /**
+     * Who a school is told to contact.
+     *
+     * Rendered into emails, SMS and the public site's footer, so it is
+     * configuration rather than a constant: a support number that changes has to be
+     * changeable by the owner, in the console, without a redeploy.
+     */
+    support: {
+      phone: { type: String, trim: true, default: "" },
+      email: { type: String, trim: true, lowercase: true, default: "" },
+    },
+
     maintenance: {
       /**
        * `off` | `readonly` | `on`.
@@ -110,9 +215,32 @@ const platformSettingsSchema = new mongoose.Schema(
 export const DEFAULT_PLATFORM_SETTINGS = {
   singletonKey: "platform",
   defaultMarkupPercent: 5,
+  defaultPlatformFeePercent: 0.5,
+  defaultMonthlyFee: 15000,
   features: { adsEnabled: true, selfSignupEnabled: true, trialDays: 30 },
+  disbursement: { frequency: "weekly", dayOfWeek: 1, autoApprove: false },
+  sms: { provider: "arke", ratePesewas: 25 },
+  support: { phone: "", email: "" },
   maintenance: { mode: "off", message: "" },
 };
+
+/**
+ * The nested branches that must be merged field-by-field rather than spread.
+ *
+ * Read down `getPlatformSettings` (`admin.service.js`) and
+ * `getCachedPlatformSettings` (`platformSettings.service.js`) — both merge these
+ * by name, and both were written before `disbursement`, `sms` and `support`
+ * existed. A branch missing here is replaced wholesale by a partial stored
+ * document, so a school-provisioning write that stored `sms` without `ratePesewas`
+ * would leave the rate `undefined` and every cost figure computed as `NaN`.
+ */
+export const NESTED_PLATFORM_SETTINGS_BRANCHES = [
+  "features",
+  "disbursement",
+  "sms",
+  "support",
+  "maintenance",
+];
 
 export const PlatformSettings = mongoose.model(
   "PlatformSettings",

@@ -21,6 +21,21 @@ export const signAccessToken = (user) =>
     { expiresIn: JWT_EXPIRE }
   );
 
+/**
+ * How long an impersonation token is good for.
+ *
+ * Sixty minutes, and it is a hard ceiling rather than a hint. The token is what
+ * carries the impersonated school to the server between `POST /admin/impersonate`
+ * and the refresh that would normally renew it, so an operator who abandons a tab
+ * leaves behind a credential that keeps working until it expires. An hour is long
+ * enough to reproduce a payment flow with a school on the phone and short enough
+ * that the abandoned case self-heals without anybody having to think about it.
+ *
+ * Deliberately *not* the value `JWT_EXPIRE` holds: a support session should not be
+ * able to hold a door open for the life of an ordinary login.
+ */
+export const IMPERSONATION_TOKEN_EXPIRE_MINUTES = 60;
+
 export const signRefreshToken = (user, tokenVersion) =>
   jwt.sign(
     {
@@ -42,6 +57,44 @@ export const verifyToken = (token, expectedType) => {
   }
   return payload;
 };
+
+/**
+ * The access token used *while* impersonating a school.
+ *
+ * Signed with the impersonated school and session in the payload so that a request
+ * arriving with it is self-describing, and short-lived
+ * (`IMPERSONATION_TOKEN_EXPIRE_MINUTES`) so a forgotten tab cannot hold a door
+ * open indefinitely.
+ *
+ * The payload is a **hint, never the authority**. `middleware/impersonation.js`
+ * re-reads the open session from the database on every request and refuses the call
+ * if the session has been ended — so ending an impersonation takes effect for every
+ * token already in circulation, not merely for the client that asked to end it.
+ * That is the difference between "the owner stopped impersonating" and "the owner
+ * closed one tab", and the second is not a security boundary.
+ *
+ * `imp: true` marks the token so a client cannot pass one of these to an endpoint
+ * that wants a real session, and `tokenVersion` is carried through unchanged so the
+ * normal revocation check in `authenticate` still applies to it.
+ */
+export const signImpersonationToken = (user, schoolId, sessionId) =>
+  jwt.sign(
+    {
+      sub: user._id.toString(),
+      role: user.role,
+      schoolId: user.schoolId ? user.schoolId.toString() : null,
+      // What the request is *acting as*, for a super admin whose own `schoolId` is
+      // null by design. Never conflated with `schoolId` above: that one is who
+      // they are, this one is what they are currently looking at.
+      impersonatedSchoolId: schoolId.toString(),
+      impersonationSessionId: sessionId.toString(),
+      imp: true,
+      type: 'access',
+      tokenVersion: user.tokenVersion,
+    },
+    SECRET,
+    { expiresIn: `${IMPERSONATION_TOKEN_EXPIRE_MINUTES}m` }
+  );
 
 /** 6 digit numeric OTP, cryptographically random. */
 export const generateEmailOtp = () =>

@@ -1,4 +1,5 @@
 import XLSX from "xlsx";
+import { pdfFor } from "./reportPdf.js";
 
 // ─────────────────────────────────────────────
 // Report file serialisers (csv / excel / pdf)
@@ -6,10 +7,15 @@ import XLSX from "xlsx";
 // A report is built once in the service layer and serialised here, so the file
 // a user downloads always contains exactly the rows they saw on screen.
 //
-// PDF is not yet supported: no PDF library is a dependency of this project
-// (package.json). `format=pdf` is validated as a legal value and the branch
-// throws a clear 501 rather than silently returning the wrong file type. See
-// docs/reports-api-spec.md §2.
+// **PDF is supported**, via `utils/reportPdf.js`. It was not for most of this
+// project's life, and the 501 it used to throw was correct at the time: `pdfkit` is
+// a dependency but `utils/pdfGenerator.js` renders ID cards from a fixed template,
+// not tables of arbitrary columns, and a report's columns are not a shape anybody
+// designed in advance. `reportPdf.js` is that second path — it derives column
+// widths from the content and paginates.
+//
+// The stale version of this comment claimed no PDF library was a dependency. There
+// was one; there just was no code path from a report to it.
 
 // Spreadsheet apps treat a leading =, +, -, @, tab or CR as a formula, so a
 // user-supplied cell value (a description, a parent name) is prefixed to keep
@@ -68,8 +74,21 @@ const fail = (status, code, message) => {
  * Sends a report as a file download. `sections` mirrors the report's
  * structure: the summary block first, then the detail rows, then any
  * report-specific sections such as the term report's monthly trend.
+ *
+ * **`format=excel` is the name, not `xlsx`.** Deliberate and load-bearing:
+ * `sendReportFile` rejects anything it does not recognise with
+ * `UNSUPPORTED_FORMAT`, so a caller sending `xlsx` — the extension, which is what
+ * every frontend naturally reaches for — gets a 400 for asking the same thing in a
+ * different word. The callers translate.
+ *
+ * PDF is **asynchronous** where the other two are synchronous, because `pdfkit`
+ * streams: the buffer only exists once the document has ended. That is why this
+ * function is `async` and why a `csv` call still returns its string directly — a
+ * caller that forgot to await a `csv` gets its file either way, and one that
+ * mistakenly awaits gets the same. The asymmetry is unavoidable, and the comment is
+ * here so it is not mistaken for an accident.
  */
-export const sendReportFile = (res, { report, schoolId, format, sections }) => {
+export const sendReportFile = async (res, { report, schoolId, format, sections }) => {
   const base = `${report}-${schoolId}-${timestampFor()}`;
 
   if (format === "csv") {
@@ -88,11 +107,13 @@ export const sendReportFile = (res, { report, schoolId, format, sections }) => {
   }
 
   if (format === "pdf") {
-    throw fail(
-      501,
-      "PDF_EXPORT_UNAVAILABLE",
-      "PDF export is not yet available. Use format=csv or format=excel, or add a PDF dependency (e.g. pdfkit)."
-    );
+    const buffer = await pdfFor(sections, {
+      title: `${report} — ${schoolId}`,
+      subtitle: `Generated ${new Date().toISOString().slice(0, 19).replace("T", " ")} UTC`,
+    });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${base}.pdf"`);
+    return res.send(buffer);
   }
 
   throw fail(400, "UNSUPPORTED_FORMAT", `Unsupported report format: ${format}`);

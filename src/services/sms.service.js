@@ -259,6 +259,12 @@ const refundCredits = async (schoolId, units) => {
 };
 
 // ──────────────────── Gateway ────────────────────
+/**
+ * A transport failure is returned, not thrown. The caller has already spent a
+ * credit and created a `SmsMessage` row at this point, and a thrown error would
+ * leave that row un-written — a message billed for but absent from the history,
+ * which is the one thing a bursar reconciling their balance cannot forgive.
+ */
 
 /**
  * Submits one rendered message.
@@ -274,8 +280,17 @@ const refundCredits = async (schoolId, units) => {
  * credit and created a `SmsMessage` row at this point, and a thrown error would
  * leave that row un-written — a message billed for but absent from the history,
  * which is the one thing a bursar reconciling their balance cannot forgive.
+ *
+ * **Exported for the platform console's broadcast**, which is the one caller that
+ * has no `School` of its own. It passes a synthetic `{ sms: { provider, senderId } }`
+ * object carrying the platform's own gateway settings, and therefore draws on the
+ * deployment-level `ARKESEL_API_KEY` rather than any school's `sms.balance` — which
+ * is correct: an announcement about a platform outage is the platform's cost, not a
+ * charge against a customer's credit. Exporting it rather than reimplementing it is
+ * what keeps "one transmit path" true; a second implementation would drift on the
+ * provider check and the sender-ID fallback within a month.
  */
-const submitMessage = async ({ to, body, school }) => {
+export const submitMessage = async ({ to, body, school }) => {
   const provider = school?.sms?.provider || 'arke';
   if (provider !== 'arke') {
     return {

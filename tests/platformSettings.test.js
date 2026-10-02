@@ -100,10 +100,36 @@ describe('maintenance mode decides what may happen', () => {
       'maintenance "on" cannot be turned off through the API'
     );
 
+    // The console does not reach that same switch through the settings endpoint —
+    // it calls `PUT /admin/health/maintenance`. An exemption is per *path*, not per
+    // concept, so a second route onto the same state needs its own entry. Without
+    // this the health screen's toggle worked on a healthy platform and was refused
+    // the moment it had been used, which is exactly when somebody needs it.
+    assert.equal(
+      maintenanceDecision({ mode: 'readonly', method: 'PUT', path: '/api/admin/health/maintenance' }).allow,
+      true,
+      'the console maintenance toggle must not be behind maintenance mode'
+    );
+    assert.equal(
+      maintenanceDecision({ mode: 'on', method: 'PUT', path: '/api/admin/health/maintenance' }).allow,
+      true,
+      'maintenance "on" cannot be turned off through the API'
+    );
+
     // And it is genuinely reachable — an exemption for a path nothing serves would
-    // be a no-op that looks like a fix.
+    // be a no-op that looks like a fix. The patterns tolerate a newline between the
+    // call and its path, because these registrations are wrapped across lines to fit
+    // their middleware stack and a scan that only matches the one-line form would
+    // start failing for a reason that has nothing to do with maintenance.
     const source = await read('../src/routes/admin.routes.js');
-    assert.ok(source.includes('"/settings"'), 'the settings route is missing');
+    assert.ok(
+      /adminRoute\.(put|post)\(\s*['"]\/settings['"]/.test(source),
+      'the settings route is missing'
+    );
+    assert.ok(
+      /adminRoute\.(put|post)\(\s*['"]\/health\/maintenance['"]/.test(source),
+      'the health maintenance route is missing — the console has to be able to reach the exempt path'
+    );
   });
 
   test("the operator's own message reaches the user", async () => {

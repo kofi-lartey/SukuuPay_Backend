@@ -16,6 +16,12 @@ const AUDIT_ACTIONS = [
   "student.delete",
   "payment.success",
   "payment.failed",
+  // A reversal row rather than a mutation of the original, so this is a separate
+  // action and not a `payment.*` status. Must stay in step with `AUDIT_ACTIONS` in
+  // `config/constants.js` — see the note there about `"REFUND_PAYMENT"` having been
+  // written by `payment.service.js` and silently failing this enum for the life of
+  // the feature.
+  "refund.payment",
   "plan.create",
   "plan.accept",
   "plan.cancel",
@@ -58,6 +64,55 @@ const AUDIT_ACTIONS = [
   // value: "who had it, who has it now" is the whole question.
   "user.role_change",
   "user.remove",
+  // ── Platform console ──
+  //
+  // A separate namespace rather than more `school.*` / `user.*` entries, because
+  // these are the actions of an actor who is deliberately outside every tenant:
+  // the platform owner, acting on the platform, not on a school. Grouped under
+  // `admin.` so `GET /admin/audit-logs?action=` can answer "what did the owner do"
+  // with one prefix filter, and so a school reading its own log can recognise at a
+  // glance that these rows came from outside.
+  //
+  // Every one of them is written by a route in `routes/admin.routes.js`, and the
+  // group has a property the earlier ones do not: they are the actions whose
+  // absence would be worth money.
+  //
+  //   - impersonation is the owner seeing a tenant's data, so start and end are
+  //     both recorded. An open-ended `start` is indistinguishable from a session
+  //     that ran all night unless the end exists to close it.
+  //   - a disbursement approval moves a school's money. So does a refund.
+  //   - an export is a read, and the one read a school cannot audit itself: the
+  //     ledger CSV leaves the platform with the tenant's whole financial history.
+  "admin.impersonate_start",
+  "admin.impersonate_end",
+  "admin.school_create",
+  "admin.school_update",
+  "admin.school_archive",
+  "admin.markup_update",
+  "admin.platform_fee_update",
+  "admin.gateway_mode_update",
+  "admin.subscription_update",
+  "admin.feature_flags_update",
+  "admin.tags_update",
+  "admin.notes_update",
+  "admin.user_status_update",
+  "admin.user_password_reset",
+  "admin.user_verification_resend",
+  "admin.disbursement_create",
+  "admin.disbursement_approve",
+  "admin.disbursement_retry",
+  "admin.payment_refund",
+  "admin.announcement_create",
+  "admin.announcement_update",
+  "admin.announcement_delete",
+  "admin.sms_broadcast",
+  "admin.sms_credit_topup",
+  "admin.maintenance_mode",
+  "admin.export",
+  // Written by `jobs/healthCheck.job.js`, not by a request. It is here because a
+  // job that stops running is invisible in every other way — and an operator
+  // reading a week of health entries can see the gap that says so.
+  "health.check",
 ];
 
 const auditLogSchema = new mongoose.Schema(

@@ -7,8 +7,10 @@ import {
   unsuspendSchoolPlatform,
   getDashboardKpis,
   getRevenueSeries,
-  getPlatformSettings,
+getPlatformSettings,
   updatePlatformSettings,
+  updateCommission,
+  updateDisbursementSettings,
 } from "../services/admin.service.js";
 import { AUDIT_ACTIONS } from "../config/constants.js";
 import { logRequest as auditLog } from "../utils/auditService.js";
@@ -240,6 +242,96 @@ export const updatePlatformSettingsController = async (req, res) => {
       success: true,
       message: changed.length
         ? "Platform settings updated successfully"
+        : "No changes to save",
+      data: { ...after, changed },
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+/**
+ * `PUT /admin/settings/commission` — the two percentages SukuuPay takes.
+ *
+ * Its own endpoint, and its own confirmation on the console side, because "save
+ * settings" and "change what we earn" are different decisions. Both required by the
+ * schema, so unlike the general settings write this can never be a partial patch —
+ * which is what makes it safe to audit unconditionally rather than only when
+ * `changed.length` is non-zero.
+ *
+ * Audited as `settings.update` with the leaf paths, the same action the general
+ * endpoint uses: the *thing* that changed is a platform setting, and having two
+ * actions for it would split the history of every dispute about a school's markup
+ * across two filters for no benefit. The `meta.resource` field is what distinguishes
+ * the two entries after the fact.
+ */
+export const updateCommissionController = async (req, res) => {
+  try {
+    const { before, after, changed } = await updateCommission(req.body, req.user?._id);
+
+    if (changed.length) {
+      await auditLog(req, {
+        action: AUDIT_ACTIONS.SETTINGS_UPDATE,
+        entity: "PlatformSettings",
+        entityId: after?._id || null,
+        meta: { resource: "commission", changed },
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: changed.length
+        ? "Commission updated successfully"
+        : "No changes to save",
+      data: { ...after, changed },
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+/**
+ * `PUT /admin/settings/disbursement` — payout schedule, and whether it self-approves.
+ *
+ * Partial, so a client changing only the frequency does not reset `autoApprove` to
+ * whatever a stale form held. The `changed` list therefore names the field that
+ * actually moved — which for this endpoint is very often `disbursement.autoApprove`,
+ * and that entry is the record that the platform stopped waiting for a human.
+ *
+ * The `autoApprove` flag is also called out in `meta` as a boolean rather than left
+ * to be inferred from the diff, because "did the platform start approving its own
+ * payouts" is a question worth being able to ask of the log directly.
+ */
+export const updateDisbursementSettingsController = async (req, res) => {
+  try {
+    const { before, after, changed } = await updateDisbursementSettings(
+      req.body,
+      req.user?._id
+    );
+
+    if (changed.length) {
+      await auditLog(req, {
+        action: AUDIT_ACTIONS.SETTINGS_UPDATE,
+        entity: "PlatformSettings",
+        entityId: after?._id || null,
+        meta: {
+          resource: "disbursement",
+          changed,
+          autoApprove: after?.disbursement?.autoApprove ?? null,
+        },
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: changed.length
+        ? "Disbursement settings updated successfully"
         : "No changes to save",
       data: { ...after, changed },
     });

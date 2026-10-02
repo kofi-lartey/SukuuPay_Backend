@@ -36,9 +36,11 @@ import { getCachedPlatformSettings } from "../services/platformSettings.service.
  * the opposite of what a maintenance response is for. Answering inline is also what
  * `rateLimit.js` and `requireSchool.js` do.
  *
- * **`GET /api/health` and `PUT /api/admin/settings` are exempt** — see the note on
- * `EXEMPT_PATHS` below. The first so a deliberate outage does not also look like a
- * failing one; the second because a kill switch must never be behind itself.
+ * **`GET /api/health`, `PUT /api/admin/settings` and `PUT /api/admin/health/maintenance`
+ * are exempt** — see the note on `EXEMPT_PATHS` below. The first so a deliberate
+ * outage does not also look like a failing one; the other two because a kill switch
+ * must never be behind itself, and the console reaches that same switch through two
+ * different paths.
  */
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -57,11 +59,27 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
  * back — not through the console, not through the API, only by redeploying or
  * editing Mongo by hand. Every kill switch needs its own way out.
  *
- * Exempting the settings endpoint opens no hole: it changes only platform
- * configuration, which is precisely what the person enabling maintenance already has
- * the authority to do.
+ * `/api/admin/health/maintenance` — the **same argument, for the same switch by a
+ * different door.** The console does not edit `maintenance.mode` through the
+ * settings endpoint; it calls `PUT /admin/health/maintenance`, which is a different
+ * path and was therefore not covered by the exemption above. The result was that the
+ * health screen's toggle worked on a healthy platform and was itself refused the
+ * moment it had been used — which is precisely when somebody needs it. A second route
+ * onto the same state needs its own exemption; an exemption is per path, not per
+ * concept, and assuming otherwise is how a kill switch acquires a one-way door
+ * without anybody editing it.
+ *
+ * Exempting these paths opens no hole: they change only platform configuration,
+ * which is precisely what the person enabling maintenance already has the authority
+ * to do.
  */
-const EXEMPT_PATHS = ["/api/health", "/health", "/api/admin/settings"];
+const EXEMPT_PATHS = [
+  "/api/health",
+  "/health",
+  "/api/admin/settings",
+  "/api/admin/health/maintenance",
+  "/admin/health/maintenance",
+];
 
 /**
  * The whole decision, as a pure function.

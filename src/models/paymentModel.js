@@ -37,6 +37,51 @@ const paymentSchema = new mongoose.Schema(
       index: true,
     },
 
+    /**
+     * The payout this payment was collected for, once one has been approved.
+     *
+     * The write path is `updateMany`, which runs **without document validation** —
+     * and a strict schema silently drops a path it does not declare on exactly that
+     * operation. So the field has to exist here for the stamp to be queryable at
+     * all; without it the batch's membership lived only in
+     * `DisbursementBatch.paymentIds` and the reverse lookup was unavailable.
+     *
+     * Indexed because it is the anti-join for "has this payment already been
+     * paid out?" — the query that stops a second batch claiming money already
+     * committed to a school.
+     */
+    disbursementBatchId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "DisbursementBatch",
+      default: null,
+      index: true,
+    },
+
+    /**
+     * Set on a reversal row; names the payment it reverses.
+     *
+     * **This field is why an over-refund is detectable at all.** Until it existed the
+     * only way to ask "how much of this payment has already been given back" was to
+     * scan every negative payment for the same student and parent and hope the
+     * `description` still began with `"Refund:"` — which is a string convention, not
+     * a relation. `refundPayment` checked `refundAmount > payment.amount` and
+     * nothing else, so two refunds of 60% each both passed and the school was
+     * refunded 20% more than was collected.
+     *
+     * A reversal is **not** marked by a status on the original: a partially refunded
+     * payment stays `completed` (it is still partly real money), so the original row
+     * cannot carry the running total. The relationship has to live on the child.
+     *
+     * Sparse and not required — most rows in this collection are ordinary payments
+     * and never reverse anything.
+     */
+    refundOfPaymentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Payment",
+      default: null,
+      index: true,
+    },
+
     // ── Payment details ──
     amount: {
       type: Number,
@@ -228,6 +273,22 @@ paymentSchema.index({ schoolId: 1, status: 1 });
 paymentSchema.index({ schoolId: 1, createdAt: -1 });
 paymentSchema.index({ studentId: 1, status: 1 });
 paymentSchema.index({ paymentPlanId: 1, status: 1 });
+
+/*
+ * The payout worklist: "every completed payment for this school that no batch has
+ * claimed". A disbursement run is driven by this query, and it is the only read that
+ * has to be fast on a school with tens of thousands of settled payments.
+ */
+paymentSchema.index({ schoolId: 1, status: 1, disbursementBatchId: 1 });
+
+/*
+ * "How much of this payment has already been given back."
+ *
+ * The over-refund guard's query. Rare — almost every payment is never refunded —
+ * and therefore almost always a single-document lookup, so an index on a low-cardinality
+ * field would only ever bloat the collection without being used.
+ */
+paymentSchema.index({ refundOfPaymentId: 1 }, { sparse: true });
 
 // ── Pre-save hooks ──
 // No `next` parameter: mongoose does not supply a callback to a pre-save hook,

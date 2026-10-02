@@ -211,6 +211,117 @@ const schoolModel = new mongoose.Schema(
         min: 0,
       },
     },
+
+    /**
+     * Platform fee charged on top of a school's own gateway (Mode B).
+     *
+     * Separate from `payment.platformMarkupPercent` because the two are charged on
+     * different things at different moments: markup is skimmed from each parent
+     * payment as it arrives, while a platform fee is what a school running its own
+     * Hubtel account owes SukuuPay for using SukuuPay to talk to those parents.
+     * Conflating them would make one school's gateway choice change its per-payment
+     * rate.
+     *
+     * Zero for most schools and non-zero for Mode B only, which is why it defaults
+     * to `0` rather than to the platform default — an unset platform fee is "we are
+     * not charging you", and that is the state a school must never be put into by
+     * accident when a new field lands.
+     *
+     * **Top level, not inside `subscription`.** Everything below this comment is
+     * platform-set, and putting it under `subscription` would make it read as part
+     * of what the *school* bought — a fee the school chose, adjustable by the school's
+     * own admin through any endpoint that writes the subscription wholesale.
+     */
+    platformFeePercent: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100,
+    },
+
+    /**
+     * Per-school capability switches, set by the platform.
+     *
+     * Not `PlatformSettings.features` and not the same thing: those are global
+     * ("self-signup is off for everyone"), these are per-tenant ("this school has no
+     * API access"). The distinction matters because support turns one of these on for
+     * a single paying school during an integration, and must be able to do it without
+     * a redeploy and without touching anybody else's account.
+     *
+     * Each defaults the way the product already behaves, so an existing school gains
+     * no new capability the day this field appears. `whatsapp` and `apiAccess`
+     * default **false** because those two cost real money per conversation and per
+     * call; a tenant must be opted in, never in by omission.
+     */
+    featureFlags: {
+      installments: { type: Boolean, default: true },
+      idCards: { type: Boolean, default: true },
+      whatsapp: { type: Boolean, default: false },
+      apiAccess: { type: Boolean, default: false },
+    },
+
+    /**
+     * Notes only the platform can see.
+     *
+     * Not a `School` field a school admin may ever write, and not surfaced by any
+     * school-scoped response: this is the account manager's column for "chased twice
+     * about the December outage", "owner is his aunt's school, invoices to the
+     * personal number". A school reading a note that says *this customer is a pain to
+     * collect from* is a relationship the platform does not get to have.
+     */
+    internalNotes: {
+      type: String,
+      trim: true,
+      maxlength: 2000,
+      default: "",
+    },
+
+    /**
+     * The platform user who looks after this school.
+     *
+     * Nullable on purpose: the platform has one `super_admin` today, and pointing
+     * every school at that account would make the field a constant rather than an
+     * assignment. It exists so the field means something the moment there is a second
+     * one — "my schools" is a view this console can then offer.
+     */
+    accountManagerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
+
+    /**
+     * When this school finished onboarding — first real student imported, first
+     * payment taken, whatever the school defines as done.
+     *
+     * A single stamp rather than a checklist because the only question the console
+     * asks is "how long did this take", which is exactly what a per-milestone set of
+     * dates would be averaged into. Set once by the payment/import paths and never
+     * rewritten, so it measures activation rather than recency of activity.
+     */
+    onboardingCompletedAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+
+    /**
+     * Free-form operator labels: "pilot", "enterprise", "at-risk".
+     *
+     * Arrays of strings rather than a fixed enum because the set that turns out to be
+     * useful is discovered in practice, not in advance, and an enum here would be a
+     * migration every time someone invents a word. Free text is filtered by
+     * `GET /admin/schools?tag=`, so a typo simply matches nothing — the cost of
+     * flexibility is a tag that quietly matches no rows, which is a far better
+     * failure than a schema that cannot express the label at all.
+     */
+    tags: {
+      type: [String],
+      default: [],
+      index: true,
+    },
+
     academic: {
       currentTerm: { type: String, default: "" },
       currentYear: { type: String, default: new Date().getFullYear().toString() },
@@ -283,6 +394,23 @@ const schoolModel = new mongoose.Schema(
 );
 
 schoolModel.index({ status: 1, region: 1 });
+
+/*
+ * The platform console's list and filter reads.
+ *
+ * `{ status, subscription.status }` is the "who can I actually bill" question,
+ * which `GET /admin/schools` answers but neither of the two single-field indexes
+ * above can. `{ tags, status }` is the same list filtered by an operator label,
+ * and `tags` is multikey — so it may not be combined with another array field, and
+ * this is the only compound that uses it.
+ *
+ * `onboardingCompletedAt` is indexed on its own for activation reporting: schools
+ * that signed up and never onboarded are found by "completed before X", which is a
+ * scan without it.
+ */
+schoolModel.index({ status: 1, "subscription.status": 1 });
+schoolModel.index({ tags: 1, status: 1 });
+schoolModel.index({ onboardingCompletedAt: 1 });
 
 schoolModel.set("toJSON", {
   virtuals: true,

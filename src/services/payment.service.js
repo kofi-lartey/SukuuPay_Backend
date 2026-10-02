@@ -1312,6 +1312,41 @@ export const refundPayment = async (paymentId, data, user) => {
     throw new ApiError("Refund amount cannot exceed payment amount", 400, "INVALID_REFUND_AMOUNT");
   }
 
+  /*
+   * How much has *already* been given back.
+   *
+   * The check above compares one refund against the original amount and nothing
+   * else, so two refunds of 60% each both passed and the school was refunded 20%
+   * more than it collected. This aggregate is what closes that: the running total is
+   * read from the reversal rows, keyed on `refundOfPaymentId`, and the new refund is
+   * rejected if it would take the total past the original.
+   *
+   * The original's `status` cannot carry this. A partially refunded payment stays
+   * `completed` — it is still partly real money, and a school reconciling its ledger
+   * needs the row to read as a payment — so there is nowhere on it to record how far
+   * along the reversal is.
+   */
+  const alreadyRefunded = await Payment.aggregate([
+    { $match: { refundOfPaymentId: payment._id, deletedAt: null, status: "completed" } },
+    { $group: { _id: null, total: { $sum: "$amount" } } },
+  ]);
+  // `amount` is negative on a reversal, so the sum is negative and the magnitude is
+  // what has been given back.
+  const refundedSoFar = Math.abs(Number(alreadyRefunded[0]?.total) || 0);
+  const refundable = payment.amount - refundedSoFar;
+
+  if (refundable <= 0) {
+    throw new ApiError("This payment has already been fully refunded", 400, "ALREADY_REFUNDED");
+  }
+
+  if (refundAmount > refundable) {
+    throw new ApiError(
+      `Only ${refundable} pesewas of this payment remain refundable (${refundedSoFar} already returned)`,
+      400,
+      "EXCEEDS_REFUNDABLE"
+    );
+  }
+
   // Create refund payment record (negative amount)
   const refundPayment = await Payment.create({
     studentId: payment.studentId,
@@ -1323,6 +1358,10 @@ export const refundPayment = async (paymentId, data, user) => {
     paymentMethod: payment.paymentMethod,
     provider: payment.provider,
     description: `Refund: ${data.reason}`,
+    // The explicit relation the aggregate above reads. Previously the only link back
+    // to the original was the `"Refund: "` prefix on `description`, which is a string
+    // convention anyone could edit away.
+    refundOfPaymentId: payment._id,
     createdBy: user._id,
   });
 
@@ -1352,16 +1391,37 @@ export const refundPayment = async (paymentId, data, user) => {
   });
 
   await auditService.log({
-    action: "REFUND_PAYMENT",
+    action: "refund.payment",
     entity: "Payment",
     entityId: payment._id,
     userId: user._id,
-    details: { refundAmount, reason: data.reason, refundPaymentId: refundPayment.paymentId },
+    schoolId: payment.schoolId,
+    // `before`/`after` on the original's status, plus the running total. Without
+    // these the entry records only that a refund happened and not how much of the
+    // payment was left — which is the question a school asks six weeks later.
+    before: { status: payment.status, refundable },
+    after: {
+      status: refundAmount === payment.amount ? "refunded" : "completed",
+      refundedSoFar,
+      refundableAfter: refundable - refundAmount,
+    },
+    // Also in `meta` so a single record carries the whole story even for a reader
+    // that only displays `meta`.
+    meta: {
+      refundAmount,
+      reason: data.reason,
+      refundPaymentId: refundPayment.paymentId,
+      refundPaymentObjectId: String(refundPayment._id),
+      refundedSoFar,
+    },
   });
 
   return {
     originalPayment: payment.toJSON(),
     refundPayment: refundPayment.toJSON(),
+    refundAmount,
+    refundedSoFar,
+    refundableAfter: refundable - refundAmount,
   };
 };
 

@@ -66,6 +66,44 @@ export const userModel = new mongoose.Schema(
       default: false, // true ONLY for you (founder)
     },
 
+    /**
+     * The school the platform owner is currently viewing, or null.
+     *
+     * This is a *pointer to the current impersonation*, not the record of it. Two
+     * fields below and the `ImpersonationSession` collection hold the history;
+     * everything here exists so the request path can answer "which tenant does this
+     * super admin's request apply to" in one field read, on every authenticated
+     * request, with no join.
+     *
+     * The field is on `User` rather than in the token on purpose, and that choice
+     * is the security property: the JWT is signed at login and lives for hours, so a
+     * target baked into it would keep asserting an impersonation long after
+     * `POST /admin/impersonate/end` cleared it. A token can end an impersonation
+     * only by being thrown away; a database field ends it for every outstanding
+     * token at once, which is what "exit impersonation" has to mean.
+     */
+    impersonatingSchoolId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "School",
+      default: null,
+      index: true,
+    },
+
+    /**
+     * The open `ImpersonationSession`, or null.
+     *
+     * Set and cleared with `impersonatingSchoolId`, and the two are always written
+     * together — a session id with no school cannot be scoped, and a school with no
+     * session has no `reason` attached to it. Kept anyway because the audit needs
+     * the id: `actionsCount` lives on the session row, and a request arriving
+     * without one has to be attributed to *something* specific.
+     */
+    impersonationSessionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ImpersonationSession",
+      default: null,
+    },
+
     // ─────────────── Onboarding ───────────────
     /**
      * What the bursar told us at signup, before any School exists.

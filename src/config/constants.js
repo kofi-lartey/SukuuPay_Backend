@@ -20,6 +20,15 @@ export const AUDIT_ACTIONS = {
   STUDENT_DELETE: "student.delete",
   PAYMENT_SUCCESS: "payment.success",
   PAYMENT_FAILED: "payment.failed",
+  // A reversal is its own Payment with a negative amount, not a flag on the
+  // original — so this is a distinct action rather than another `payment.*` status.
+  // It was previously written as `"REFUND_PAYMENT"`, which is in neither this map nor
+  // the `AuditLog.action` enum, so every refund in the product wrote **no audit
+  // entry at all**: `auditService.log` swallowed the resulting ValidationError into a
+  // `console.error`. The action the code asked for and the action the schema accepts
+  // had to be the same string; they are now, and `tests/platformConsole.test.js`
+  // asserts parity in both directions.
+  REFUND_PAYMENT: "refund.payment",
   PLAN_CREATE: "plan.create",
   PLAN_ACCEPT: "plan.accept",
   PLAN_CANCEL: "plan.cancel",
@@ -49,7 +58,54 @@ export const AUDIT_ACTIONS = {
   // `console.error`. The entry then does not exist, and nobody finds out.
   USER_ROLE_CHANGE: "user.role_change",
   USER_REMOVE: "user.remove",
+
+  // ── Platform console ──
+  //
+  // Namespaced `admin.*` because these are the platform owner's actions taken
+  // *outside* every tenant, not more variations on a school's own operations. Same
+  // enum-parity obligation as the two entries above: every value here is also in
+  // `models/AuditLog.js`, and the two files drifting apart is how an audit entry
+  // silently fails to write.
+  ADMIN_IMPERSONATE_START: "admin.impersonate_start",
+  ADMIN_IMPERSONATE_END: "admin.impersonate_end",
+  ADMIN_SCHOOL_CREATE: "admin.school_create",
+  ADMIN_SCHOOL_UPDATE: "admin.school_update",
+  ADMIN_SCHOOL_ARCHIVE: "admin.school_archive",
+  ADMIN_MARKUP_UPDATE: "admin.markup_update",
+  ADMIN_PLATFORM_FEE_UPDATE: "admin.platform_fee_update",
+  ADMIN_GATEWAY_MODE_UPDATE: "admin.gateway_mode_update",
+  ADMIN_SUBSCRIPTION_UPDATE: "admin.subscription_update",
+  ADMIN_FEATURE_FLAGS_UPDATE: "admin.feature_flags_update",
+  ADMIN_TAGS_UPDATE: "admin.tags_update",
+  ADMIN_NOTES_UPDATE: "admin.notes_update",
+  ADMIN_USER_STATUS_UPDATE: "admin.user_status_update",
+  ADMIN_USER_PASSWORD_RESET: "admin.user_password_reset",
+  ADMIN_USER_VERIFICATION_RESEND: "admin.user_verification_resend",
+  ADMIN_DISBURSEMENT_CREATE: "admin.disbursement_create",
+  ADMIN_DISBURSEMENT_APPROVE: "admin.disbursement_approve",
+  ADMIN_DISBURSEMENT_RETRY: "admin.disbursement_retry",
+  ADMIN_PAYMENT_REFUND: "admin.payment_refund",
+  ADMIN_ANNOUNCEMENT_CREATE: "admin.announcement_create",
+  ADMIN_ANNOUNCEMENT_UPDATE: "admin.announcement_update",
+  ADMIN_ANNOUNCEMENT_DELETE: "admin.announcement_delete",
+  ADMIN_SMS_BROADCAST: "admin.sms_broadcast",
+  ADMIN_SMS_CREDIT_TOPUP: "admin.sms_credit_topup",
+  ADMIN_MAINTENANCE_MODE: "admin.maintenance_mode",
+  ADMIN_EXPORT: "admin.export",
+  HEALTH_CHECK: "health.check",
 };
+
+/**
+ * Every audit action, as a flat array.
+ *
+ * Exported because `GET /admin/audit-logs` validates `action` against the enum, and
+ * a filter dropdown built from `Object.values(AUDIT_ACTIONS)` can only offer actions
+ * that a caller can actually pass. The alternative — a hand-written list in the
+ * validation schema — is how `auditLog.validation.js` ended up holding 14 of the
+ * 27 that existed, and every action added afterwards was unwritable through the one
+ * endpoint that filters on it.
+ */
+export const AUDIT_ACTION_VALUES = Object.values(AUDIT_ACTIONS);
 
 // Notification types — matches the Notification `type` field enum.
 export const NOTIFICATION_TYPES = {

@@ -1,4 +1,8 @@
-import { PlatformSettings, DEFAULT_PLATFORM_SETTINGS } from "../models/PlatformSettings.js";
+import {
+  PlatformSettings,
+  DEFAULT_PLATFORM_SETTINGS,
+  NESTED_PLATFORM_SETTINGS_BRANCHES,
+} from "../models/PlatformSettings.js";
 
 /**
  * The cached reader every consumer of platform settings goes through.
@@ -41,15 +45,21 @@ export const invalidatePlatformSettingsCache = () => {
   cache = null;
 };
 
-const withDefaults = (stored) => ({
-  ...DEFAULT_PLATFORM_SETTINGS,
-  ...(stored || {}),
+const withDefaults = (stored) => {
   // Merged per branch, not spread over the top: a stored document with `features`
   // but no `maintenance` — which is what an older write looks like — would
-  // otherwise replace the whole maintenance default with `undefined`.
-  features: { ...DEFAULT_PLATFORM_SETTINGS.features, ...(stored?.features || {}) },
-  maintenance: { ...DEFAULT_PLATFORM_SETTINGS.maintenance, ...(stored?.maintenance || {}) },
-});
+  // otherwise replace the whole maintenance default with `undefined`. The branch
+  // list is shared with `admin.service.js` so a new group cannot be added to the
+  // defaults and missed in one reader but not the other.
+  const merged = { ...DEFAULT_PLATFORM_SETTINGS, ...(stored || {}) };
+  NESTED_PLATFORM_SETTINGS_BRANCHES.forEach((branch) => {
+    merged[branch] = {
+      ...DEFAULT_PLATFORM_SETTINGS[branch],
+      ...(stored?.[branch] || {}),
+    };
+  });
+  return merged;
+};
 
 /**
  * The current settings, cached, defaulting to the shipped values.

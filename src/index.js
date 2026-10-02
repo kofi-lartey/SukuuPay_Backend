@@ -4,17 +4,20 @@ import cors from 'cors';
 import mongoose from 'mongoose';
 import job from './utils/cron.js';
 import installmentReminderJob from './jobs/installmentReminder.job.js';
+import healthCheckJob from './jobs/healthCheck.job.js';
 import routes from './routes/index.js';
 import { healthRoute } from './routes/health.routes.js';
 import { whatsappRoute } from './routes/whatsapp.routes.js';
 import { webhookRoute } from './routes/webhooks.routes.js';
 import errorHandler from './middleware/errorHandler.js';
+import { recordRequestError } from './utils/errorBuffer.js';
 import { ensureSuperAdmin } from './boot/ensureSuperAdmin.js';
 
 const app = express();
 
 job.start(); // Start the cron job to run the health check every 14 minutes
 installmentReminderJob.start(); // Daily 08:00 Accra sweep of plan installments
+healthCheckJob.start(); // Every 5 min: probes MongoDB, payment gateways and SMS
 app.set('trust proxy', 1);
 
 // ─────────────────────────────────────────────
@@ -53,6 +56,18 @@ app.use('/api', routes);
 app.use((_req, res) => {
   res.status(404).json({ success: false, message: 'Route not found' });
 });
+
+// Feeds the in-process error ring buffer (`utils/errorBuffer.js`) that backs
+// `GET /admin/health/errors`, then forwards. Nothing is persisted anywhere —
+// `errorHandler.js` below only console.errors — so without this the console's
+// recent-errors screen has no data and would have to invent some.
+//
+// Registered immediately before `errorHandler` so it sees the error first, and it
+// is purely additive: `errorHandler` stays the single authority on what a client
+// sees, still the thing that strips 5xx messages. The `next(error)` here is
+// Express's own mechanism — an errored request has no handler left to answer it —
+// and is not the "never forward an error" rule that applies to controllers.
+app.use(recordRequestError);
 
 app.use(errorHandler);
 

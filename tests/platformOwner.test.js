@@ -545,14 +545,25 @@ describe('platform settings are a singleton with a real shape', () => {
       'utf8'
     );
 
-    assert.ok(source.includes('"/revenue/series"'), 'the series route is missing');
+    // Quote-agnostic and whitespace-tolerant. This file was rewritten to use single
+    // quotes and to wrap registrations across lines to fit their middleware stacks,
+    // and a `source.includes('"/revenue/series"')` scan fails on both for reasons
+    // that have nothing to do with what it is checking. The regex still asserts the
+    // thing that matters: the route is registered, on a *literal* path.
+    assert.ok(
+      /adminRoute\.get\(\s*['"]\/revenue\/series['"]/.test(source),
+      'the series route is missing'
+    );
 
     // Order is irrelevant here and that is load-bearing to state, because it usually
     // is not: a `/revenue/:something` pattern *would* have to be registered before
     // `/revenue` or the exact match would never be reached. Both patterns here are
     // literal, so Express cannot conflate them — and the test is that neither has
     // grown a wildcard, because that is the edit that would break it silently.
-    assert.ok(source.includes('"/revenue"'), 'the aggregates route is missing');
+    assert.ok(
+      /adminRoute\.get\(\s*['"]\/revenue['"]/.test(source),
+      'the aggregates route is missing'
+    );
     assert.ok(
       !/adminRoute\.get\(\s*"\/revenue\/:/.test(source),
       'a parameterised /revenue/... route would be matched only if registered first'

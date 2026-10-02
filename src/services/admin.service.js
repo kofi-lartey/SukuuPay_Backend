@@ -6,6 +6,7 @@ import { AuditLog } from "../models/AuditLog.js";
 import {
   PlatformSettings,
   DEFAULT_PLATFORM_SETTINGS,
+  NESTED_PLATFORM_SETTINGS_BRANCHES,
 } from "../models/PlatformSettings.js";
 import { invalidatePlatformSettingsCache } from "./platformSettings.service.js";
 import ApiError from "../utils/ApiError.js";
@@ -25,6 +26,7 @@ export const listAllSchools = async (query) => {
     status,
     region,
     plan,
+    tag,
     search,
     sortBy = "createdAt",
     sortOrder = "desc",
@@ -34,6 +36,20 @@ export const listAllSchools = async (query) => {
   if (status) filter.status = status;
   if (region) filter.region = region;
   if (plan) filter["subscription.plan"] = plan;
+
+  /*
+   * `tag` filters on `subscription.tags`, which is where the field actually is —
+   * see the note on `PLATFORM_FIELD_PATHS` in `services/admin/schools.service.js`.
+   * Filtering `tags` at the top level would return nothing and look like "no school
+   * carries that label", which is the failure a label system cannot afford.
+   *
+   * Lowercased to match the normalisation `updateSchoolTags` applies on write: the
+   * tag vocabulary is free text, so `"Pilot"` and `"pilot"` are the same operator
+   * intent and the filter has to agree with the write side or it silently matches
+   * an empty set.
+   */
+  if (tag) filter["subscription.tags"] = String(tag).trim().toLowerCase();
+
   if (search) {
     filter.$or = [
       { name: { $regex: search, $options: "i" } },
@@ -52,7 +68,14 @@ export const listAllSchools = async (query) => {
       .sort(sort)
       .skip(skip)
       .limit(Number(perPage))
-      .select("-payment.hubtelApiKey -payment.hubtelClientSecret -sms.apiKey")
+      // Explicit projections rather than "everything but". The console's schools
+      // table needs the commercial terms on every row — what this school pays the
+      // platform, what is switched on, when it onboarded — so they are named here.
+      // `hubtelClientId` is `select: false` on the model and therefore absent
+      // already; it is listed so that a reader can verify the console returns no
+      // gateway credential from *any* of the three, rather than having to know
+      // which one happens to be flagged today.
+      .select("-payment.hubtelClientId -payment.hubtelClientSecret -payment.hubtelApiKey -sms.apiKey")
       .lean(),
     School.countDocuments(filter),
   ]);
@@ -60,7 +83,7 @@ export const listAllSchools = async (query) => {
   const schoolIds = schools.map((s) => s._id);
   const schoolIdObjs = schoolIds.map((id) => new mongoose.Types.ObjectId(id));
 
-  const [studentCounts, paymentVolume, userCounts] = await Promise.all([
+  const [studentCounts, paymentVolume, userCounts, lastPayments] = await Promise.all([
     User.aggregate([
       { $match: { schoolId: { $in: schoolIdObjs }, role: "student", deletedAt: null } },
       { $group: { _id: "$schoolId", count: { $sum: 1 } } },
@@ -79,6 +102,30 @@ export const listAllSchools = async (query) => {
       { $match: { schoolId: { $in: schoolIdObjs }, role: { $in: ["school_admin", "accountant", "teacher"] }, deletedAt: null } },
       { $group: { _id: "$schoolId", count: { $sum: 1 } } },
     ]),
+    /*
+     * The most recent *completed* payment per school.
+     *
+     * `$max` rather than `$sort`+`$first` because this runs inside the same
+     * aggregation as the volume figure: a school that has never taken a payment
+     * produces no group at all rather than a group with a null, and the map lookup
+     * below defaults it to `null` — which is the honest answer for "this school has
+     * never collected", and distinguishable from "the query failed to answer".
+     *
+     * Restricted to `completed` deliberately. A `pending` payment is an attempt, not
+     * revenue, and a table of last-activity dates built from attempts reports a
+     * school that has been abandoned mid-transaction as the busiest tenant on the
+     * page.
+     */
+    Payment.aggregate([
+      {
+        $match: {
+          schoolId: { $in: schoolIdObjs },
+          status: "completed",
+          deletedAt: null,
+        },
+      },
+      { $group: { _id: "$schoolId", lastPaymentAt: { $max: "$createdAt" } } },
+    ]),
   ]);
 
   const studentCountMap = new Map();
@@ -90,11 +137,26 @@ export const listAllSchools = async (query) => {
   const userCountMap = new Map();
   userCounts.forEach((entry) => userCountMap.set(String(entry._id), entry.count));
 
+  const lastPaymentMap = new Map();
+  lastPayments.forEach((entry) => lastPaymentMap.set(String(entry._id), entry.lastPaymentAt));
+
   const schoolsWithStats = schools.map((school) => ({
     ...school,
     studentCount: studentCountMap.get(String(school._id)) || 0,
     staffCount: userCountMap.get(String(school._id)) || 0,
     paymentVolume: paymentVolumeMap.get(String(school._id)) || 0,
+    lastPaymentAt: lastPaymentMap.get(String(school._id)) || null,
+    /*
+     * Hoisted out of `subscription` so the table can render a row without reaching
+     * into a billing subdocument, and so the three values have one obvious home.
+     * The originals stay on the object: this is a *view*, not a move, and anything
+     * reading the canonical path (`updateSchoolMarkup`, the finance aggregations)
+     * must not have it rewritten underneath it.
+     */
+    platformFeePercent: school.subscription?.platformFeePercent ?? 0,
+    tags: school.subscription?.tags ?? [],
+    featureFlags: school.subscription?.featureFlags ?? null,
+    onboardingCompletedAt: school.subscription?.onboardingCompletedAt ?? null,
   }));
 
   return {
@@ -444,12 +506,17 @@ export const getPlatformSettings = async () => {
   // Merged per branch rather than spread over the top level: a stored document with
   // `features` but no `maintenance` — which is what an older write looks like —
   // would otherwise replace the whole maintenance default with `undefined`.
-  return {
-    ...DEFAULT_PLATFORM_SETTINGS,
-    ...stored,
-    features: { ...DEFAULT_PLATFORM_SETTINGS.features, ...(stored.features || {}) },
-    maintenance: { ...DEFAULT_PLATFORM_SETTINGS.maintenance, ...(stored.maintenance || {}) },
-  };
+  // `NESTED_PLATFORM_SETTINGS_BRANCHES` is the shared list, so a branch added to
+  // the defaults is merged here without anyone remembering to add it twice.
+  const merged = { ...DEFAULT_PLATFORM_SETTINGS, ...stored };
+  NESTED_PLATFORM_SETTINGS_BRANCHES.forEach((branch) => {
+    merged[branch] = {
+      ...DEFAULT_PLATFORM_SETTINGS[branch],
+      ...(stored?.[branch] || {}),
+    };
+  });
+
+  return merged;
 };
 
 /**
@@ -523,6 +590,55 @@ const diffSettings = (before, after) => {
   };
   walk(before, after, "");
   return changed;
+};
+
+// ──────────────────── Settings sub-resources ────────────────────
+
+/**
+ * `PUT /admin/settings/commission` — the two percentages SukuuPay takes.
+ *
+ * A separate entry point rather than a branch of `updatePlatformSettings`, for one
+ * reason: **these are the numbers the platform earns, and everything else in the
+ * settings document is configuration.** The console puts a confirmation in front of
+ * exactly this call, and an endpoint that also accepted `maintenance.mode` or
+ * `sms.provider` would make that confirmation cover changes the operator was not
+ * thinking about.
+ *
+ * Thin by design — it validates nothing that `updatePlatformSettings` does not, and
+ * delegates the write, so there is exactly one place that writes the singleton and
+ * exactly one place that invalidates the cache.
+ */
+export const updateCommission = async (patch, updatedById) =>
+  updatePlatformSettings(
+    {
+      defaultMarkupPercent: patch.defaultMarkupPercent,
+      defaultPlatformFeePercent: patch.defaultPlatformFeePercent,
+    },
+    updatedById
+  );
+
+/**
+ * `PUT /admin/settings/disbursement` — payout schedule, and whether it self-approves.
+ *
+ * **`autoApprove` is the most consequential boolean in this product** and is the
+ * reason this is a named endpoint: it is the difference between a payout run needing
+ * one human click and money leaving the platform unattended. It defaults to `false`
+ * in the schema, so a client that sends only `frequency` cannot turn it on by
+ * omission — and because this function passes through exactly the keys it was given,
+ * a partial body leaves `autoApprove` as it was rather than as `undefined`.
+ *
+ * That last part is why it does not spread `patch` blindly: `{ ...undefined }` on an
+ * omitted key writes `undefined`, which Mongoose's `$set` turns into an actual field
+ * removal on some paths. Naming the three fields is the fix, and it also means a
+ * client cannot smuggle a fourth key into the singleton through this route.
+ */
+export const updateDisbursementSettings = async (patch, updatedById) => {
+  const next = {};
+  if (patch.frequency !== undefined) next.frequency = patch.frequency;
+  if (patch.dayOfWeek !== undefined) next.dayOfWeek = patch.dayOfWeek;
+  if (patch.autoApprove !== undefined) next.autoApprove = patch.autoApprove;
+
+  return updatePlatformSettings({ disbursement: next }, updatedById);
 };
 
 // ──────────────────── Platform-wide SMS balance ────────────────────
