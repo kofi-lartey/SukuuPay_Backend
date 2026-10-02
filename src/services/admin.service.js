@@ -3,6 +3,11 @@ import { School } from "../models/schoolModel.js";
 import { User } from "../models/userModel.js";
 import { Payment } from "../models/paymentModel.js";
 import { AuditLog } from "../models/AuditLog.js";
+import {
+  PlatformSettings,
+  DEFAULT_PLATFORM_SETTINGS,
+} from "../models/PlatformSettings.js";
+import { invalidatePlatformSettingsCache } from "./platformSettings.service.js";
 import ApiError from "../utils/ApiError.js";
 import { AUDIT_ACTIONS } from "../config/constants.js";
 import {
@@ -225,6 +230,299 @@ export const getPlatformRevenue = async (query) => {
       region: region || null,
     },
   };
+};
+
+// ──────────────────── Revenue over time (platform view) ────────────────────
+//
+// The reason this exists at all: `getPlatformRevenue` returns aggregates, and every
+// `/api/analytics/*` route is school-scoped (`analytics.routes.js` — each path ends
+// `/:schoolId`). So there was no endpoint anywhere in the API that could plot
+// platform revenue over time, and the frontend's only options were a line through
+// `mtdRevenue` and `ytdRevenue` — which is invented data wearing a chart's clothes.
+//
+// Bucket choice is a parameter rather than a guess, because the two are not
+// interchangeable: 30 daily points for "last 30 days" and 24 monthly points for
+// "this year", and a caller picking the wrong one gets a graph whose shape depends
+// on how the data happened to be sampled.
+
+const addMonths = (date, count) => {
+  const next = new Date(date.getTime());
+  next.setMonth(next.getMonth() + count);
+  return next;
+};
+
+/**
+ * Month and day keys are built in **local time on the server**, and Mongo is asked
+ * for UTC buckets.
+ *
+ * Those are different calendars, and the mismatch is the bug: `$dateToString` with
+ * no `timezone` truncates in UTC, so for a server in `Africa/Accra` (UTC+0, same
+ * offset, fine) it agrees, but for anything west of Greenwich the first bucket
+ * silently shifts and a month boundary lands on the wrong side of a payment. Buckets
+ * are therefore computed in JS from the server's own calendar rather than trusted to
+ * a `$group` the reader cannot verify, and the aggregation only sums.
+ */
+export const getRevenueSeries = async (query) => {
+  const {
+    bucket = "month",
+    period = "ytd",
+    startDate,
+    endDate,
+    plan,
+    region,
+  } = query;
+
+  const now = new Date();
+  let from;
+  let to = endDate ? new Date(endDate) : now;
+
+  if (startDate) {
+    from = new Date(startDate);
+  } else if (period === "last30") {
+    from = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  } else if (period === "mtd") {
+    from = new Date(now.getFullYear(), now.getMonth(), 1);
+  } else if (period === "all") {
+    from = new Date(now.getFullYear() - 2, 0, 1);
+  } else {
+    // ytd
+    from = new Date(now.getFullYear(), 0, 1);
+  }
+
+  const matchFilter = {
+    status: "completed",
+    deletedAt: null,
+    createdAt: { $gte: from, $lte: to },
+  };
+
+  const pipeline = [{ $match: matchFilter }];
+
+  if (plan || region) {
+    pipeline.push(
+      {
+        $lookup: {
+          from: "schools",
+          localField: "schoolId",
+          foreignField: "_id",
+          as: "school",
+        },
+      },
+      { $unwind: "$school" }
+    );
+    const schoolMatch = {};
+    if (plan) schoolMatch["school.subscription.plan"] = plan;
+    if (region) schoolMatch["school.region"] = region;
+    if (Object.keys(schoolMatch).length) pipeline.push({ $match: schoolMatch });
+  }
+
+  pipeline.push({
+    $group: {
+      _id: { $dateToString: { format: "%Y-%m", date: "$createdAt" } },
+      totalRevenue: { $sum: "$amount" },
+      totalPayments: { $sum: 1 },
+    },
+  });
+
+  const rows = await Payment.aggregate(pipeline);
+
+  const byKey = new Map(
+    rows.map((row) => [row._id, { totalRevenue: row.totalRevenue, totalPayments: row.totalPayments }])
+  );
+
+  /*
+   * Day buckets need a second aggregation: the month-level `$group` above has
+   * already collapsed the days away, and a month key is not a substitute for a day
+   * one — faking it would put 24 identical points on the chart.
+   *
+   * `byDay` is local to this invocation, deliberately. An earlier version cached the
+   * daily totals in a module-level `Map`, which is the wrong shape for a concurrent
+   * request handler: two overlapping calls with different filters interleave their
+   * writes into one shared cache and each returns the other's numbers.
+   */
+  let dayTotals = null;
+  if (bucket === "day") {
+    const dailyRows = await Payment.aggregate([
+      ...pipeline.slice(0, pipeline.length - 1),
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          totalRevenue: { $sum: "$amount" },
+          totalPayments: { $sum: 1 },
+        },
+      },
+    ]);
+    dayTotals = new Map(
+      dailyRows.map((row) => [row._id, { totalRevenue: row.totalRevenue, totalPayments: row.totalPayments }])
+    );
+  }
+
+  const series = buildCalendarSeries(dayTotals || byKey, from, to, bucket);
+
+  return {
+    series,
+    filters: {
+      bucket,
+      period,
+      startDate: from,
+      endDate: to,
+      plan: plan || null,
+      region: region || null,
+    },
+    totals: {
+      totalRevenue: series.reduce((sum, point) => sum + point.totalRevenue, 0),
+      totalPayments: series.reduce((sum, point) => sum + point.totalPayments, 0),
+    },
+  };
+};
+
+const pad = (value) => String(value).padStart(2, "0");
+
+/** `2026-03-01` → `2026-03`, the key the month-level `$group` produces. */
+export const monthKey = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}`;
+
+/** `2026-03-01` → `2026-03-01`, the key the day-level `$group` produces. */
+export const dayKey = (date) =>
+  `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+
+/**
+ * Turn `{ "2026-03": 1200 }`-shaped totals into a series with **no gaps**.
+ *
+ * Pure, and exported, because this is the one part of the endpoint worth testing
+ * without a database — and it is the part that decides whether the chart tells the
+ * truth.
+ *
+ * The bug this exists to prevent: mapping the aggregate rows. A month nobody paid
+ * produces no row, so the series would simply omit it and the client would draw a
+ * straight line across the hole — presenting a month of zero revenue as smooth
+ * growth. Walking the calendar instead emits an explicit `0`, which renders as a
+ * dip to the baseline. "Nobody paid" and "we have no data" look identical once a
+ * chart has drawn over them, and that is the whole reason to prefer a zero.
+ *
+ * Also caps the length, because an unbounded walk over a ten-year `all` range is a
+ * thousand-point array and a hung tab.
+ */
+export const buildCalendarSeries = (totalsByKey, from, to, bucket = "month") => {
+  const cap = bucket === "day" ? 400 : 120;
+  const series = [];
+
+  if (bucket === "day") {
+    const cursor = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+    const last = new Date(to.getFullYear(), to.getMonth(), to.getDate());
+    while (cursor <= last && series.length < cap) {
+      series.push({ period: dayKey(cursor), ...(totalsByKey.get(dayKey(cursor)) || { totalRevenue: 0, totalPayments: 0 }) });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    return series;
+  }
+
+  const cursor = new Date(from.getFullYear(), from.getMonth(), 1);
+  while (cursor <= to && series.length < cap) {
+    series.push({ period: monthKey(cursor), ...(totalsByKey.get(monthKey(cursor)) || { totalRevenue: 0, totalPayments: 0 }) });
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+  return series;
+};
+
+// ──────────────────── Platform settings ────────────────────
+
+/**
+ * Read the singleton, defaulted in code.
+ *
+ * Deliberately **not** an upsert: a GET that writes needs write permissions, is not
+ * safe to call concurrently before the document exists, and would race the unique
+ * index on `singletonKey`. Merging the stored document over the defaults means a
+ * settings page added to the product before the collection has a row in it renders
+ * real values rather than an error.
+ */
+export const getPlatformSettings = async () => {
+  const stored = await PlatformSettings.findOne({ singletonKey: "platform" }).lean();
+
+  if (!stored) {
+    return { ...DEFAULT_PLATFORM_SETTINGS, updatedBy: null, updatedAt: null };
+  }
+
+  // Merged per branch rather than spread over the top level: a stored document with
+  // `features` but no `maintenance` — which is what an older write looks like —
+  // would otherwise replace the whole maintenance default with `undefined`.
+  return {
+    ...DEFAULT_PLATFORM_SETTINGS,
+    ...stored,
+    features: { ...DEFAULT_PLATFORM_SETTINGS.features, ...(stored.features || {}) },
+    maintenance: { ...DEFAULT_PLATFORM_SETTINGS.maintenance, ...(stored.maintenance || {}) },
+  };
+};
+
+/**
+ * Write the singleton, recording who did it and what changed.
+ *
+ * `findOneAndUpdate` with `upsert` rather than `create`, because the second create
+ * would hit the unique index — and an E11000 surfaced to an operator as "save
+ * failed" is a worse answer than an upsert that cannot fail.
+ *
+ * Returns the before/after pair the caller writes to the audit log. Both matter:
+ * `settings.update` without a `before` records that something changed but not what,
+ * which does not answer the question the audit exists for.
+ */
+export const updatePlatformSettings = async (patch, updatedById) => {
+  const before = await getPlatformSettings();
+
+  const updated = await PlatformSettings.findOneAndUpdate(
+    { singletonKey: "platform" },
+    { $set: { ...patch, singletonKey: "platform" }, updatedBy: updatedById || null },
+    { new: true, upsert: true, setDefaultsOnInsert: true, runValidators: true }
+  ).lean();
+
+  // Invalidate **after** the write, not before.
+  //
+  // The readers in `platformSettings.service.js` cache for 30 seconds, and the
+  // maintenance middleware reads that cache on every request — so without this, an
+  // operator toggling `maintenance.mode` would flip a switch that does nothing for up
+  // to half a minute, and would have no way to tell whether it had worked. In-process
+  // only: on a multi-instance deploy the other instances still serve the stale value
+  // until their TTL lapses, which is why the TTL is short.
+  invalidatePlatformSettingsCache();
+
+  return { before, after: updated, changed: diffSettings(before, updated) };
+};
+
+/**
+ * Fields excluded from the diff.
+ *
+ * Not a style choice. `before` comes from `getPlatformSettings` (which has
+ * `updatedAt: null` on a fresh database) and `after` is the document mongoose just
+ * stamped — so without this, **every** write reported `updatedAt`, `updatedBy` and
+ * `_id` as three extra "changes" alongside the real one. The audit entry then reads
+ * `defaultMarkupPercent: 5→6, updatedAt: null→2026-…`, and the first of those is the
+ * one anybody is looking for, buried in bookkeeping.
+ *
+ * A diff that reports the database's own metadata is a diff nobody reads.
+ */
+const DIFF_EXCLUDED = new Set(["_id", "__v", "createdAt", "updatedAt", "updatedBy", "singletonKey"]);
+
+/**
+ * The leaf paths that actually differ.
+ *
+ * Reported as flat `a.b` strings rather than a nested object because that is what a
+ * reader wants from an audit entry: "features.trialDays" is answerable at a glance, a
+ * three-level diff is not. Comparing leaves rather than `JSON.stringify`-ing the
+ * whole document is what stops a no-op PUT being logged as a change.
+ */
+const diffSettings = (before, after) => {
+  const changed = [];
+  const walk = (a, b, path) => {
+    if (path && DIFF_EXCLUDED.has(path.split(".").pop())) return;
+    if (a && b && typeof a === "object" && typeof b === "object") {
+      Object.keys({ ...a, ...b }).forEach((key) =>
+        walk(a[key], b[key], path ? `${path}.${key}` : key)
+      );
+      return;
+    }
+    if (String(a ?? "") !== String(b ?? "")) {
+      changed.push({ path, from: a ?? null, to: b ?? null });
+    }
+  };
+  walk(before, after, "");
+  return changed;
 };
 
 // ──────────────────── Platform-wide SMS balance ────────────────────

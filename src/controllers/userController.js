@@ -51,15 +51,36 @@ const resolveTargetSchool = async (requester, requestedSchoolId) => {
  * Which role the invited account may be granted.
  *
  * A `school_admin` is confined to `INVITABLE_BY_SCHOOL_ADMIN`. The load-bearing
- * case is `super_admin`: it is a platform-operator tier, and letting a school
- * admin mint one means one compromised school-admin session is enough to create
- * an account that is outside that school's boundary entirely — able to read any
- * school's data and, worse, invisible in the audit logs of the schools it
- * touched. `signup` and `changeUserRole` already refuse the same grant; this
- * endpoint previously accepted it, because the old controller copied `role`
- * straight off the body.
+ * case is `super_admin`: it is a platform-operator tier, and letting anybody mint
+ * one means one compromised session is enough to create an account that is outside
+ * every school's boundary entirely — able to read any school's data and, worse,
+ * invisible in the audit logs of the schools it touched.
+ *
+ * There is exactly one platform owner and it is provisioned from the environment
+ * (`boot/ensureSuperAdmin.js`), so `super_admin` is not a grantable role at all and
+ * this refuses it **before** the caller's own privilege is considered. The first
+ * line used to be an unconditional pass-through for a caller who was already a
+ * `super_admin`, which made this the one endpoint that could produce a second
+ * platform owner. `signup` and the schema already refused the grant; this did not,
+ * because it copied `role` straight off the body.
+ *
+ * The schema (`ASSIGNABLE_ROLES`) is what makes the refusal unreachable in
+ * practice — `super_admin` cannot survive validation — and this function is what
+ * makes it *legible*, returning `PLATFORM_ROLE_NOT_GRANTABLE` rather than letting a
+ * caller discover the rule as a field-level 422.
  */
 const resolveInvitableRole = (requester, requestedRole) => {
+  if (requestedRole === 'super_admin') {
+    return {
+      error: {
+        status: 403,
+        message:
+          'The platform admin role cannot be granted. It is assigned to a single account from the server environment.',
+        code: 'PLATFORM_ROLE_NOT_GRANTABLE',
+      },
+    };
+  }
+
   if (requester.role === 'super_admin') return { role: requestedRole || 'teacher' };
 
   if (!INVITABLE_BY_SCHOOL_ADMIN.includes(requestedRole)) {
@@ -494,6 +515,23 @@ export const updateUser = async (req, res) => {
       });
     }
 
+    if (role && role === 'super_admin') {
+      // The platform role is not assignable. The schema already refuses it
+      // (`ASSIGNABLE_ROLES`), so this is unreachable through the API — which is the
+      // point of it being here rather than only there: this endpoint carries no
+      // `authorize` middleware at all, so it is the one place where a future edit
+      // to the schema would have nothing else standing behind it. Refusing here
+      // also means the answer is `PLATFORM_ROLE_NOT_GRANTABLE` with an
+      // explanation, rather than a field-level 422 naming a role the caller was
+      // never going to be allowed to set.
+      return res.status(403).json({
+        success: false,
+        message:
+          'The platform admin role cannot be granted. It is assigned to a single account from the server environment.',
+        code: 'PLATFORM_ROLE_NOT_GRANTABLE',
+      });
+    }
+
     if (role && req.user.role !== 'super_admin') {
       return res.status(403).json({
         success: false,
@@ -513,9 +551,29 @@ export const updateUser = async (req, res) => {
     }
 
     if (name) user.name = name;
+    // Captured before the assignment below, so the audit entry can record the
+    // transition rather than just the destination.
+    const previousRole = user.role;
     if (role) user.role = role;
     if (position !== undefined) user.position = position || null;
     if (phone) user.phone = phone;
+
+    /*
+     * The audit entry this endpoint never wrote.
+     *
+     * A role change through `PUT /users/:userId` was completely invisible: the
+     * invite path logged `user.invite`, this one logged nothing, so a colleague
+     * promoted to full governance of a school left no trace in that school's
+     * activity log — the one record the school has of who could do what. Written
+     * here rather than only in `changeUserRole` because this is a second,
+     * undocumented route to the same effect, and the two endpoints having
+     * different logging is exactly the gap.
+     *
+     * Both sides of the transition are recorded. For a role change, "who had it,
+     * who has it now" is the entire question an administrator is asking later;
+     * logging only the new value leaves the audit unable to say who was demoted.
+     */
+    const roleChanged = Boolean(role) && role !== previousRole;
 
     // Wizard progress. Restricted to the account itself: `sameSchoolOrAdmin`
     // above lets a school_admin edit their colleagues, and letting one admin
@@ -529,6 +587,16 @@ export const updateUser = async (req, res) => {
     }
 
     await user.save();
+
+    if (roleChanged) {
+      await auditLog(req, {
+        action: AUDIT_ACTIONS.USER_ROLE_CHANGE,
+        entity: 'User',
+        entityId: user._id,
+        schoolId: user.schoolId,
+        meta: { from: previousRole, to: user.role },
+      });
+    }
 
     return res.status(200).json({
       success: true,
@@ -580,15 +648,47 @@ export const changeUserRole = async (req, res) => {
       });
     }
 
-    if (role === 'super_admin' && req.user.role !== 'super_admin') {
+    /*
+     * The platform role cannot be assigned by anybody.
+     *
+     * The old check here was `role === 'super_admin' && req.user.role !== 'super_admin'`
+     * — i.e. "a super_admin may promote anyone", which is precisely the second
+     * platform owner the single-owner rule exists to prevent. The schema
+     * (`ASSIGNABLE_ROLES`) now refuses the value before this runs, so this branch
+     * is defence in depth; it is kept because the refusal needs to be an answer
+     * with an explanation rather than a validation error, and because
+     * `updateUserRoleSchema` is not the only way a body reaches this handler.
+     */
+    if (role === 'super_admin') {
       return res.status(403).json({
         success: false,
-        message: 'Only a super admin can assign the super_admin role',
+        message:
+          'The platform admin role cannot be assigned. It is assigned to a single account from the server environment.',
+        code: 'PLATFORM_ROLE_NOT_GRANTABLE',
       });
     }
 
+    const previousRole = user.role;
+
     user.role = role;
     await user.save();
+
+    /*
+     * The audit entry this endpoint never wrote.
+     *
+     * Role changes were the widest silent action in the product: `user.invite` was
+     * logged, this was not, and "who promoted this bursar to school admin?" had
+     * no answer. Both sides of the transition are recorded, because the audit's
+     * purpose here is to answer a question about a *change* — logging only the new
+     * value leaves it unable to say who lost the role.
+     */
+    await auditLog(req, {
+      action: AUDIT_ACTIONS.USER_ROLE_CHANGE,
+      entity: 'User',
+      entityId: user._id,
+      schoolId: user.schoolId,
+      meta: { from: previousRole, to: user.role },
+    });
 
     return res.status(200).json({
       success: true,
@@ -645,6 +745,25 @@ export const deleteUser = async (req, res) => {
     user.deletedAt = new Date();
     user.tokenVersion += 1;
     await user.save();
+
+    /*
+     * The audit entry this endpoint never wrote, and the widest omission of the
+     * three: a removal destroys somebody's access to a school's records and
+     * revokes every session they hold, irreversibly from their side, and left no
+     * trace anywhere. A school's activity log — the record it has of who could
+     * see its students' data — could not show that an account had been removed.
+     *
+     * The identity is captured before the soft delete, because afterwards the
+     * document is only reachable through a `deletedAt` query and an audit reader
+     * following `entityId` would find a row that looks active.
+     */
+    await auditLog(req, {
+      action: AUDIT_ACTIONS.USER_REMOVE,
+      entity: 'User',
+      entityId: user._id,
+      schoolId: user.schoolId,
+      meta: { email: user.email, role: user.role, name: user.name },
+    });
 
     return res.status(200).json({
       success: true,

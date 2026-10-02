@@ -71,6 +71,26 @@ services:
       - key: HEALTH_CHECK_URL
         sync: false
 
+      # ── Platform owner ──
+      #
+      # The single `super_admin`, provisioned at boot by
+      # `src/boot/ensureSuperAdmin.js`. Both values are required: the reconciler
+      # exits the process non-zero if either is missing, so a deploy that leaves
+      # them blank produces a service that binds its port, answers `/health`, and
+      # refuses every `/api/admin` call with no in-product way to fix it.
+      #
+      # `sync: false` for both — Render generates the key empty and the operator
+      # pastes the value once. `SUPER_ADMIN_EMAIL` is not a secret, but it is
+      # `sync: false` for the same reason `JWT_SECRET` is: it is an input to a
+      # one-shot provisioning step, and a deploy that silently substitutes a
+      # default would be worse than one that asks.
+      - key: SUPER_ADMIN_EMAIL
+        sync: false
+      - key: SUPER_ADMIN_PASSWORD
+        sync: false
+      - key: SUPER_ADMIN_NAME
+        value: Platform Operations
+
       # ── Auth ──
       - key: JWT_SECRET
         sync: false

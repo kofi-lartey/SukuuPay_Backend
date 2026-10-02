@@ -9,6 +9,7 @@ import { healthRoute } from './routes/health.routes.js';
 import { whatsappRoute } from './routes/whatsapp.routes.js';
 import { webhookRoute } from './routes/webhooks.routes.js';
 import errorHandler from './middleware/errorHandler.js';
+import { ensureSuperAdmin } from './boot/ensureSuperAdmin.js';
 
 const app = express();
 
@@ -76,8 +77,24 @@ const server = app.listen(PORT, () => {
 });
 
 mongoose.connect(MONGODB_URI)
-  .then(() => {
+  .then(async () => {
     console.log('Connected to MongoDB successfully!');
+
+    // The single platform owner, provisioned from SUPER_ADMIN_EMAIL /
+    // SUPER_ADMIN_PASSWORD and reconciled on every boot.
+    //
+    // It runs here, inside the connect handler, and not beside `app.listen`
+    // because it writes to Mongo — and `app.listen` is deliberately first so a
+    // slow connect cannot kill a deploy (see the comment above). A reconcile that
+    // could not reach the database would provision nothing and report success.
+    //
+    // Fatal on failure, like the connect itself: an instance whose port is bound
+    // and whose `/health` answers 200, with no account that can reach
+    // `/api/admin`, is worse than an instance that restarts. There is no in-product
+    // way to create a platform owner — that is the point of the invariant — so a
+    // silent failure here has no recovery but a redeploy, and a loud one at least
+    // says why.
+    await ensureSuperAdmin();
   })
   .catch((error) => {
     console.error('Database connection failed:', error);

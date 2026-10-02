@@ -13,6 +13,7 @@ import {
 import { School } from '../models/schoolModel.js';
 import { resolveAccountLinkState } from '../utils/accountLink.js';
 import { SELF_SIGNUP_ROLES } from '../validators/authValidators.js';
+import { isFeatureEnabled } from '../services/platformSettings.service.js';
 import {
   emailOtpExpiry,
   generateEmailOtp,
@@ -76,6 +77,29 @@ const onboardingBlock = async (user) => {
  */
 export const signup = async (req, res) => {
   try {
+    // Self-signup is a platform switch (`features.selfSignupEnabled`), off when an
+    // operator wants the only route to be an invitation.
+    //
+    // Checked **before the duplicate-email probe below**, and that ordering is the
+    // point rather than an accident: with signup off, the probe is an oracle that
+    // answers "does this person have an account on SukuuPay?" to anyone who can
+    // submit a form. A 503 that says only "registration is closed" leaks nothing and
+    // applies to everyone equally.
+    //
+    // 503 rather than 403: nothing about this request is forbidden, the service is
+    // temporarily not offering the feature. The distinction matters to a client
+    // deciding between "tell the user to try again" and "tell the user they are not
+    // allowed".
+    const selfSignupEnabled = await isFeatureEnabled("selfSignupEnabled");
+    if (!selfSignupEnabled) {
+      return res.status(503).json({
+        success: false,
+        message:
+          'Registration is closed at the moment. A school administrator can invite you by email.',
+        code: "SELF_SIGNUP_DISABLED",
+      });
+    }
+
     const { name, email, phone, password, position, role, school } = req.body;
 
     const existingUser = await User.findOne({ email });

@@ -19,12 +19,29 @@ import { whatsappRoute } from './whatsapp.routes.js';
 import { smsRoute } from './sms.routes.js';
 import { webhookRoute } from './webhooks.routes.js';
 import { publicAdRoute } from './schoolAd.routes.js';
+import { maintenanceGuard } from '../middleware/maintenance.js';
 
 const router = Router();
 
 // The same health router the root mount uses, so /api/health reports the same
 // dependency and version detail the root endpoint does.
 router.use('/', healthRoute);
+
+// Maintenance, mounted on `/api` and *after* `healthRoute`.
+//
+// Three things about that placement, all load-bearing:
+//
+//   - **On `/api`, never globally.** Payment and WhatsApp callbacks are mounted at
+//     the root in `index.js` before `/api`, so this cannot reach them. A global guard
+//     would refuse a Hubtel settlement callback mid-migration — turning a planned
+//     outage into lost money, silently, because the provider's retry would be refused
+//     too.
+//   - **After `healthRoute`,** so `GET /api/health` answers before the guard runs.
+//     That is the path `utils/cron.js` probes, and a deliberate `maintenance: "on"`
+//     should not then log a health failure every cycle.
+//   - **Before every other router,** so a write is refused before it reaches a
+//     controller at all, rather than partway through one.
+router.use(maintenanceGuard);
 
 router.use('/', authRoute);
 router.use('/', userRoute);

@@ -44,6 +44,20 @@ const AUDIT_ACTIONS = [
   // GES-facing audit trail, who looked at a debtors list is as much evidence as
   // who changed it.
   "report.viewed",
+  // Who changed someone's access, and who removed an account.
+  //
+  // `user.invite` covers creating a colleague. These two cover everything after
+  // that, and neither was logged: a role change and a removal are the two actions
+  // with the widest blast radius in the product — one promotes somebody to a
+  // school's full governance, the other destroys a person's access and every
+  // session they hold — and both were invisible in the trail. A bursar asked to
+  // prove who changed a colleague's permissions had nothing to show.
+  //
+  // A role change is also the route by which the platform owner could be demoted,
+  // so the entry records both sides of the transition rather than only the new
+  // value: "who had it, who has it now" is the whole question.
+  "user.role_change",
+  "user.remove",
 ];
 
 const auditLogSchema = new mongoose.Schema(

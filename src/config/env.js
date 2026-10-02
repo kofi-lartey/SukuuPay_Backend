@@ -11,6 +11,31 @@ export const CLOUDINARY_UPLOAD_FOLDER = process.env.CLOUDINARY_UPLOAD_FOLDER;
 
 export const NODE_ENV = process.env.NODE_ENV || 'development';
 
+// ─────────────── Platform owner ───────────────
+//
+// There is exactly ONE `super_admin` on this platform, and it is provisioned
+// from these three variables at boot by `boot/ensureSuperAdmin.js` — never
+// created through an API and never held by more than one account.
+//
+// `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` are **backend-only**. They must
+// never be exposed through a `VITE_*` variable on the frontend: anything prefixed
+// `VITE_` is inlined into the shipped JavaScript bundle and is readable by anyone
+// who opens devtools, which for a platform owner's password is the same as having
+// no password at all.
+//
+// `SUPER_ADMIN_NAME` is a display name for the account and carries no authority —
+// the authority is the email, which is the field the reconcile matches on. It has
+// a fallback so an unset name cannot block the boot.
+//
+// Absent values resolve to `null` rather than throwing. `config/env.js` is
+// imported by the test suite, and a module that throws on an unset variable would
+// take every test with it. The boot reconciler is the single place that decides a
+// missing pair is fatal, because that is the one place where it is: a deployment
+// that boots without an owner has no way into `/api/admin/*` at all.
+export const SUPER_ADMIN_EMAIL = (process.env.SUPER_ADMIN_EMAIL || '').trim().toLowerCase() || null;
+export const SUPER_ADMIN_PASSWORD = process.env.SUPER_ADMIN_PASSWORD || null;
+export const SUPER_ADMIN_NAME = (process.env.SUPER_ADMIN_NAME || 'Platform Operations').trim();
+
 // ─────────────── JWT / Auth ───────────────
 export const JWT_EXPIRE = process.env.JWT_EXPIRE || '15m';
 export const REFRESH_TOKEN_EXPIRE = process.env.REFRESH_TOKEN_EXPIRE || '7d';

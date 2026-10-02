@@ -4,6 +4,7 @@ import { User } from "../models/userModel.js";
 import { SchoolJoinRequest } from "../models/SchoolJoinRequest.js";
 import { Notification } from "../models/Notification.js";
 import { generateSchoolCode, generateUniqueSlug, validateGhanaPhone } from "../utils/generateCode.js";
+import { getProvisioningDefaults } from "./platformSettings.service.js";
 
 class ApiError extends Error {
   constructor(message, status = 500, code = "INTERNAL_ERROR") {
@@ -36,8 +37,18 @@ export const createSchool = async (data, createdBy, stampUrl = null) => {
   const slug = await generateUniqueSlug(data.name);
   const schoolCode = await generateSchoolCode(data.name);
 
+  // Trial length and markup come from platform settings rather than from literals
+  // that used to be written here.
+  //
+  // `platformMarkupPercent` had **no writer anywhere in the codebase** — the field's
+  // schema default is `0`, so every school provisioned before this change was
+  // collecting zero platform markup while the revenue aggregations divided by it.
+  // Reading it from the platform default is therefore not "adding a setting"; it is
+  // the first time that number has ever been anything other than 0.
+  const { trialDays, markupPercent } = await getProvisioningDefaults();
+
   const trialEndsAt = new Date();
-  trialEndsAt.setDate(trialEndsAt.getDate() + 30);
+  trialEndsAt.setDate(trialEndsAt.getDate() + trialDays);
 
   const school = await School.create({
     ...data,
@@ -47,6 +58,10 @@ export const createSchool = async (data, createdBy, stampUrl = null) => {
     createdBy,
     status: "active",
     stamp: stampUrl,
+    // Merged rather than assigned: `data` may already carry a `payment` block from a
+    // caller, and the platform default is the floor, not an override of an explicit
+    // value someone chose.
+    payment: { ...(data.payment || {}), platformMarkupPercent: markupPercent },
     subscription: {
       plan: "trial",
       status: "trial",
@@ -141,8 +156,17 @@ export const provisionSchoolForUser = async (data, user) => {
   const slug = await generateUniqueSlug(data.name);
   const schoolCode = await generateSchoolCode(data.name);
 
+  // Same platform defaults as `createSchool`, and read at the same point in the flow.
+  //
+  // **Before `mongoose.startSession()`**, preserving the original ordering: the trial
+  // window is measured from the start of the request rather than from the moment the
+  // transaction committed. Reading it inside the transaction would make the window
+  // depend on how long the transaction took, which is a variable nobody should be
+  // able to influence the length of a trial by.
+  const { trialDays, markupPercent } = await getProvisioningDefaults();
+
   const trialEndsAt = new Date();
-  trialEndsAt.setDate(trialEndsAt.getDate() + 30);
+  trialEndsAt.setDate(trialEndsAt.getDate() + trialDays);
 
   const session = await mongoose.startSession();
   let result;
@@ -158,6 +182,7 @@ export const provisionSchoolForUser = async (data, user) => {
             schoolCode,
             createdBy: user._id,
             status: "active",
+            payment: { ...(data.payment || {}), platformMarkupPercent: markupPercent },
             subscription: {
               plan: "trial",
               status: "trial",

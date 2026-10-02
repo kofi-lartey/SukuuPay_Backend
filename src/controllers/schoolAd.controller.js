@@ -1,6 +1,7 @@
 import { SchoolAd, AD_PLACEMENTS } from "../models/SchoolAd.js";
 import { School } from "../models/schoolModel.js";
 import { extractPublicId, deleteFromCloudinary } from "../middleware/upload.js";
+import { isFeatureEnabled } from "../services/platformSettings.service.js";
 
 const isLive = (ad, now = new Date()) =>
   ad.status === "approved" &&
@@ -15,6 +16,25 @@ const isLive = (ad, now = new Date()) =>
 // ─────────────────────────────────────────────
 export const listPublicSchoolAds = async (req, res) => {
   try {
+    // The platform switch (`features.adsEnabled`).
+    //
+    // Answered as **200 with an empty list**, not an error, and that is a contract
+    // rather than a convenience: this endpoint has exactly two states today — ads
+    // or `{ ads: [] }` — and a 503 would give the login page a new failure mode for a
+    // thing that is a perfectly normal state of the world. Turning the slider off
+    // should look like a school having nothing to promote.
+    //
+    // `Cache-Control` matters more here than it looks. The success path sets
+    // `max-age=300`, so an empty list served *without* `no-store` would keep being
+    // served from an edge cache for five minutes after an operator turns the flag
+    // back on — the switch would appear not to work, and the console would show it
+    // as on.
+    const adsEnabled = await isFeatureEnabled("adsEnabled");
+    if (!adsEnabled) {
+      res.set("Cache-Control", "no-store");
+      return res.status(200).json({ success: true, ads: [], adsEnabled: false });
+    }
+
     const placement = req.query.placement || "auth_aside";
     const now = new Date();
 
@@ -34,6 +54,10 @@ export const listPublicSchoolAds = async (req, res) => {
     return res.status(200).json({
       success: true,
       ads,
+      // Present so a client can distinguish "off" from "nobody is advertising".
+      // The list alone cannot tell them apart, and a dashboard asking why the
+      // sidebar is empty deserves a better answer than an array.
+      adsEnabled: true,
     });
   } catch (error) {
     // Never surface an error to the client: the auth pages must degrade to

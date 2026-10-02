@@ -6,7 +6,12 @@ import {
   suspendSchoolPlatform,
   unsuspendSchoolPlatform,
   getDashboardKpis,
+  getRevenueSeries,
+  getPlatformSettings,
+  updatePlatformSettings,
 } from "../services/admin.service.js";
+import { AUDIT_ACTIONS } from "../config/constants.js";
+import { logRequest as auditLog } from "../utils/auditService.js";
 
 // ─────────────────────────────────────────────
 // GET /admin/schools — list all schools on platform
@@ -149,6 +154,94 @@ export const getDashboardKpisController = async (req, res) => {
       success: true,
       message: "Dashboard KPIs retrieved successfully",
       data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// ─────────────────────────────────────────────
+// GET /admin/revenue/series — platform revenue over time
+// ─────────────────────────────────────────────
+export const getRevenueSeriesController = async (req, res) => {
+  try {
+    const result = await getRevenueSeries(req.query);
+
+    return res.status(200).json({
+      success: true,
+      message: "Platform revenue series retrieved successfully",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// ─────────────────────────────────────────────
+// GET /admin/settings — platform configuration
+// ─────────────────────────────────────────────
+export const getPlatformSettingsController = async (req, res) => {
+  try {
+    const result = await getPlatformSettings();
+
+    return res.status(200).json({
+      success: true,
+      message: "Platform settings retrieved successfully",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// ─────────────────────────────────────────────
+// PUT /admin/settings — change platform configuration
+// ─────────────────────────────────────────────
+export const updatePlatformSettingsController = async (req, res) => {
+  try {
+    const { before, after, changed } = await updatePlatformSettings(
+      req.body,
+      req.user?._id
+    );
+
+    /*
+     * Audited, with the leaf paths that actually changed.
+     *
+     * A platform setting is the kind of change that gets disputed weeks later —
+     * "who set the markup to 12?" — and `settings.update` already existed in the
+     * action enum with nothing calling it, so this is the endpoint it was reserved
+     * for. `changed` is a flat list of `features.trialDays`-style paths with both
+     * sides of each, because an entry that records *that* something changed but not
+     * what is not an answer to the question.
+     *
+     * Only written when something did. A client that PUTs an unchanged document on
+     * every page load would otherwise fill the log with noise and make the one entry
+     * that matters harder to find.
+     */
+    if (changed.length) {
+      await auditLog(req, {
+        action: AUDIT_ACTIONS.SETTINGS_UPDATE,
+        entity: "PlatformSettings",
+        entityId: after?._id || null,
+        meta: { changed },
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: changed.length
+        ? "Platform settings updated successfully"
+        : "No changes to save",
+      data: { ...after, changed },
     });
   } catch (error) {
     return res.status(error.status || 500).json({

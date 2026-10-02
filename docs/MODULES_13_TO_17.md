@@ -1575,14 +1575,299 @@ Platform-level operations available exclusively to `super_admin` users. Covers s
 
 ---
 
+### 8. GET /admin/revenue/series — platform revenue over time
+
+Bucketed revenue so the platform console can draw a trend. It exists because
+`GET /admin/revenue` returns aggregates and every `/api/analytics/*` route is
+school-scoped, so nothing else in the API could plot platform revenue over time.
+
+**Query parameters**
+
+| Parameter | Type | Default | Notes |
+|-----------|------|---------|-------|
+| `bucket` | `month` \| `day` | `month` | Explicit rather than derived: 30 daily points for `last30`, 24 monthly points for `ytd`. A chart whose shape depends on how the server sampled the data is a chart nobody can read. |
+| `period` | `mtd` \| `ytd` \| `last30` \| `all` | `ytd` | `all` means roughly two years of history. `ytd` is the default because a two-year monthly series on a young platform is a flat line with one spike, which reads as a failure. |
+| `startDate` | ISO date | derived from `period` | Intersects with `period` when both are given |
+| `endDate` | ISO date | now | |
+| `plan` | enum | — | |
+| `region` | string | — | |
+
+**Response `data`**
+
+```json
+{
+  "series": [
+    { "period": "2026-01", "totalRevenue": 4150000, "totalPayments": 192 },
+    { "period": "2026-02", "totalRevenue": 0, "totalPayments": 0 },
+    { "period": "2026-03", "totalRevenue": 5230000, "totalPayments": 241 }
+  ],
+  "filters": {
+    "bucket": "month",
+    "period": "ytd",
+    "startDate": "2026-01-01T00:00:00.000Z",
+    "endDate": "2026-03-28T12:00:00.000Z",
+    "plan": null,
+    "region": null
+  },
+  "totals": { "totalRevenue": 9380000, "totalPayments": 433 }
+}
+```
+
+**The series has no gaps, and that is the contract.** A month in which nobody paid
+produces no aggregation row, so mapping the rows would drop it and a chart would
+draw a straight line across the hole — presenting zero revenue as smooth growth.
+`buildCalendarSeries` walks the calendar instead and emits an explicit `0`, which
+renders as a dip to the baseline. Series length is capped at 120 points (monthly) or
+400 (daily); a longer range is truncated rather than returned in full.
+
+**Errors:** `400 Bad Request` (invalid query), `403 Forbidden`
+
+---
+
+### 9. GET /admin/settings — platform configuration
+
+```json
+{
+  "success": true,
+  "message": "Platform settings retrieved successfully",
+  "data": {
+    "singletonKey": "platform",
+    "defaultMarkupPercent": 5,
+    "features": { "adsEnabled": true, "selfSignupEnabled": true, "trialDays": 30 },
+    "maintenance": { "mode": "off", "message": "" },
+    "updatedBy": null,
+    "updatedAt": null
+  }
+}
+```
+
+The response is `DEFAULT_PLATFORM_SETTINGS` merged under whatever is stored, so the
+endpoint answers with real values **before** any document exists. It is deliberately
+not an upsert: a GET that writes needs write permissions, is unsafe to call
+concurrently on a fresh database, and would race the unique index.
+
+`singletonKey` is always `"platform"` and carries a **unique index** — the singleton
+is enforced in the database, not in a convention. `defaultMarkupPercent` is the value
+a *newly provisioned* school is given; it never rewrites an existing school's
+`payment.platformMarkupPercent`, which is what the revenue aggregations read.
+
+---
+
+### 10. PUT /admin/settings — change platform configuration
+
+Every field is optional and the object has `.min(1)`, so a PUT is a **patch**. A
+client that reads the document, changes one flag and writes it back cannot blank the
+settings it did not mean to touch.
+
+**Request body** (any subset)
+
+```json
+{
+  "defaultMarkupPercent": 6,
+  "features": { "adsEnabled": false, "selfSignupEnabled": true, "trialDays": 45 },
+  "maintenance": { "mode": "readonly", "message": "We are upgrading until 6am." }
+}
+```
+
+**Response `data`** — the stored document plus `changed`:
+
+```json
+{
+  "defaultMarkupPercent": 6,
+  "features": { "adsEnabled": false, "selfSignupEnabled": true, "trialDays": 45 },
+  "maintenance": { "mode": "readonly", "message": "We are upgrading until 6am." },
+  "changed": [
+    { "path": "defaultMarkupPercent", "from": 5, "to": 6 },
+    { "path": "features.adsEnabled", "from": true, "to": false }
+  ]
+}
+```
+
+`changed` is a flat list of leaf paths with both sides of each. An entry that records
+*that* something changed but not *what* does not answer the question an audit is
+consulted for. When nothing differs the response message is `"No changes to save"`
+and **no audit entry is written** — a client that PUTs an unchanged document on every
+page load would otherwise bury the one entry that matters.
+
+**Errors:** `400 Bad Request` (empty body, out-of-range value), `403 Forbidden`
+
+#### What each setting actually does
+
+Storing a setting nothing reads is how a settings console becomes a decoration, so
+each field is enforced somewhere specific:
+
+| Field | Enforced by | Behaviour when changed |
+|-------|-------------|----------------------|
+| `maintenance.mode` | `middleware/maintenance.js`, mounted on `/api` in `routes/index.js` | `off`: everything allowed. `readonly`: reads pass, writes refused — the state a schema migration wants. `on`: everything refused. |
+| `features.selfSignupEnabled` | `controllers/authController.js` `signup` | `false` → `503 SELF_SIGNUP_DISABLED`. Checked **before** the duplicate-email probe, because with registration closed that probe is an oracle answering "does this email have an account here?" |
+| `features.adsEnabled` | `controllers/schoolAd.controller.js` `listPublicSchoolAds` | `false` → `200` with `{ ads: [], adsEnabled: false }`, and `Cache-Control: no-store`. Never an error: an empty array is the endpoint's only existing "off" shape, and the success path's `max-age=300` would otherwise hide a flag flip for five minutes. |
+| `features.trialDays` | `services/school.service.js` — `createSchool` and `provisionSchoolForUser` | The trial window for a **newly created** school. Replaces a hard-coded `+ 30` in both places. |
+| `defaultMarkupPercent` | the same two provisioning sites | The `payment.platformMarkupPercent` a new school is given. **This field previously had no writer anywhere in the codebase** — the schema default is `0` — so every school provisioned before this change was collecting zero platform markup while the revenue aggregations divided by that number. Existing schools are untouched. |
+
+**Maintenance mode has three exemptions**, and each is load-bearing:
+
+- `/api/health` — `utils/cron.js` probes exactly this path; a 503 there makes the
+  keep-alive log an error every cycle for a state the operator chose deliberately.
+- `/api/admin/settings` — **the switch must not be behind itself.** Otherwise
+  maintenance is a one-way door: turning it on refuses every write, including the
+  write that would turn it off.
+- Webhooks are exempt by *placement*, not by rule. `webhookRoute` and `whatsappRoute`
+  are mounted at the root in `index.js` before `/api`, so a guard on `/api` cannot
+  reach them. **Never mount it globally** — a guard above the root webhook mounts
+  would refuse a Hubtel settlement callback mid-migration, turning a planned outage
+  into lost money, silently, because the provider's own retry would be refused too.
+
+Settings reads go through `services/platformSettings.service.js`, which caches for 30
+seconds and **fails open**: a read that throws returns the defaults, and `off`/`true`
+are the permissive ones. A maintenance middleware that returned 503 for every request
+because the database hiccuped would invent an outage the product did not have.
+`updatePlatformSettings` invalidates the cache in-process immediately; across multiple
+instances the 30-second TTL bounds how stale the others can be.
+
+---
+
+### 11. GET /admin/school-ads — the moderation queue
+
+> These five school-ad routes (11–15) were implemented before they were documented
+> here. `admin.routes.js` is the source of truth for their shape; this section was
+> written from the validators in `validations/schoolAd.validation.js` and should be
+> read alongside it.
+
+The cross-placement creative queue. Shared with the public slider's schema, so
+`listSchoolAdsQuerySchema` defaults `placement` to `auth_aside` — **a moderation
+client must send no placement at all to see every placement**, or it will show one
+slot and hide the rest of the submissions.
+
+**Query parameters:** `status` (`draft` | `pending` | `approved` | `rejected` | `expired`),
+`placement` (`auth_aside` | `home_hero` | `dashboard_sidebar`), `page` (default 1),
+`perPage` (default 20).
+
+There is deliberately **no `search` parameter** — a free-text search over creatives
+does not exist, so a moderation UI filters by status and placement only.
+
+**Response**
+
+```json
+{
+  "success": true,
+  "message": "Ads retrieved successfully",
+  "data": [
+    {
+      "_id": "...",
+      "schoolId": "...",
+      "schoolName": "Greenfield Academy",
+      "headline": "Admissions open for 2026",
+      "imageUrl": "https://res.cloudinary.com/...",
+      "imageAlt": "Greenfield Academy senior school campus building",
+      "linkUrl": "https://example.com/greenfield/apply",
+      "placement": "auth_aside",
+      "sortWeight": 10,
+      "startsAt": "2026-01-01T00:00:00.000Z",
+      "endsAt": "2026-12-31T00:00:00.000Z",
+      "status": "pending",
+      "rejectedReason": null,
+      "reviewedAt": null,
+      "reviewedBy": null
+    }
+  ],
+  "meta": { "page": 1, "perPage": 20, "total": 4, "pages": 1 }
+}
+```
+
+**Errors:** `403 Forbidden`
+
+---
+
+### 12. POST /admin/school-ads — submit a creative
+
+`multipart/form-data` through `uploadSchoolAd` (multer → Cloudinary), so the body is
+a `FormData`, not JSON — an `application/json` content type serialises the file's
+`[object File]` and the server rejects a body it never parsed.
+
+**Fields** (`createSchoolAdSchema`): `schoolId` (may be empty/null), `schoolName`,
+`headline` (4–60 chars — it renders in the auth sidebar, so it is short on purpose),
+`image` (file), `imageAlt` (**required**, and the only thing describing the creative
+to a screen reader), `linkUrl` (**https only** — `javascript:` here would put an XSS
+sink on every login page), `placement`, `endsAt` (required, must be in the future),
+`sortWeight` (−100…100).
+
+Filed `status: "pending"`. A new creative cannot go live by being submitted.
+
+**Response `data`:** the created `SchoolAd`.
+
+**Errors:** `400 Bad Request` (missing or invalid image), `403 Forbidden`
+
+---
+
+### 13. PUT /admin/school-ads/:adId — edit a creative
+
+`multipart/form-data`; the same fields as create, all optional.
+
+**It cannot change status.** `updateSchoolAdSchema` deliberately omits `status` and
+`rejectedReason`, so an edit can never self-approve. A UI offering a status dropdown
+on an edit form would be offering something the API silently discards — the creative
+would stay `pending` and the operator would believe it had gone live. Status changes
+go through route 14 and nowhere else.
+
+The schema also carries `.min(1)`: an edit with no changed fields is a `400`, not a
+silent no-op.
+
+**Response `data`:** the updated `SchoolAd`.
+
+**Errors:** `400 Bad Request` (no fields supplied), `403 Forbidden`, `404 Not Found`
+
+---
+
+### 14. PUT /admin/school-ads/:adId/approve — review a creative
+
+**The only call that can change an ad's status.**
+
+A review, not a boolean: `approveSchoolAdSchema` takes `status:
+"approved" | "rejected"` and **requires `rejectedReason` whenever the decision is
+`rejected`**. That requirement is the feature — the reason is what the submitting
+school is told, so "rejected" with nothing to say is not an available action.
+
+Note the route is named `/approve` while the decision lives in the body. That
+mismatch is exactly how a queue ends up with a Reject button that approves things.
+
+**Request body**
+
+```json
+{ "status": "approved" }
+```
+```json
+{ "status": "rejected", "rejectedReason": "The creative names a fee discount. Fee terms cannot be advertised without written confirmation." }
+```
+
+**Response `data`:** the reviewed `SchoolAd`, with `reviewedAt` and `reviewedBy` set.
+
+**Errors:** `400 Bad Request` (missing reason on a rejection, or an image that is
+neither a URL nor a file), `403 Forbidden`, `404 Not Found`
+
+---
+
+### 15. DELETE /admin/school-ads/:adId — retire a creative
+
+Soft delete (`deletedAt`), and it **purges the Cloudinary asset**. Not recoverable by
+the platform: the school that submitted the creative cannot re-submit it. A
+confirmation dialog has to say so.
+
+**Response:** `{ "success": true, "message": "Ad deleted successfully" }`
+
+**Errors:** `403 Forbidden`, `404 Not Found`
+
+---
+
 ### Module-Level Notes
 
-- **Related models:** `School`, `User`, `Payment`, `Student`, `AuditLog`
+- **Related models:** `School`, `User`, `Payment`, `Student`, `AuditLog`, `PlatformSettings`, `SchoolAd`
 - **Related services:** `admin.service.js`, `school.service.js`
-- **Related controllers:** `admin.controller.js`
-- **Related validators:** `validations/admin.validation.js`
+- **Related controllers:** `admin.controller.js`, `schoolAd.controller.js`
+- **Related validators:** `validations/admin.validation.js`, `validations/schoolAd.validation.js`
 - **Authorization:** All routes are wrapped with `authenticate` + `authorize("super_admin")` middleware applied at the router level.
 - **School lifecycle:** `suspendSchool` and `unsuspendSchool` set `school.status`, `school.suspendedReason`, `school.suspendedAt`, and `school.subscription.status`, then cascade `status` changes to all `User` documents for that school.
-- **Revenue calculation:** Platform markup is `payment.amount (pesewas) ÷ 100 × school.payment.platformMarkupPercent`, converted back to pesewas via `Math.round()`.
-- **Currency:** All monetary values are integers in pesewas. `paymentVolume`, `totalRevenue`, `avgPayment`, etc. are all in pesewas.
+- **Revenue calculation:** Platform markup is `payment.amount` (pesewas) divided by 100, multiplied by `school.payment.platformMarkupPercent`, converted back to pesewas via `Math.round()`.
+- **Currency:** All monetary values are integers in pesewas. `paymentVolume`, `totalRevenue`, `avgPayment`, `series[].totalRevenue`, etc. are all in pesewas.
 - **Dashboard `recentSchools`:** Limited to 5 most recently created schools; returned in descending `createdAt` order.
+- **Platform settings:** One document, ever, enforced by a unique index on `singletonKey`. Read with `getPlatformSettings`, which merges `DEFAULT_PLATFORM_SETTINGS` under whatever is stored rather than upserting.
+- **Platform owner:** There is exactly one `super_admin`, provisioned from `SUPER_ADMIN_EMAIL` / `SUPER_ADMIN_PASSWORD` by `boot/ensureSuperAdmin.js` and reconciled on every boot. The role cannot be granted through any API.

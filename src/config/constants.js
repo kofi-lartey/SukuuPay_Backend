@@ -43,6 +43,12 @@ export const AUDIT_ACTIONS = {
   SMS_CREDIT_TOPUP: "sms.credit_topup",
   SMS_TEST_SEND: "sms.test_send",
   REPORT_VIEWED: "report.viewed",
+  // Must stay in step with the `AUDIT_ACTIONS` array in `models/AuditLog.js` —
+  // that array is the schema enum, so a value present here and absent there is a
+  // Mongoose ValidationError that `utils/auditService.log` swallows into a
+  // `console.error`. The entry then does not exist, and nobody finds out.
+  USER_ROLE_CHANGE: "user.role_change",
+  USER_REMOVE: "user.remove",
 };
 
 // Notification types — matches the Notification `type` field enum.

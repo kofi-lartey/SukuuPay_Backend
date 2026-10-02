@@ -1,6 +1,35 @@
 import Joi from 'joi';
 
-const validRoles = ['super_admin', 'school_admin', 'accountant', 'teacher', 'viewer'];
+/**
+ * Roles a request is allowed to *assign*.
+ *
+ * The model's enum has five roles; this list has four. `super_admin` is missing on
+ * purpose and its absence is the enforcement — there is exactly one platform
+ * owner, provisioned from the environment by `boot/ensureSuperAdmin.js`, so no
+ * request can create a second one.
+ *
+ * This used to be `validRoles`, a copy of the model enum including
+ * `super_admin`, which meant `super_admin` was accepted as *input* by all three
+ * role-bearing schemas and the controllers were the only thing standing between a
+ * caller and a peer operator account. Two of those three were open:
+ *
+ *   - `POST /users/invite` — `resolveInvitableRole` passes any requested role
+ *     straight through for a caller who is already a `super_admin`;
+ *   - `PUT /users/:userId` — the check is only "is the caller a super_admin?", and
+ *     that route carries no `authorize` at all, so the condition passes for the
+ *     one role that should be able to do it.
+ *
+ * Both are now closed twice over: the schema cannot express the assignment, and
+ * `changeUserRole`/`updateUser` refuse it again in the controller. The schema is
+ * the load-bearing half — `stripUnknown` means there is no side channel through
+ * extra keys — and the controller half is what makes the refusal *legible* to
+ * whoever made the request, which a 422 from a validation layer is not.
+ *
+ * Nothing legitimate is lost. No product flow requires granting `super_admin`: the
+ * signup schema (`SELF_SIGNUP_ROLES`) already excluded it, and the owner exists
+ * from the first boot.
+ */
+export const ASSIGNABLE_ROLES = ['school_admin', 'accountant', 'teacher', 'viewer'];
 
 /**
  * Roles a School Admin may hand out when inviting.
@@ -42,7 +71,7 @@ const baseUserFields = {
 export const inviteUserSchema = Joi.object({
   ...baseUserFields,
   role: Joi.string()
-    .valid(...validRoles)
+    .valid(...ASSIGNABLE_ROLES)
     .default('teacher'),
   schoolId: Joi.string().optional(),
 });
@@ -50,7 +79,7 @@ export const inviteUserSchema = Joi.object({
 export const updateUserSchema = Joi.object({
   name: Joi.string().trim().min(2).max(100).optional(),
   email: Joi.string().email().lowercase().trim().optional(),
-  role: Joi.string().valid(...validRoles).optional(),
+  role: Joi.string().valid(...ASSIGNABLE_ROLES).optional(),
   position: Joi.string().trim().max(80).allow('').optional(),
   phone: Joi.string().trim().min(7).max(20).optional(),
   /**
@@ -69,5 +98,5 @@ export const updateUserSchema = Joi.object({
 
 
 export const updateUserRoleSchema = Joi.object({
-  role: Joi.string().valid(...validRoles).required(),
+  role: Joi.string().valid(...ASSIGNABLE_ROLES).required(),
 });
