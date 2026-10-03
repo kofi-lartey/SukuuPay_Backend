@@ -73,13 +73,19 @@ const paymentSchema = new mongoose.Schema(
      * cannot carry the running total. The relationship has to live on the child.
      *
      * Sparse and not required — most rows in this collection are ordinary payments
-     * and never reverse anything.
+     * and never reverse anything, and a non-sparse index would carry a null entry for
+     * every one of them.
+     *
+     * **No `index: true` here.** The index is declared once, in `schema.index()` below,
+     * because that is where `sparse` lives. Declaring both makes Mongoose emit a
+     * "Duplicate schema index" warning and keep the *first* definition — so the field's
+     * bare `index: true` wins and `{ sparse: true }` is silently discarded, leaving a
+     * full index that stores a null for every payment on the platform.
      */
     refundOfPaymentId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Payment",
       default: null,
-      index: true,
     },
 
     // ── Payment details ──

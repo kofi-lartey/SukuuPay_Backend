@@ -129,6 +129,72 @@ export const HEALTH_CHECK_URL = process.env.HEALTH_CHECK_URL || '';
 // Pay links are served from the public marketing domain, not the admin app.
 export const PAY_LINK_BASE_URL = process.env.PAY_LINK_BASE_URL || 'https://sukuupay.com';
 
+// ─────────────── Google Sign-In ───────────────
+// Declared **after `CLIENT_URL`** because `GOOGLE_ALLOWED_ORIGINS` falls back to it.
+// `const` bindings are in the temporal dead zone until their declaration executes, so
+// reading `CLIENT_URL` from a block above it throws
+// `ReferenceError: Cannot access 'CLIENT_URL' before initialization` — at import, not
+// at call time, which would take down every route rather than just this one.
+
+// The OAuth 2.0 **web client ID** from the Google Cloud console — not the API key, and
+// not the secret. It appears in the credential's "Client ID" field and is safe to ship
+// to a browser; the value here is used server-side as the `aud` every presented ID
+// token must carry, which is what stops a token minted for *someone else's* app being
+// replayed at us.
+//
+// Null rather than '' so "unset" is distinguishable from "set to nothing" and
+// `isGoogleAuthConfigured()` can answer without a truthiness trap. Nothing throws at
+// import when it is missing — see `services/googleAuth.service.js`.
+export const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || '').trim() || null;
+
+/**
+ * Allowlist of origins permitted to post a Google credential.
+ *
+ * A CORS restriction is not authentication, so this is defence in depth rather than
+ * the boundary — the ID token's signature, issuer, audience and expiry are. It is here
+ * because the blast radius of a stolen token is somebody else's account, and an origin
+ * allowlist narrows where a token can be lifted from.
+ *
+ * Compared against the request's `Origin` by `googleAuth.service.js`. Falls back to
+ * `CLIENT_URL` so the common case needs no extra configuration, and an empty list
+ * refuses every browser origin — fail closed, because an origin check that silently
+ * allows everything is not an origin check.
+ */
+export const GOOGLE_ALLOWED_ORIGINS = (process.env.GOOGLE_ALLOWED_ORIGINS || CLIENT_URL)
+  .split(',')
+  .map((origin) => origin.trim().replace(/\/+$/, ''))
+  .filter(Boolean);
+
+/**
+ * Whether a Google-linked account may create itself on first sign-in.
+ *
+ * **Defaults to `true`**, on the reasoning that it gates nothing meaningful on its own.
+ *
+ * The real control on account creation is `features.selfSignupEnabled` in
+ * `PlatformSettings`, and `googleAuth.controller.js` checks that **before** this.
+ * An operator who has closed public registration has already closed it for Google —
+ * so this flag cannot be the thing standing between them and open sign-up.
+ *
+ * What is left is the narrower case: an operator who wants self-signup through the
+ * password form but not through a third-party identity. That is the only situation
+ * this governs, and it is a preference rather than a security boundary — a Google
+ * account is created with `isEmailVerified: true` on the strength of Google's own
+ * `email_verified` claim, which is *stronger* evidence of inbox control than the OTP
+ * the password path sends. Allowing the weaker-verified path while refusing the
+ * stronger one would be backwards.
+ *
+ * It was default-`false` when this was first written, on the belief that a second
+ * closed switch was prudent here. That was overweighting a control that is already
+ * dominated by `selfSignupEnabled`, and it had the side effect of making Google look
+ * broken on every deployment that had not heard of this variable.
+ *
+ * Flip it to `false` to keep Google strictly sign-in-only. Existing and invited users
+ * are unaffected either way — this governs **creation** only.
+ */
+export const GOOGLE_ALLOW_SIGNUP = String(
+  process.env.GOOGLE_ALLOW_SIGNUP ?? 'true'
+).toLowerCase() !== 'false';
+
 // ─────────────── API metadata (GET /version) ───────────────
 export const API_NAME = process.env.API_NAME || 'SukuuPay API';
 // Bumped by hand when the public contract changes. Deliberately independent of

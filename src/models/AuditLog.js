@@ -62,6 +62,13 @@ const AUDIT_ACTIONS = [
   // A role change is also the route by which the platform owner could be demoted,
   // so the entry records both sides of the transition rather than only the new
   // value: "who had it, who has it now" is the whole question.
+  "user.email_verified",
+  // Google sign-in is a separate action from `user.login` rather than a note on it:
+  // it skips the OTP step, so "how did this account get verified" is answerable from
+  // the trail alone, and an operator auditing an account wants to see which accounts
+  // have never been through the email flow at all.
+  "user.google_login",
+  "user.google_signup",
   "user.role_change",
   "user.remove",
   // ── Platform console ──

@@ -320,6 +320,30 @@ export const forgotPassword = async (req, res) => {
     const { email } = req.body;
     const user = await User.findOne({ email, deletedAt: null });
 
+    /*
+     * Google-linked accounts are **skipped**, and the response is unchanged.
+     *
+     * A Google account holds a 32-byte random password that nobody was given (see
+     * `googleAuth.controller.js`), so it has no password to reset. Minting a reset
+     * token here would let whoever controls the mailbox walk straight past Google: the
+     * reset sets a password of their choosing, and from then on `POST /auth/login`
+     * works. That converts "you must prove control of this Google account" into "you
+     * must prove control of this email inbox" — a strictly weaker guarantee, and one
+     * nobody chose.
+     *
+     * The token is **not** generated and the email is **not** sent, so a Google
+     * account leaves no half-issued credential behind. And the response stays the same
+     * neutral sentence as the `if (user)` branch below, because telling a caller
+     * "that account uses Google" turns this endpoint into a way to enumerate which
+     * addresses on the platform have Google sign-in.
+     */
+    if (user && user.authProvider === 'google') {
+      return res.status(200).json({
+        success: true,
+        message: 'If an account exists for that email, a password reset link has been sent.',
+      });
+    }
+
     if (user) {
       const token = generateResetToken();
       user.passwordResetToken = hashToken(token);

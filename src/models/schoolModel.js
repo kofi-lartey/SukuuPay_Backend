@@ -299,11 +299,15 @@ const schoolModel = new mongoose.Schema(
      * asks is "how long did this take", which is exactly what a per-milestone set of
      * dates would be averaged into. Set once by the payment/import paths and never
      * rewritten, so it measures activation rather than recency of activity.
+     *
+     * **No `index: true` here** — indexed once in the `schoolModel.index()` block
+     * below, beside the activation-reporting comment that explains why. Declaring both
+     * makes Mongoose warn about a duplicate and keep the first, so this bare flag
+     * would win and the declared index would be dead.
      */
     onboardingCompletedAt: {
       type: Date,
       default: null,
-      index: true,
     },
 
     /**

@@ -191,6 +191,100 @@ export const userModel = new mongoose.Schema(
       default: null,
     },
 
+    /**
+     * **How** this address was verified: `otp` or `google`.
+     *
+     * Not derivable from `isEmailVerified`, which is a boolean and says only *that*.
+     * This matters because the two routes have different guarantees, and support asks:
+     * "is this account's email actually verified?" has two different answers depending
+     * on whether a human proved control of the address through a code we mailed, or
+     * whether Google asserted the same thing about an account that may itself have an
+     * unverified secondary address.
+     *
+     * Nullable, because an account verified before this field existed has no recorded
+     * route. A null here means "unknown, ask `isEmailVerified`", never "verified by
+     * nobody" — treating it as unverified would lock out accounts that are fine.
+     */
+    emailVerifiedVia: {
+      type: String,
+      enum: ["otp", "google", null],
+      default: null,
+    },
+
+    // ─────────────── Identity provider ───────────────
+    /**
+     * Which credential this account authenticates with: `password` (the default), or
+     * `google`.
+     *
+     * A single field rather than a `providers: []` array, deliberately. The product
+     * supports signing in with Google **or** a password, never both at once — a Google
+     * account gets an unusable random password (see `googleAuth.controller.js`) so that
+     * `password` stays `required` and no existing invariant moves. An array would
+     * imply a two-factor-ish "link several ways in" capability that does not exist,
+     * and would make every read of `authProvider` a question about which of several
+     * values wins.
+     *
+     * Its real job is **account linking safety**: it is what lets sign-in tell an
+     * account created *through Google* from one that merely happens to share its email
+     * address. Without it, any Google account holding a given address would be able to
+     * walk into a password account registered to that address, because the email
+     * matches — and matching emails are not proof of ownership.
+     */
+    authProvider: {
+      type: String,
+      enum: ["password", "google"],
+      default: "password",
+      /*
+       * **No `index: true` here.** Indexed once in `userModel.index()` below, where
+       * the `partialFilterExpression` that keeps it to Google accounts lives.
+       *
+       * Declaring both would make Mongoose keep the first definition and warn about
+       * the duplicate — so the bare field index would win and the partial filter would
+       * be silently dropped, turning an index over a handful of Google users into a
+       * full one over every account on the platform.
+       */
+    },
+
+    /**
+     * Google's stable `sub` claim — the account's immutable identifier.
+     *
+     * The key is the lookup for sign-in, **not** the email: Google's `sub` is stable
+     * for the life of the account while the email can change, and a mutable identifier
+     * used as a primary key is an account-takeover bug waiting for a user who changes
+     * their address. The email is verified by Google and used for matching an existing
+     * SukuuPay account; `sub` is used to recognise a returning one.
+     *
+     * Sparse-unique, so a second account cannot claim the same Google identity, and so
+     * the many password-only accounts carry no value at all.
+     */
+    providerId: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+
+    /**
+     * Google's profile picture URL, captured at first sign-in.
+     *
+     * **Not** refreshed on every login. Google's avatar URLs are stable while they last
+     * and then expire, and re-fetching would mean fetching a remote image during an
+     * authentication request that has no reason to make a network call. A stale URL
+     * degrades to a broken avatar; a refresh inside login degrades to a slower, more
+     * failure-prone login. A profile screen that wants a fresh one can request it
+     * explicitly later.
+     */
+    providerAvatar: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+
+    /** When this account last signed in through Google, for support and audit. */
+    lastProviderLoginAt: {
+      type: Date,
+      default: null,
+    },
+
     // ─────────────── Session / Refresh Tokens ───────────────
     refreshToken: {
       type: String,
@@ -326,3 +420,27 @@ userModel.methods.isEmailVerificationTokenValid = function () {
 };
 
 export const User = mongoose.model("User", userModel);
+
+/**
+ * One SukuuPay account per Google identity.
+ *
+ * Sparse-unique, and sparse is the load-bearing word: the overwhelming majority of
+ * accounts are password-only and have `providerId: null`, and a plain unique index
+ * would treat every one of those nulls as a duplicate — refusing the second user ever
+ * created. A partial unique index skips documents that do not carry the key at all.
+ *
+ * This is the database-level guarantee behind account linking. Application code
+ * already checks for an existing `providerId` before creating anything, but that check
+ * is a read followed by a write, and two simultaneous first sign-ins on a new address
+ * both pass it. Without this index the loser gets a `E11000` at write time; with it,
+ * the guarantee is in the database where it cannot be raced past.
+ *
+ * Also indexed (non-uniquely) as a partial on `authProvider`, because the admin
+ * console's "users signed in with Google" filter is a real question an operator asks
+ * and this makes it cheap.
+ */
+userModel.index({ providerId: 1 }, { unique: true, sparse: true });
+userModel.index(
+  { authProvider: 1 },
+  { partialFilterExpression: { authProvider: 'google' } }
+);

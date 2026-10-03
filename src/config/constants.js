@@ -56,6 +56,9 @@ export const AUDIT_ACTIONS = {
   // that array is the schema enum, so a value present here and absent there is a
   // Mongoose ValidationError that `utils/auditService.log` swallows into a
   // `console.error`. The entry then does not exist, and nobody finds out.
+  USER_EMAIL_VERIFIED: "user.email_verified",
+  USER_GOOGLE_LOGIN: "user.google_login",
+  USER_GOOGLE_SIGNUP: "user.google_signup",
   USER_ROLE_CHANGE: "user.role_change",
   USER_REMOVE: "user.remove",
 

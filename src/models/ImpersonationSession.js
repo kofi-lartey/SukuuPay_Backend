@@ -34,15 +34,20 @@ const impersonationSessionSchema = new mongoose.Schema(
      * Who impersonated.
      *
      * Required, and always the platform owner — but stored as a plain reference
-     * rather than assumed, so the record stays truthful if the owner account is
-     * ever replaced. A session is not deleted when the user is; the trail has to
-     * outlive the account.
+     * rather than assumed, so the record stays truthful if the owner account is ever
+     * replaced. A session is not deleted when the user is; the trail has to outlive the
+     * account.
+     *
+     * **No `index: true` here.** Indexed once below, where the partial filter that
+     * makes the hot-path lookup cheap lives. Declaring both makes Mongoose keep the
+     * first definition and warn about the duplicate, so the bare field index would win
+     * and the filter would be dropped — which defeats the entire point of that index,
+     * since its size depends on holding only the currently-open sessions.
      */
     superAdminId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
-      index: true,
     },
 
     /** Whose console was opened. Indexed for the school's own "who looked at us" view. */
