@@ -18,8 +18,10 @@ import {
   WHATSAPP_PHONE_NUMBER_ID,
   WHATSAPP_APP_SECRET,
   WHATSAPP_REQUEST_TIMEOUT_MS,
+  WHATSAPP_VERIFY_TOKEN,
 } from '../config/env.js';
 import { isPlaceholder, allConfigured } from './placeholder.js';
+import { createHash } from 'node:crypto';
 
 /**
  * Typed transport failure. `status` is the HTTP status the API layer should
@@ -71,6 +73,28 @@ export const getWhatsAppConfigStatus = () => ({
   hasPhoneNumberId: !isPlaceholder(WHATSAPP_PHONE_NUMBER_ID),
   hasBusinessAccountId: !isPlaceholder(WHATSAPP_BUSINESS_ACCOUNT_ID),
   hasAppSecret: !isPlaceholder(WHATSAPP_APP_SECRET),
+  /**
+   * The verify token, identified by a SHA-256 prefix — never the token itself.
+   *
+   * Every other credential here has a `has…` boolean, and the verify token was the
+   * one with no visibility at all. That gap is what made a failed Meta webhook
+   * subscription undiagnosable: the handshake returns a bare 403 "Verification
+   * failed", and the one thing you need to know is whether the *deployed* service
+   * is holding the same token as the one you pasted into Meta. Local `.env` and
+   * Render's environment are separate, so "they match" cannot be assumed.
+   *
+   * `WHATSAPP_VERIFY_TOKEN` silently falls back to `SECRET` (see config/env.js), so
+   * this also answers "is the key set at all?" without revealing anything: a
+   * deployment relying on the fallback hashes something nobody set deliberately.
+   *
+   * 12 hex characters is a fingerprint, not a secret: it cannot be reversed to the
+   * token, and it is only ever compared against a locally computed hash.
+   */
+  verifyTokenFingerprint: createHash('sha256')
+    .update(String(WHATSAPP_VERIFY_TOKEN ?? ''))
+    .digest('hex')
+    .slice(0, 12),
+  verifyTokenLength: String(WHATSAPP_VERIFY_TOKEN ?? '').length,
   // Separated from `configured` on purpose: a channel whose credentials are all
   // still `your-...` is configured in name only, and that is exactly the state
   // that previously read as ready.
