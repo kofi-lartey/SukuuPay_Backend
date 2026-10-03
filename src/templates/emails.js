@@ -6,6 +6,39 @@ import { escapeHtml } from '../utils/escapeHtml.js';
 // Every interpolated value is escaped. Nothing that reaches an HTML body is
 // trusted, including student and parent names, which a parent controls.
 
+/**
+ * The masthead: the brand mark beside the wordmark, on white.
+ *
+ * It was a solid `#0f766e` teal band with the word "SukuuPay" reversed out in
+ * white. Two problems with putting the real logo there.
+ *
+ * **The colour was wrong.** The mark is a dark green circle (`#0F5132`, the same
+ * `brand-700` the web app uses), so it sat on a teal band that appears nowhere
+ * else in the product, and had it been placed on a green band it would have
+ * disappeared into it. A white band with a bottom rule is what the navbar does,
+ * and it is the only one of those three the logo actually reads against.
+ *
+ * **Email clients block remote images.** Outlook, Gmail and Apple Mail all default
+ * to not loading them, so an `<img>` here cannot be the only thing in the header —
+ * when it is blocked the recipient must still see the sender's name, and this is a
+ * mail that carries login credentials. So the wordmark stays as real text next to
+ * the image rather than being replaced by it: the image is the brand, the text is
+ * the fallback, and a blocked one leaves a header that still reads "SukuuPay".
+ *
+ * `width`/`height` are declared because a blocked or unsized image otherwise
+ * collapses the header row; `alt` repeats the name for the same reason.
+ */
+const brandHeader = () => `<table role="presentation" cellpadding="0" cellspacing="0">
+                      <tr>
+                        <td style="vertical-align:middle;padding-right:12px;">
+                          <img src="${escapeHtml(`${CLIENT_URL}/sukuupay-logo.png`)}" alt="SukuuPay" width="44" height="44" style="display:block;width:44px;height:44px;border:0;" />
+                        </td>
+                        <td style="vertical-align:middle;">
+                          <span style="font-family:Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:22px;font-weight:700;color:#0B1220;letter-spacing:-0.02em;">Sukuu<span style="color:#0F5132;">Pay</span></span>
+                        </td>
+                      </tr>
+                    </table>`;
+
 const shell = (title, body) => `<!DOCTYPE html>
 <html>
   <head>
@@ -19,8 +52,8 @@ const shell = (title, body) => `<!DOCTYPE html>
         <td align="center">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(16,24,40,0.1);">
             <tr>
-              <td style="background:#0f766e;padding:24px 32px;">
-                <h1 style="margin:0;font-size:20px;color:#ffffff;">SukuuPay</h1>
+              <td style="padding:22px 32px;border-bottom:1px solid #e5e7eb;">
+                ${brandHeader()}
               </td>
             </tr>
             <tr>
@@ -49,8 +82,17 @@ const textShell = (title, lines) =>
 
 const paragraph = (html) => `<p style="margin:0 0 12px;line-height:1.6;">${html}</p>`;
 
-const codeBlock = (otp) => `<div style="margin:24px 0;padding:20px;background:#f0fdfa;border:1px dashed #0f766e;border-radius:10px;text-align:center;">
-    <p style="margin:0 0 8px;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#0f766e;">Verification code</p>
+/*
+ * The OTP block and the call-to-action button, in the brand green.
+ *
+ * These were teal (`#0f766e` on `#f0fdfa`) while the rest of the product is
+ * `#0F5132` — see `brand-700` in the frontend's Tailwind config. With the
+ * masthead now carrying the logo, a teal OTP block and a teal button underneath
+ * it left one email with two brand colours, which reads as a mistake rather than
+ * as design. `#ECFDF3` is the same scale's `brand-50`.
+ */
+const codeBlock = (otp) => `<div style="margin:24px 0;padding:20px;background:#ECFDF3;border:1px dashed #0F5132;border-radius:10px;text-align:center;">
+    <p style="margin:0 0 8px;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#0F5132;">Verification code</p>
     <p style="margin:0;font-size:34px;font-weight:700;letter-spacing:10px;color:#111827;">${escapeHtml(otp)}</p>
   </div>`;
 
@@ -58,7 +100,7 @@ const button = (url, label) => {
   const href = escapeHtml(url);
   if (!href) return '';
   return `<p style="margin:24px 0;">
-    <a href="${href}" style="display:inline-block;padding:12px 24px;background:#0f766e;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:600;">${escapeHtml(label)}</a>
+    <a href="${href}" style="display:inline-block;padding:12px 24px;background:#0F5132;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:600;">${escapeHtml(label)}</a>
   </p>
   <p style="margin:0;font-size:12px;color:#6b7280;word-break:break-all;">If the button does not work, copy this link:<br />${href}</p>`;
 };
