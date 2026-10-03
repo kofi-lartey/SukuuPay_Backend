@@ -11,6 +11,14 @@ import {
   handleHubtelWebhook,
   refundPayment,
 } from "../services/payment.service.js";
+import {
+  getPaymentHistory,
+  requestPaymentPlan,
+  notifySchool,
+  verifyPaymentByReference,
+  buildParentReceipt,
+} from "../services/pay.service.js";
+import { generateReceiptPdf, receiptFilename } from "../utils/receiptService.js";
 import { streamCsv } from "../utils/csvWriter.js";
 
 // ──────────────────── Public: Get student by pay token ────────────────────
@@ -78,6 +86,157 @@ export const getReceiptController = async (req, res) => {
       data: result,
     });
   } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// ──────────────────── Public: Verify by portal reference ────────────────────
+
+/**
+ * `GET /pay/:token/verify/:reference` — the portal's poll while a parent approves
+ * a Mobile Money prompt on their handset.
+ *
+ * Always `200`. A pending payment is not an error and a not-yet-created one is not
+ * an error either: this endpoint exists to be called repeatedly on a slow network,
+ * and a non-2xx would make the client treat "keep waiting" as "give up and show a
+ * failure". The body carries the state and the HTTP status stays successful, which
+ * is also what keeps the parent's browser from logging these as failed requests.
+ *
+ * The 404 case is the one exception and it is deliberate: a reference belonging to
+ * *another* student resolves to nothing here, and saying so tells the caller the
+ * reference is not theirs without confirming the payment exists at all.
+ */
+export const verifyPaymentByReferenceController = async (req, res) => {
+  try {
+    const result = await verifyPaymentByReference(req.params.token, req.params.reference);
+
+    return res.status(200).json({
+      success: true,
+      message: "Payment status retrieved",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// ──────────────────── Public: Payment history ────────────────────
+export const getPaymentHistoryController = async (req, res) => {
+  try {
+    const result = await getPaymentHistory(req.params.token, {
+      page: Number(req.query.page) || 1,
+      perPage: Number(req.query.perPage) || 20,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Payment history retrieved",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// ──────────────────── Public: Request a payment plan ────────────────────
+export const requestPaymentPlanController = async (req, res) => {
+  try {
+    const result = await requestPaymentPlan(req.params.token, req.body);
+
+    return res.status(201).json({
+      success: true,
+      // Written for a parent, not for a developer. "Request submitted" tells a
+      // bursar something; what the parent needs to know is that a human will look
+      // at it and they do not have to do anything yet.
+      message: "Request submitted. The school will review and confirm your plan.",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// ──────────────────── Public: Notify the school ────────────────────
+export const notifySchoolController = async (req, res) => {
+  try {
+    const result = await notifySchool(req.params.token, req.body);
+
+    return res.status(200).json({
+      success: true,
+      // `delivered` is about the SMS nudge; `notificationLogged` is about the
+      // message reaching the bursar's dashboard. The parent is told "received"
+      // because the second is true whenever the endpoint worked, and quietly
+      // claiming a text was sent when no admin number is on file would leave them
+      // waiting for a call that nobody knows to make.
+      message: result.notificationLogged
+        ? "Your message has been sent to the school."
+        : "Your message has been saved. The school will see it in their dashboard.",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// ──────────────────── Public: Download receipt PDF ────────────────────
+
+/**
+ * `GET /pay/:token/receipt/:paymentId` as a file.
+ *
+ * The same route also serves JSON, because the portal renders a receipt on screen
+ * after a payment and a bursar's tooling reads it programmatically. Which one the
+ * caller gets is negotiated on `Accept`, not on a second path — a parent clicking
+ * "Download PDF" and a script fetching the receipt are the same request with
+ * different intentions, and the intentions are exactly what the header carries.
+ *
+ * The JSON branch is kept first so the existing SPA and the admin tooling are
+ * unaffected; `application/pdf` is only honoured when explicitly asked for.
+ */
+export const getReceiptDownloadController = async (req, res) => {
+  const wantsPdf =
+    String(req.query.download || '').toLowerCase() === 'pdf' ||
+    String(req.headers.accept || '').includes('application/pdf');
+
+  if (!wantsPdf) return getReceiptController(req, res);
+
+  try {
+    const { payment, student, school } = await buildParentReceipt(
+      req.params.token,
+      req.params.paymentId
+    );
+
+    const pdf = await generateReceiptPdf(payment, { student, school });
+    const filename = receiptFilename(payment.receiptNumber, payment.paymentId);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Length', String(pdf.length));
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    // A receipt is a document about one family's money. A cached copy in an
+    // intermediary's disk, or in a shared phone's browser cache, outlives the
+    // link it came from.
+    res.setHeader('Cache-Control', 'private, no-store');
+
+    return res.send(pdf);
+  } catch (error) {
+    // If the response has already begun, a JSON body would corrupt the download
+    // rather than describe the failure — so the connection is simply closed.
+    if (res.headersSent) return res.end();
+
     return res.status(error.status || 500).json({
       success: false,
       message: error.message,

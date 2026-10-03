@@ -223,7 +223,24 @@ export const WHATSAPP_APP_SECRET = process.env.WHATSAPP_APP_SECRET;
 
 // The token Meta echoes back during webhook subscription (GET /whatsapp/webhook
 // ?hub.verify_token=...). Chosen by us, compared against the query string.
-export const WHATSAPP_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || SECRET;
+//
+// **No fallback to SECRET, deliberately.** It used to read
+// `process.env.WHATSAPP_VERIFY_TOKEN || SECRET`, and that fallback is what made a
+// real deployment failure look like a credentials problem: Render had no
+// `WHATSAPP_VERIFY_TOKEN` set, so the service silently validated webhooks against
+// its JWT signing secret — a value nobody ever registered with Meta — and every
+// subscription attempt failed with a bare 403 "Verification failed" while the
+// dashboard insisted the URL was wrong.
+//
+// A missing token is now a missing token. `resolveWebhookChallenge` compares
+// against `undefined`, which never matches, and `GET /version` reports
+// `verifyTokenSource: 'missing'` with a length of 0, so the cause is legible
+// from outside the box instead of requiring a deploy to reproduce.
+//
+// Set it to any string you choose. Meta stores it verbatim and echoes it back, so
+// keep it alphanumeric: a token containing `+`, `/` or `=` has to survive a query
+// string in both directions, and that is a class of bug worth not having.
+export const WHATSAPP_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
 
 export const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 export const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;

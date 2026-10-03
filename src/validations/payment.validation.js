@@ -4,39 +4,157 @@ import Joi from "joi";
 const PAYMENT_STATUS_ENUM = ["pending", "processing", "completed", "failed", "cancelled", "refunded"];
 const PAYMENT_METHOD_ENUM = ["momo", "card", "bank_transfer", "cash"];
 const PAYMENT_PROVIDER_ENUM = ["hubtel", "arke", "mnotify", "manual"];
+
+/**
+ * The payment model's `momoNetwork` enum.
+ *
+ * `PORTAL_NETWORK_ALIASES` below is the *superset* — it accepts the parent-facing
+ * spellings as well. This narrower list is kept for `paymentsQuerySchema`, whose
+ * `network` filter is rendered as a dropdown of stored values on the admin
+ * Payments screen; letting a parent-facing alias through a filter would mean a
+ * query the UI cannot produce.
+ */
 const MOMO_NETWORK_ENUM = ["MTN", "VODAFONE", "AIRTELTELIGO", "UNKNOWN"];
+
+/**
+ * The shape of a pay token.
+ *
+ * Declared at the top of the module because four schemas below build their
+ * `.pattern()` from it at module-evaluation time. Declared below them it would be
+ * a temporal dead zone read, which is a runtime crash on the first import rather
+ * than anything a test of one schema would have caught.
+ *
+ * Kept in one place because these schemas must not be able to drift apart: a
+ * verify endpoint that accepted a token the page endpoint rejects would 422 on a
+ * token the parent legitimately holds, on the one screen that has to work.
+ *
+ * `[0-9A-F]` only, matching `generatePayLinkToken`'s `randomBytes().toString("hex")`.
+ */
+export const PAY_TOKEN_PATTERN = /^STU-[A-F0-9]{8}$/;
+
+/**
+ * Portal spellings → the payment model's `momoNetwork` enum.
+ *
+ * **A parent picking a network chooses "Telecel Cash", never "VODAFONE".** Telecel
+ * was rebranded in Ghana in 2017 and no parent calls it Vodafone Cash, so the
+ * admin-facing spelling has to be accepted alongside the one on the card.
+ *
+ * A lookup rather than three `.toUpperCase()` calls at the call sites, because the
+ * irregular cases (`Telecel` → `VODAFONE`, `AirtelTigo` → `AIRTELTELIGO`) are
+ * exactly the ones that get typed wrong, and a second hand-written mapping is how
+ * they end up disagreeing. `pay.service.resolveNetwork` applies it, so there is one
+ * implementation.
+ *
+ * Also at the top: `initiatePaymentSchema`'s `.valid()` list is built from its keys.
+ */
+export const PORTAL_NETWORK_ALIASES = {
+  MTN: "MTN",
+  TELECEL: "VODAFONE",
+  VODAFONE: "VODAFONE",
+  RED: "VODAFONE",
+  AIRTELTIGO: "AIRTELTELIGO",
+  AIRTEL: "AIRTELTELIGO",
+  TIGO: "AIRTELTELIGO",
+  AT: "AIRTELTELIGO",
+  // A parent who has not chosen, or a client that omitted the field. The gateway
+  // resolves the real operator from the number's prefix anyway.
+  UNKNOWN: "UNKNOWN",
+};
 
 // ──────────────────── Validators ────────────────────
 export const paymentIdParamSchema = Joi.object({
   paymentId: Joi.string().trim().min(5).max(50).required(),
 });
 
+/**
+ * `GET /pay/:token/receipt/:paymentId` — both path parameters, in one schema.
+ *
+ * This route used to chain `validate(payTokenParamSchema, "params")` and then
+ * `validate(paymentIdParamSchema, "params")`. **That could never have worked.**
+ * `validate` writes the validated value back onto `req.params` and validates with
+ * `stripUnknown: true`, so the first middleware reduced `{ token, paymentId }` to
+ * `{ token }` and deleted `paymentId`; the second then rejected every request with
+ * `422 "paymentId" is required`. Reproduced by mounting the same two middlewares on
+ * a bare Express app — the endpoint had never once served a receipt.
+ *
+ * Two schemas for one segment is a pattern not to repeat anywhere: whichever ran
+ * first silently narrowed the params, and here the params are the thing being
+ * validated, so the loss is not cosmetic. One schema per segment, containing every
+ * parameter in it.
+ */
+export const payReceiptParamSchema = Joi.object({
+  token: Joi.string().pattern(PAY_TOKEN_PATTERN).required()
+    .messages({
+      "string.pattern.base": "Invalid payment token format. Expected format: STU-XXXXXXXX",
+    }),
+  paymentId: Joi.string().trim().min(5).max(50).required().messages({
+    "any.required": "Payment ID is required",
+    "string.min": "Invalid payment ID",
+  }),
+});
+
 export const payTokenParamSchema = Joi.object({
-  token: Joi.string().pattern(/^STU-[A-F0-9]{8}$/).required()
+  token: Joi.string().pattern(PAY_TOKEN_PATTERN).required()
     .messages({
       "string.pattern.base": "Invalid payment token format. Expected format: STU-XXXXXXXX",
     }),
 });
 
+/**
+ * `POST /pay/:token/initiate`.
+ *
+ * Serves both callers of this one endpoint. The admin flow sends
+ * `phoneNumber` / `momoNetwork` because that is the payment model's vocabulary; the
+ * parent portal sends `phone` / `network` because those are the words on the cards
+ * a parent taps. Rather than validate twice — `validate` aborts on the first
+ * failure, so two schemas on one route means whichever is listed first silently
+ * decides the contract — both spellings are accepted here and the service reads
+ * either. See `PORTAL_NETWORK_ALIASES` for the network names.
+ *
+ * `amount` is *not* checked against the student's balance here. It cannot be: the
+ * balance is in the database and this schema is pure. `initiatePayment` re-reads it
+ * and refuses an overpayment with a message naming the current balance — the point
+ * of checking the ceiling against live data rather than trusting a figure the client
+ * was shown earlier and may have been holding for minutes.
+ *
+ * The floor is 100 pesewas, GH₵ 1.00. A Mobile Money prompt for one pesewa is a
+ * network round trip, a fee and a receipt for nothing. Note this is *tighter* than
+ * the original `min(1)`, which existed for a bursar recording a desk adjustment of
+ * a few pesewas in the admin Payments screen — a path that goes through
+ * `manualPayment` and never through here.
+ */
 export const initiatePaymentSchema = Joi.object({
-  amount: Joi.number().integer().min(1).required()
+  amount: Joi.number().integer().min(100).required()
     .messages({
       "number.base": "Amount must be a number",
       "number.integer": "Amount must be an integer (pesewas)",
-      "number.min": "Amount must be at least 1 pesewa",
+      "number.min": "The minimum payment is GH₵ 1.00",
       "any.required": "Amount is required",
     }),
-  phoneNumber: Joi.string().pattern(/^(0|233)[2-57][0-9]{8}$/).optional()
-    .messages({
-      "string.pattern.base": "Invalid Ghana phone number format",
-    }),
-  momoNetwork: Joi.string().valid(...MOMO_NETWORK_ENUM).optional(),
+  // Either spelling, but not neither — checked after the fields are known.
+  phoneNumber: Joi.string().trim().pattern(/^(0|233|\+233)[2-57][0-9]{8}$/).optional()
+    .messages({ "string.pattern.base": "Invalid Ghana phone number format" }),
+  phone: Joi.string().trim().pattern(/^(0|233|\+233)[2-57][0-9]{8}$/).optional()
+    .messages({ "string.pattern.base": "Invalid Ghana phone number format" }),
+  momoNetwork: Joi.string().trim().uppercase()
+    .valid(...Object.keys(PORTAL_NETWORK_ALIASES))
+    .optional(),
+  network: Joi.string().trim().uppercase()
+    .valid(...Object.keys(PORTAL_NETWORK_ALIASES))
+    .optional(),
   description: Joi.string().trim().max(500).optional().allow("", null),
   feesBreakdown: Joi.array().items(Joi.object({
     label: Joi.string().trim().max(100).required(),
     amount: Joi.number().integer().min(0).required(),
   })).optional(),
   metadata: Joi.object().optional(),
+}).custom((value, helpers) => {
+  if (!value.phoneNumber && !value.phone) {
+    return helpers.message({
+      custom: "A mobile money number is required — the prompt has to arrive somewhere",
+    });
+  }
+  return value;
 });
 
 export const verifyPaymentSchema = Joi.object({
@@ -110,4 +228,110 @@ export const refundPaymentSchema = Joi.object({
 
 export const generateReceiptSchema = Joi.object({
   paymentId: Joi.string().trim().min(5).max(50).required(),
+});
+
+// ──────────────────── Parent pay portal ────────────────────
+//
+// The schemas below describe the *public* parent portal. They share
+// `initiatePaymentSchema` with the admin flow rather than replacing it, because
+// that route has two callers and `validate` aborts on the first schema it fails —
+// so a second schema on the same route would mean whichever was listed first
+// silently became the contract. Where both callers needed something (the network a
+// parent picks), the shared schema accepts both spellings.
+
+/**
+ * A due date may not sit in the past.
+ *
+ * Duplicated from `paymentPlan.validation.js` rather than imported: that file
+ * keeps its exports flat and re-exporting a `Joi.custom` builder across two
+ * validation modules would couple the admin plan API to the public portal. The
+ * rule is three lines and it is asserted by tests in both suites, so a divergence
+ * would be caught rather than shipped.
+ */
+const futureDate = Joi.date()
+  .custom((value, helpers) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (new Date(value) < today) return helpers.error("any.custom");
+    return value;
+  })
+  .messages({ "any.custom": "Choose today or a date in the future" });
+
+/** A Ghanaian MoMo number, in any spelling `phoneNumbers.js` resolves. */
+const ghanaPhone = Joi.string()
+  .trim()
+  .pattern(/^(0|233|\+233)[2-57][0-9]{8}$/)
+  .messages({
+    "string.pattern.base":
+      "Enter a valid Ghanaian mobile number, e.g. 0241234567",
+  });
+
+/**
+ * `POST /pay/:token/request-plan`.
+ *
+ * `interval` excludes `"custom"` even though `createPlanSchema` allows it: a
+ * custom schedule needs per-installment amounts and dates, which a parent
+ * choosing from three segmented options cannot supply and which the school must
+ * set deliberately. Offering it here would produce a request the school has to
+ * rewrite before it can be approved.
+ *
+ * `parentName` / `parentPhone` default to the student's primary guardian on the
+ * server, so a parent who already has an account on the child does not retype
+ * their own name. They are validated when present for the same reason.
+ */
+export const payRequestPlanSchema = Joi.object({
+  numberOfInstallments: Joi.number().integer().min(2).max(6).required().messages({
+    "number.min": "Choose between 2 and 6 instalments",
+    "number.max": "Choose between 2 and 6 instalments",
+    "any.required": "Choose how many instalments you need",
+  }),
+  interval: Joi.string().valid("weekly", "biweekly", "monthly").default("monthly"),
+  startDate: futureDate.required().messages({
+    "any.required": "Choose when you would like to start paying",
+  }),
+  parentName: Joi.string().trim().max(100).optional().allow("", null),
+  parentPhone: ghanaPhone.optional().allow("", null),
+  notes: Joi.string().trim().max(500).optional().allow("", null),
+});
+
+/**
+ * `POST /pay/:token/notify-school`.
+ *
+ * `message` has a floor as well as a ceiling. A support inbox that accepts
+ * `"?"` is one that gets `"?"` four times; a real message from a parent costs a
+ * bursar a phone call and is worth a couple of seconds of typing.
+ */
+export const payNotifySchoolSchema = Joi.object({
+  parentName: Joi.string().trim().min(2).max(100).required(),
+  parentPhone: ghanaPhone.required(),
+  message: Joi.string().trim().min(10).max(1000).required().messages({
+    "string.min": "Please write at least a short message so the school can help",
+    "string.max": "Please keep your message under 1000 characters",
+  }),
+});
+
+/**
+ * `GET /pay/:token/verify/:reference`.
+ *
+ * `reference` is the value the initiate call returned. It is not the gateway's
+ * transaction id: this endpoint resolves the row the portal already created, so
+ * a caller cannot use it to ask about an arbitrary transaction on the platform.
+ */
+export const payReferenceParamSchema = Joi.object({
+  token: Joi.string().pattern(PAY_TOKEN_PATTERN).required().messages({
+    "string.pattern.base": "Invalid payment token format. Expected format: STU-XXXXXXXX",
+  }),
+  reference: Joi.string()
+    .trim()
+    .pattern(/^SUK-[0-9]{10,}-[A-Z0-9]{6}$/)
+    .required()
+    .messages({
+      "string.pattern.base": "Invalid payment reference",
+    }),
+});
+
+/** `GET /pay/:token/history`. */
+export const payHistoryQuerySchema = Joi.object({
+  page: Joi.number().integer().min(1).default(1),
+  perPage: Joi.number().integer().min(1).max(50).default(20),
 });

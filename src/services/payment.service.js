@@ -1,9 +1,18 @@
 import mongoose from "mongoose";
+import crypto from "crypto";
 import { Payment } from "../models/paymentModel.js";
 import { Student } from "../models/studentModel.js";
 import { School } from "../models/schoolModel.js";
+import { PaymentPlan } from "../models/paymentPlanModel.js";
 import { buildPayLink } from "../utils/generatePayLink.js";
 import { applyCompletedPaymentToPlan } from "./paymentPlan.service.js";
+// The balance movement, the school stat and the platform ledger entry. Imported
+// from its own module so the two webhook paths below do not each grow their own
+// copy — see `paymentApplication.service.js` for what that copy was missing.
+import { settlePayment } from "./paymentApplication.service.js";
+// The parent-safe projection for everything a pay link may read. Imported here so
+// the public read model lives in one module rather than being assembled in both.
+import { getPortalView } from "./pay.service.js";
 import {
   requestToPay as mtnRequestToPay,
   getTransactionStatus as mtnGetTransactionStatus,
@@ -77,41 +86,74 @@ const buildHubtelPaymentRequest = (school, payment, callbackUrl) => {
 };
 
 // ──────────────────── Public: Get student by pay token ────────────────────
+/**
+ * The public pay page's read model.
+ *
+ * Delegates to `pay.service.js` rather than projecting the Student document here.
+ * The version this replaced did its own projection inline, and it had two problems
+ * that only an allowlist structure avoids:
+ *
+ *   - It returned `id: student._id` — the Mongo id — on an endpoint with no
+ *     authentication, which is a live handle on the collection to anyone holding a
+ *     pay link.
+ *   - It masked parent numbers with `phone.replace(/(\d{3})\d{4}(\d{2})/, ...)`,
+ *     which is unanchored and assumes a ten-digit number. For the international
+ *     forms this codebase explicitly accepts elsewhere — `233244123456` became
+ *     `233****23456`, leaking eight of twelve digits; `00233244123456` leaked ten
+ *     of fourteen. `phoneNumbers.phoneSearchCandidates` lists those spellings as
+ *     ordinary, so a school with one on file was publishing it.
+ *
+ * `pay.service.js` builds the response from a fixed list of fields and masks with
+ * a digit count rather than a pattern, so neither can regress by a field being
+ * added to the model.
+ *
+ * `payLink` is still returned: the existing pay page and the school's copy-paste
+ * tooling read it, and it is derivable from the token the caller already holds.
+ */
 export const getStudentByPayToken = async (token) => {
-  const student = await Student.findOne({ uniquePayLinkToken: token, deletedAt: null })
-    .select("studentId studentName studentClass totalOwed totalPaid balance deadline schoolId parents")
-    .populate("schoolId", "name schoolCode")
-    .lean();
-
-  if (!student) {
-    throw new ApiError("Invalid or expired payment link", 404, "INVALID_PAY_TOKEN");
-  }
-
-  // Mask parent phone numbers
-  if (student.parents) {
-    student.parents = student.parents.map((p) => ({
-      ...p,
-      phone: p.phone ? p.phone.replace(/(\d{3})\d{4}(\d{2})/, "$1****$2") : p.phone,
-    }));
-  }
-
-  return {
-    student: {
-      id: student._id,
-      studentId: student.studentId,
-      studentName: student.studentName,
-      studentClass: student.studentClass,
-      totalOwed: student.totalOwed,
-      totalPaid: student.totalPaid,
-      balance: student.balance,
-      deadline: student.deadline,
-      school: student.schoolId,
-    },
-    payLink: buildPayLink(token),
-  };
+  const view = await getPortalView(token);
+  return { ...view, payLink: buildPayLink(token) };
 };
 
 // ──────────────────── Public: Initiate payment ────────────────────
+
+/**
+ * The reference the parent portal shows and polls on.
+ *
+ * `SUK-<epoch ms>-<6 chars>`: the timestamp makes it sortable and roughly unique,
+ * and the suffix removes the collision risk that a pure timestamp has — several
+ * parents can tap "Pay" in the same millisecond on a busy morning, and this
+ * endpoint's rate limit is per token, so two *different* tokens can easily be
+ * initiated together.
+ *
+ * Uppercase alphanumerics only, because `payReferenceParamSchema` validates this
+ * exact shape and a lowercase generator would produce a reference the portal's own
+ * verify endpoint then rejects.
+ */
+export const generatePaymentReference = () => {
+  const suffix = crypto
+    .randomBytes(4)
+    .toString("base64url")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .padEnd(6, "X")
+    .slice(0, 6);
+  return `SUK-${Date.now()}-${suffix}`;
+};
+
+/**
+ * Starts a Mobile Money payment against a pay token.
+ *
+ * `data.feesBreakdown` is accepted from the caller and that is deliberate: it is
+ * the split the parent was *shown*, and a parent who pays GH₵ 550 on a quote that
+ * said GH₵ 558.25 must not be charged the difference discovered later. It is
+ * bounded below by `platformMarkupPercent`'s own ceiling in the checkout flow, not
+ * here, because this function has no idea what a school agreed to charge.
+ *
+ * The amount ceiling **is** checked here, against the student's live balance, and
+ * not against anything the client sent or was shown. See `pay.service.js`'s
+ * `validatePaymentRequest` for the same rule on the portal path.
+ */
 export const initiatePayment = async (token, data) => {
   const student = await Student.findOne({ uniquePayLinkToken: token, deletedAt: null });
   if (!student) {
@@ -122,6 +164,29 @@ export const initiatePayment = async (token, data) => {
     throw new ApiError("Student account is not active", 400, "STUDENT_NOT_ACTIVE");
   }
 
+  const balance = Math.max(student.balance || 0, 0);
+
+  if (balance <= 0) {
+    throw new ApiError(
+      "There is nothing outstanding to pay on this account",
+      400,
+      "NO_OUTSTANDING_BALANCE"
+    );
+  }
+
+  const amount = Number(data.amount);
+
+  // Refused rather than clamped. Clamping a parent's GH₵ 900 submission to the
+  // GH₵ 550 outstanding would create a payment the parent did not authorise, and
+  // the difference would sit on their receipt as a mystery credit.
+  if (amount > balance) {
+    throw new ApiError(
+      `That is more than the amount outstanding. The balance is GHS ${(balance / 100).toFixed(2)}`,
+      400,
+      "AMOUNT_EXCEEDS_BALANCE"
+    );
+  }
+
   const school = await fetchSchool(student.schoolId);
 
   // Find primary parent for contact info
@@ -129,12 +194,25 @@ export const initiatePayment = async (token, data) => {
 
   const gateway = resolveGateway(school);
 
+  // Stamp the plan this payment settles, when there is a live one.
+  //
+  // The webhook could look the plan up from the student instead, and did — which
+  // meant a payment initiated *before* a plan was created was applied to that plan
+  // when it settled, retroactively. Naming the plan at the moment the parent was
+  // quoted keeps "which schedule was this money promised against" answered by the
+  // intent at that moment.
+  const livePlan = await PaymentPlan.findOne({
+    studentId: student._id,
+    planStatus: { $in: ["pending_acceptance", "active"] },
+    deletedAt: null,
+  }).select("_id");
+
   // Create payment record
   const payment = await Payment.create({
     studentId: student._id,
     schoolId: student.schoolId,
     parentId: primaryParent?._id || null,
-    amount: data.amount,
+    amount,
     currency: "GHS",
     status: "pending",
     paymentMethod: "momo",
@@ -143,6 +221,12 @@ export const initiatePayment = async (token, data) => {
     momoNetwork: data.momoNetwork || "UNKNOWN",
     description: data.description || `School fees payment for ${student.studentName}`,
     feesBreakdown: data.feesBreakdown || [],
+    paymentPlanId: livePlan?._id || null,
+    // The portal polls `GET /pay/:token/verify/:reference`, which resolves a row by
+    // this value. `paymentId` is not usable for it: it is generated in a pre-save
+    // hook, so it does not exist until after the document is written, and the
+    // parent has the response long before any retry could look it up.
+    reference: generatePaymentReference(),
     createdBy: student.createdBy,
   });
 
@@ -1081,21 +1165,6 @@ const applyMtnStatus = async (payment, transaction, mappedStatus) => {
     payment.completedAt = new Date();
     payment.settlement.reference =
       transaction?.financialTransactionId || payment.settlement?.reference || null;
-
-    try {
-      await Student.findByIdAndUpdate(payment.studentId, {
-        $inc: { totalPaid: payment.amount, balance: -payment.amount },
-      });
-
-      await School.findByIdAndUpdate(payment.schoolId, {
-        $inc: { "stats.totalPaymentsThisMonth": payment.amount },
-      });
-    } catch (error) {
-      // Releasing the claim lets the next callback or poll settle this payment
-      // rather than leaving it completed-but-uncounted.
-      await releasePaymentSettlement(payment._id);
-      throw error;
-    }
   } else if (mappedStatus === "failed") {
     payment.status = "failed";
     payment.failedAt = new Date();
@@ -1109,7 +1178,20 @@ const applyMtnStatus = async (payment, transaction, mappedStatus) => {
     payment.status = "processing";
   }
 
+  // Saved before the money moves — see the Hubtel path for why.
   await payment.save();
+
+  if (isSettlement) {
+    try {
+      // Balance, school stat and platform ledger. Only the balance is allowed to
+      // throw, and if it does the claim is released so the next callback or poll
+      // settles this payment rather than leaving it completed-but-uncounted.
+      await settlePayment(payment);
+    } catch (error) {
+      await releasePaymentSettlement(payment._id);
+      throw error;
+    }
+  }
 
   if (isSettlement && payment.paymentPlanId) {
     await applyCompletedPaymentToPlan(payment);
@@ -1240,34 +1322,37 @@ export const handleHubtelWebhook = async (payload) => {
     payment.momoNetwork = Network || payment.momoNetwork;
     payment.settlement.reference = TransactionId || payment.settlement?.reference || null;
 
-    try {
-      // Update student balance
-      await Student.findByIdAndUpdate(payment.studentId, {
-        $inc: { totalPaid: payment.amount, balance: -payment.amount },
-      });
+    // Saved before the money moves. `applyCompletedPaymentToPlan` and the ledger
+    // write both read the document, and `completedAt` has to be on it for the
+    // receipt number the pre-save hook mints to mean anything.
+    await payment.save();
 
-      // Update school stats
-      await School.findByIdAndUpdate(payment.schoolId, {
-        $inc: { "stats.totalPaymentsThisMonth": payment.amount },
-      });
+    try {
+      // Balance, school stat and platform ledger — see `settlePayment`'s docstring
+      // for why only the balance is allowed to throw.
+      await settlePayment(payment);
     } catch (error) {
-      // The claim is released so a provider retry settles this payment instead
-      // of leaving it stuck as completed-but-uncounted.
+      // The claim is released so a provider retry settles this payment instead of
+      // leaving it stuck as completed-but-uncounted. Both of the above are safe to
+      // repeat: the balance clamps rather than double-counting, and the ledger
+      // write is guarded by the claim that was just given back.
       await releasePaymentSettlement(payment._id);
       throw error;
     }
   } else if (Status === "Failed") {
     payment.status = "failed";
     payment.failedAt = new Date();
+    await payment.save();
   } else if (Status === "Pending") {
     payment.status = "processing";
+    await payment.save();
   }
 
-  await payment.save();
-
   // Payments that settle a payment-plan installment are applied to the plan
-  // (oldest installment first, with overflow rolling onto the next).
-  if (payment.paymentPlanId) {
+  // (oldest installment first, with overflow rolling onto the next). Outside the
+  // `Success` branch because a plan can be prepaid and settled by a later, larger
+  // payment that names it.
+  if (payment.paymentPlanId && payment.status === "completed") {
     await applyCompletedPaymentToPlan(payment);
   }
 

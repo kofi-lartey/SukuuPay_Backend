@@ -6,10 +6,13 @@ import { Payment } from "../models/paymentModel.js";
 import {
   generateInstallmentSchedule,
   regenerateDueDates,
-  applyPaymentToPlan,
   generateAcceptanceToken,
   nextUnsettledInstallment,
 } from "../utils/planHelpers.js";
+// The plan-side half of a settlement: load the live plan, guard against a replay,
+// apply the money to the earliest unsettled tranche and save. Lives in its own
+// module so the prepayment path and the webhook share one implementation.
+import { applyPaymentToPlan } from "./paymentApplication.service.js";
 import { addDays, endOfDayAccra, startOfDayAccra } from "../utils/dateHelpers.js";
 import { sendSms } from "../utils/smsService.js";
 import {
@@ -306,6 +309,10 @@ export const createPaymentPlan = async (studentId, data, user) => {
     academicYear: school.academic?.currentYear || "",
     createdBy: user._id,
     updatedBy: user._id,
+    // Always set explicitly. `requestSource` is what distinguishes an admin-created
+    // plan from a parent-requested one now that `createdBy` is nullable, and this
+    // is the only plan-creation path that has a user behind it.
+    requestSource: "admin",
   });
 
   // Keep the student's plan back-reference in sync.
@@ -857,30 +864,28 @@ const prepayViaHubtel = async (payment, plan, primaryParent, amount) => {
 export const applyCompletedPaymentToPlan = async (payment) => {
   if (!payment?.paymentPlanId) return null;
 
-  const plan = await PaymentPlan.findOne({
-    _id: payment.paymentPlanId,
-    planStatus: { $in: LIVE_STATUSES },
-    deletedAt: null,
-  });
-  if (!plan) return null;
-
-  const alreadyApplied = plan.installments.some((i) =>
-    (i.paymentIds || []).some((id) => id.toString() === payment._id.toString())
+  // The arithmetic and the idempotency guard live in `paymentApplication`, which
+  // the prepayment path and the portal share. This function keeps only what is
+  // specific to *this* caller: reading the student and school so a completed plan
+  // can be announced, and writing the audit line.
+  const outcome = await applyPaymentToPlan(
+    payment.paymentPlanId,
+    payment.amount,
+    payment._id
   );
-  if (alreadyApplied) return null;
 
-  const { applied, unapplied } = applyPaymentToPlan(plan, payment.amount, payment._id);
-  if (!applied.length) return null;
+  if (!outcome || outcome.duplicate || !outcome.applied?.length) return null;
 
-  plan.lastOverdueCheckAt = new Date();
-  await plan.save();
+  const plan = outcome.plan;
 
-  const [student, school] = await Promise.all([
-    Student.findById(plan.studentId),
-    fetchSchool(plan.schoolId),
-  ]);
-  if (student && plan.planStatus === "completed") {
-    await notifyPlanCompleted(school, student, plan);
+  if (plan.planStatus === "completed") {
+    const [student, school] = await Promise.all([
+      Student.findById(plan.studentId),
+      fetchSchool(plan.schoolId),
+    ]);
+    if (student) {
+      await notifyPlanCompleted(school, student, plan);
+    }
   }
 
   await auditService.log({
@@ -888,10 +893,15 @@ export const applyCompletedPaymentToPlan = async (payment) => {
     entity: "PaymentPlan",
     entityId: plan._id,
     userId: null,
-    details: { paymentId: payment.paymentId, amount: payment.amount, applied, unapplied },
+    details: {
+      paymentId: payment.paymentId,
+      amount: payment.amount,
+      applied: outcome.applied,
+      unapplied: outcome.unapplied,
+    },
   });
 
-  return { plan, applied, unapplied };
+  return { plan, applied: outcome.applied, unapplied: outcome.unapplied };
 };
 
 // ──────────────────── 8. School compliance overview ────────────────────

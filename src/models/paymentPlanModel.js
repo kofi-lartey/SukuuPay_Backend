@@ -236,11 +236,47 @@ const paymentPlanModel = new mongoose.Schema(
       default: "",
     },
 
-    // ── Audit ──
+    // ── Provenance ──
+    //
+    // `createdBy` was `required: true`, which is right for a plan a bursar wrote
+    // but impossible for one a *parent* asked for: the public pay portal creates
+    // plans from a pay token, with no user behind the request. Requiring it there
+    // would have forced the portal to either mint a fake user id — putting a
+    // non-existent actor in the audit log, which is worse than an honest null —
+    // or to skip the audit trail entirely.
+    //
+    // So it is nullable, and `requestSource` is what makes a null *legible*
+    // instead of ambiguous: an admin-created plan with a null creator is a bug, a
+    // parent-requested one is routine, and an auditor can now tell them apart.
+    // `createPaymentPlan` still requires a user, so this is a statement about the
+    // portal rather than a loosening of the admin path.
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      default: null,
+    },
+    requestSource: {
+      type: String,
+      enum: ["admin", "parent_portal", null],
+      default: null,
+      index: true,
+    },
+    /**
+     * Who asked, when a parent asked.
+     *
+     * Only populated for `requestSource: "parent_portal"`. This is deliberately a
+     * *copy* of the contact details rather than a pointer into `Student.parents`:
+     * the parent's own name and number are what they typed into the request, which
+     * is frequently not what the school has on file (the mother is the contact, the
+     * father pays), and the school needs to answer the request at the number that
+     * was actually given. Overwriting the student record from an unauthenticated
+     * endpoint would also be a way to rewrite a child's guardian list by guessing
+     * a token.
+     */
+    requestedBy: {
+      parentName: { type: String, trim: true, maxlength: 100, default: "" },
+      parentPhone: { type: String, trim: true, maxlength: 32, default: "" },
+      notes: { type: String, trim: true, maxlength: 500, default: "" },
     },
     updatedBy: {
       type: mongoose.Schema.Types.ObjectId,

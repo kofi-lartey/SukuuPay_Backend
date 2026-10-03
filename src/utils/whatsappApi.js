@@ -95,6 +95,16 @@ export const getWhatsAppConfigStatus = () => ({
     .digest('hex')
     .slice(0, 12),
   verifyTokenLength: String(WHATSAPP_VERIFY_TOKEN ?? '').length,
+  /**
+   * Where the token came from: `explicit`, or `missing`.
+   *
+   * This existed because the token used to fall back to `SECRET`, so a deployment
+   * that had never set one still validated against *something* and reported a
+   * plausible length — indistinguishable from correctly configured until Meta
+   * refused the subscription. Reporting the source as well as the fingerprint
+   * means the two states can no longer be confused.
+   */
+  verifyTokenSource: WHATSAPP_VERIFY_TOKEN ? 'explicit' : 'missing',
   // Separated from `configured` on purpose: a channel whose credentials are all
   // still `your-...` is configured in name only, and that is exactly the state
   // that previously read as ready.

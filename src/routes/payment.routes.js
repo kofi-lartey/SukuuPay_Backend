@@ -3,7 +3,11 @@ import {
   getStudentByPayTokenController,
   initiatePaymentController,
   verifyPaymentController,
-  getReceiptController,
+  verifyPaymentByReferenceController,
+  getPaymentHistoryController,
+  requestPaymentPlanController,
+  notifySchoolController,
+  getReceiptDownloadController,
   listPaymentsController,
   getPaymentSummaryController,
   exportPaymentsController,
@@ -16,7 +20,19 @@ import { recordManualPaymentController } from "../controllers/manualPayment.cont
 import { authenticate, authorize } from "../middleware/authenticate.js";
 import { validate } from "../middleware/validate.js";
 import {
+  payLinkViewLimit,
+  payInitiateLimit,
+  payVerifyLimit,
+  payRequestPlanLimit,
+  payNotifySchoolLimit,
+} from "../middleware/rateLimit.js";
+import {
   payTokenParamSchema,
+  payReferenceParamSchema,
+  payHistoryQuerySchema,
+  payRequestPlanSchema,
+  payNotifySchoolSchema,
+  payReceiptParamSchema,
   paymentIdParamSchema,
   initiatePaymentSchema,
   verifyPaymentSchema,
@@ -33,19 +49,78 @@ export const paymentRoute = Router();
 const requireSchoolAdmin = authorize("super_admin", "school_admin");
 
 // ──────────────────── Public endpoints (parent-facing, no auth) ────────────────────
+//
+// **Every route below is unauthenticated**, so every route below carries a rate
+// limiter keyed on the pay token rather than on the caller's address. The reasoning
+// is in `middleware/rateLimit.js`: these are reached over mobile networks where
+// address-based limiting punishes an entire family behind one NAT, while the token
+// is both the fair identity and a tighter abuse bound.
+//
+// The limiter runs *after* `validate` on the routes below. That ordering is
+// deliberate and not interchangeable: `validate` rejects a malformed token with a
+// 422 without touching the limiter, so an attacker cannot burn a legitimate family's
+// budget by guessing token shapes, and a typo costs nothing. A well-formed token is
+// then counted, which is exactly the traffic worth limiting.
+//
 // GET /pay/:token - View student + balance
 paymentRoute.get(
   "/pay/:token",
+  payLinkViewLimit,
   validate(payTokenParamSchema, "params"),
   getStudentByPayTokenController
 );
 
+// GET /pay/:token/history - Full settled-payment history, paginated
+paymentRoute.get(
+  "/pay/:token/history",
+  payLinkViewLimit,
+  validate(payTokenParamSchema, "params"),
+  validate(payHistoryQuerySchema, "query"),
+  getPaymentHistoryController
+);
+
+// GET /pay/:token/verify/:reference - Poll status while the parent approves on
+// their handset. Registered before `/pay/:token/receipt/:paymentId` and the other
+// sub-routes only because it is a distinct path shape; Express matches the exact
+// segment count, so there is no shadowing either way.
+paymentRoute.get(
+  "/pay/:token/verify/:reference",
+  payVerifyLimit,
+  validate(payReferenceParamSchema, "params"),
+  verifyPaymentByReferenceController
+);
+
 // POST /pay/:token/initiate - Initiate MoMo payment
+//
+// One schema for both callers of this route. The admin flow and the parent portal
+// differ only in the field names they use (`phoneNumber`/`momoNetwork` versus
+// `phone`/`network`) and `initiatePaymentSchema` accepts either — `validate` aborts
+// on the first schema it fails, so listing two schemas on one route would just mean
+// whichever came first became the contract.
 paymentRoute.post(
   "/pay/:token/initiate",
+  payInitiateLimit,
   validate(payTokenParamSchema, "params"),
   validate(initiatePaymentSchema),
   initiatePaymentController
+);
+
+// POST /pay/:token/request-plan - Parent asks the school to split the balance
+paymentRoute.post(
+  "/pay/:token/request-plan",
+  payRequestPlanLimit,
+  validate(payTokenParamSchema, "params"),
+  validate(payRequestPlanSchema),
+  requestPaymentPlanController
+);
+
+// POST /pay/:token/notify-school - Parent sends a message to the bursar
+paymentRoute.post(
+  "/pay/:token/notify-school",
+  payNotifySchoolLimit,
+  validate(payTokenParamSchema, "params"),
+  validate(payNotifySchoolSchema),
+  notifySchoolController
 );
 
 // POST /pay/:token/verify - Verify payment status
@@ -56,12 +131,18 @@ paymentRoute.post(
   verifyPaymentController
 );
 
-// GET /pay/:token/receipt/:paymentId - Download PDF receipt
+// GET /pay/:token/receipt/:paymentId - Receipt, as JSON or as a PDF file
+//
+// One `params` schema, not two. `validate` writes back the validated value and
+// strips unknown keys, so a chain of `payTokenParamSchema` then
+// `paymentIdParamSchema` on the same segment deleted `paymentId` before the second
+// ran and 422'd every request — this endpoint had never served a receipt. See
+// `payReceiptParamSchema`.
 paymentRoute.get(
   "/pay/:token/receipt/:paymentId",
-  validate(payTokenParamSchema, "params"),
-  validate(paymentIdParamSchema, "params"),
-  getReceiptController
+  payLinkViewLimit,
+  validate(payReceiptParamSchema, "params"),
+  getReceiptDownloadController
 );
 
 // ──────────────────── Webhook (no auth, but validated) ────────────────────

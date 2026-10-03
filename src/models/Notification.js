@@ -12,6 +12,18 @@ const NOTIFICATION_TYPES = [
   // because a school code alone must never grant access — see SchoolJoinRequest.
   "school.join_request",
   "system.alert",
+
+  // ── Raised by the public parent pay portal ──
+  // A parent asked to split a balance, from the pay link, with no account. This
+  // is the school's queue entry for work it has to do by hand, which is why it
+  // needs a type of its own: "plan.created" means a bursar already approved
+  // something, and a dashboard filtering on that would hide every request forever.
+  "plan.requested",
+
+  // A parent wrote in through their pay link about a balance, a payment or a
+  // schedule. Not support-chat — one message, no thread — but it needs to reach the
+  // bursar's notifications and not be lost in the SMS log where nothing surfaces it.
+  "parent.message",
 ];
 
 const notificationSchema = new mongoose.Schema(
