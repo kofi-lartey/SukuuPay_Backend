@@ -171,18 +171,42 @@ export const requestPaymentPlanController = async (req, res) => {
 // ──────────────────── Public: Notify the school ────────────────────
 export const notifySchoolController = async (req, res) => {
   try {
-    const result = await notifySchool(req.params.token, req.body);
+    const result = await notifySchool(req.params.token, {
+      ...req.body,
+      // `uploadParentAudio` puts the file on `req.file` and leaves `req.body` as the
+      // text fields, so a multipart submission arrives here with both and needs no
+      // special casing above this line. A JSON submission has no `req.file` and the
+      // service treats the audio as absent.
+      audio: req.file
+        ? { buffer: req.file.buffer, mimetype: req.file.mimetype }
+        : undefined,
+      // Recorded on the message row and the audit entry. Taken from the raw socket
+      // because `express.json()` runs before the controller and there is no trust
+      // proxy setting behind this to say whether `req.ip` is the client or a hop.
+      ip:
+        req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+        req.socket?.remoteAddress ||
+        null,
+    });
+
+    // The wording is chosen against what actually happened. Three cases, three
+    // different sentences, because the failure this replaced was a parent being told
+    // "the school will be in touch" when no alert had left the building and nothing
+    // had been recorded anywhere a human would look.
+    let message;
+    if (result.adminsNotified > 0) {
+      message = result.hasAudio
+        ? "Your voice note has been sent to the school."
+        : "Your message has been sent to the school.";
+    } else {
+      message = result.schoolPhone
+        ? "Your message has been saved. The school does not have an alert number set up, so please call them so they know to look."
+        : "Your message has been saved. The school does not have an alert number set up, so please contact them so they know to look.";
+    }
 
     return res.status(200).json({
       success: true,
-      // `delivered` is about the SMS nudge; `notificationLogged` is about the
-      // message reaching the bursar's dashboard. The parent is told "received"
-      // because the second is true whenever the endpoint worked, and quietly
-      // claiming a text was sent when no admin number is on file would leave them
-      // waiting for a call that nobody knows to make.
-      message: result.notificationLogged
-        ? "Your message has been sent to the school."
-        : "Your message has been saved. The school will see it in their dashboard.",
+      message,
       data: result,
     });
   } catch (error) {

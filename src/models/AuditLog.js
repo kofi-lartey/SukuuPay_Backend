@@ -120,6 +120,15 @@ const AUDIT_ACTIONS = [
   // job that stops running is invisible in every other way — and an operator
   // reading a week of health entries can see the gap that says so.
   "health.check",
+
+  // Parent → school messaging. See the note on `PARENT_MESSAGE_SENT` in
+  // `config/constants.js`: these were attempted as `"PARENT_CONTACTED_SCHOOL"`, which
+  // is in neither this list nor that map, so the write failed Mongoose validation
+  // inside a try/catch that only logged. Any value added here must be added there
+  // too, or the entry silently does not exist.
+  "parent.message_sent",
+  "parent.message_read",
+  "parent.message_resolved",
 ];
 
 const auditLogSchema = new mongoose.Schema(

@@ -66,13 +66,28 @@ smsRoute.get(
 
 // POST /sms/credits/top-up — add credit to a school.
 //
+// **`authorize('super_admin')` only.** This used to be `requireSender`, which
+// includes `school_admin` and `accountant`, so any bursar could mint unlimited SMS
+// credit for their own school by typing a number into a dialog: no payment, no
+// approval, no record of who bought what. It wrote a real `SmsCreditTopUp` row and
+// incremented `School.sms.balance`, so it looked like a purchase in every audit and
+// report while being free. The only thing standing between that and a school's whole
+// Arkesel bill was the honesty of the person operating it.
+//
+// The platform console has its own equivalent at
+// `POST /admin/sms/credits/topup`, which allocates across several schools at once and
+// books a `PlatformLedger` entry. Neither is a *sale*: both are a super admin recording
+// credit that has already been paid for out of band. Charging a school for SMS is a
+// separate flow with its own request, payment and approval states, and this route is
+// deliberately not it.
+//
 // Ahead of the `GET /sms/credits/:schoolId` pattern above. Not a shadowing risk
 // (different method and a two-segment path), but it is declared first so the
 // literal routes stay together and the parameterised ones read last.
 smsRoute.post(
   '/sms/credits/top-up',
   authenticate,
-  requireSender,
+  authorize('super_admin'),
   validate(topUpCreditsSchema),
   topUpSmsCreditsController
 );

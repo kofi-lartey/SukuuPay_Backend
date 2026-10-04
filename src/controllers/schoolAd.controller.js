@@ -89,10 +89,21 @@ export const listSchoolAds = async (req, res) => {
       SchoolAd.countDocuments(filter),
     ]);
 
+    const pages = Math.ceil(total / perPage);
+
+    // Envelope note. This handler replied `{ ads, pagination }` while every list
+    // endpoint in the product — and `listSchoolAds` in `services/admin.js`, the client
+    // for this very route — reads `data` and `meta`. So even once the path was fixed
+    // the queue rendered zero rows and an empty pager, because both keys it reads were
+    // absent. `ads`/`pagination` are kept alongside as aliases: the public slider
+    // handler above has its own separate envelope and is untouched, and dropping these
+    // would break any caller written against the original response.
     return res.status(200).json({
       success: true,
+      data: ads,
+      meta: { page, perPage, total, pages, totalPages: pages },
       ads,
-      pagination: { page, perPage, total, pages: Math.ceil(total / perPage) },
+      pagination: { page, perPage, total, pages },
     });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
@@ -140,6 +151,10 @@ export const createSchoolAd = async (req, res) => {
     return res.status(201).json({
       success: true,
       message: "Ad submitted for approval",
+      // `data` is the envelope every other create endpoint in the product replies
+      // with, and the one `createSchoolAd` in `services/admin.js` reads. `ad` is kept
+      // as an alias for callers written against the original response.
+      data: ad,
       ad,
     });
   } catch (error) {
@@ -178,7 +193,7 @@ export const updateSchoolAd = async (req, res) => {
     if (status !== undefined) ad.status = ad.status;
 
     const updated = await ad.save();
-    return res.status(200).json({ success: true, ad: updated });
+    return res.status(200).json({ success: true, data: updated, ad: updated });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -213,6 +228,7 @@ export const reviewSchoolAd = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: status === "approved" ? "Ad is now live" : "Ad rejected",
+      data: updated,
       ad: updated,
     });
   } catch (error) {

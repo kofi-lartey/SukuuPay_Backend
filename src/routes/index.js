@@ -12,6 +12,7 @@ import { auditLogRoute } from './auditLog.routes.js';
 import { idCardRoute } from './idCard.routes.js';
 import { uploadRoute } from './upload.routes.js';
 import { notificationRoute } from './notification.routes.js';
+import { parentMessageRoute } from './parentMessage.routes.js';
 import { settingsRoute } from './settings.routes.js';
 import { adminRoute } from './admin.routes.js';
 import { healthRoute } from './health.routes.js';
@@ -56,6 +57,11 @@ router.use('/audit-logs', auditLogRoute);
 router.use('/id-cards', idCardRoute);
 router.use('/upload', uploadRoute);
 router.use('/notifications', notificationRoute);
+// Parent → school messaging. Mounted at the root rather than under `/notifications`
+// because these are the *record* a notification points at: the alerts expire after 90
+// days by TTL and carry no state, while a fee dispute raised by a parent has to
+// outlive them and be answerable. Adjacent in the stack, different thing.
+router.use('/', parentMessageRoute);
 router.use('/settings', settingsRoute);
 router.use('/admin', adminRoute);
 router.use('/', publicAdRoute);

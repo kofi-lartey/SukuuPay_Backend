@@ -56,6 +56,14 @@ import {
   reviewSchoolAd,
   deleteSchoolAd,
 } from '../controllers/schoolAd.controller.js';
+import { uploadSchoolAd } from '../middleware/upload.js';
+import {
+  listSchoolAdsQuerySchema,
+  createSchoolAdSchema,
+  updateSchoolAdSchema,
+  approveSchoolAdSchema,
+  schoolAdIdParamSchema,
+} from '../validations/schoolAd.validation.js';
 
 // ── Platform console: schools and users ────────────────────────────────────
 import {
@@ -441,11 +449,73 @@ adminRoute.delete(
 );
 
 adminRoute.get('/schools/:id/usage', getSchoolUsageController);
-adminRoute.get('/schools/:id/settings', listSchoolAds);
-adminRoute.post('/schools/:id/settings', createSchoolAd);
-adminRoute.put('/schools/:id/settings/:adId', updateSchoolAd);
-adminRoute.put('/schools/:id/settings/:adId/review', reviewSchoolAd);
-adminRoute.delete('/schools/:id/settings/:adId', deleteSchoolAd);
+
+/**
+ * School advertisement moderation.
+ *
+ * ## These five paths were wrong, and nothing caught it
+ *
+ * They were registered as `/schools/:id/settings…`, which is three segments. The
+ * client in `frontend/src/services/admin.js` calls `/admin/school-ads`,
+ * `/admin/school-ads/:adId`, `/admin/school-ads/:adId/approve` and
+ * `/admin/school-ads/:adId` — two segments, and a different action name (`approve`,
+ * not `review`). `GET /api/admin/school-ads` therefore matched no registered route and
+ * the moderation queue answered **`404 Route not found`** against the real API while
+ * working perfectly under `VITE_USE_MOCKS`, because the mock router had the client's
+ * paths all along. The three mocked routes were the evidence that the mismatch was
+ * real and not a stale client.
+ *
+ * The old paths are **removed rather than kept as aliases.** Two working paths for one
+ * resource is how they drifted in the first place; the next client would have had a
+ * 50/50 chance of picking the wrong one and no test to tell it.
+ *
+ * ## Validation was missing entirely
+ *
+ * All five handlers were mounted with no `validate(...)` at all, so the schemas in
+ * `validations/schoolAd.validation.js` were written and never used. That file is the
+ * only place `linkUrl` is restricted to `https` — without it, a `javascript:` URL
+ * submitted here renders on the login and signup pages of every visitor. The schemas
+ * are wired below, which is what makes that guarantee real.
+ *
+ * `uploadSchoolAd` runs before `validate` because multer must parse the multipart
+ * body before Joi can read the text fields. It is `.single("image")`, so a JSON
+ * submission with an `imageUrl` still passes through untouched.
+ */
+adminRoute.get(
+  '/school-ads',
+  validate(listSchoolAdsQuerySchema, 'query'),
+  listSchoolAds
+);
+adminRoute.post(
+  '/school-ads',
+  uploadSchoolAd,
+  validate(createSchoolAdSchema),
+  createSchoolAd
+);
+adminRoute.put(
+  '/school-ads/:adId',
+  uploadSchoolAd,
+  validate(schoolAdIdParamSchema, 'params'),
+  validate(updateSchoolAdSchema),
+  updateSchoolAd
+);
+/*
+ * Declared before the two-segment siblings above would matter if they were reordered —
+ * `/school-ads/:adId/approve` and `/school-ads/:adId` are both two-segment paths
+ * under the same prefix, and Express matches them independently, so this is safe in
+ * either order. It is written out in path order anyway.
+ */
+adminRoute.put(
+  '/school-ads/:adId/approve',
+  validate(schoolAdIdParamSchema, 'params'),
+  validate(approveSchoolAdSchema),
+  reviewSchoolAd
+);
+adminRoute.delete(
+  '/school-ads/:adId',
+  validate(schoolAdIdParamSchema, 'params'),
+  deleteSchoolAd
+);
 
 /**
  * Suspension, on the *existing* handler rather than the platform-console one.

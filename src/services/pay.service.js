@@ -5,9 +5,13 @@ import { School } from "../models/schoolModel.js";
 import { PaymentPlan } from "../models/paymentPlanModel.js";
 import { User } from "../models/userModel.js";
 import { Notification } from "../models/Notification.js";
+import { ParentMessage } from "../models/ParentMessage.js";
 import ApiError from "../utils/ApiError.js";
 import auditService from "../utils/auditService.js";
 import { sendSms } from "../utils/smsService.js";
+import { uploadAudioBuffer } from "../utils/cloudinary.js";
+import { CLOUDINARY_UPLOAD_FOLDER } from "../config/env.js";
+import { AUDIT_ACTIONS } from "../config/constants.js";
 import {
   generateInstallmentSchedule,
   generateAcceptanceToken,
@@ -763,6 +767,13 @@ export const requestPaymentPlan = async (token, data) => {
  *
  * `school_admin` and `accountant` because both are the people who answer a fee
  * question. A teacher has no business acting on a balance dispute.
+ *
+ * `schoolId` is projected as well as `phone` because `notifyAdmins` copies it onto
+ * each row it writes, and it was being projected away — so every notification raised
+ * from the pay portal stored `schoolId: undefined`. That is invisible on the personal
+ * inbox the notifications are read from, and not invisible anywhere else: a school
+ * that later switches the notification source to a school-scoped query finds none of
+ * them.
  */
 const findSchoolRecipients = (schoolId) =>
   User.find({
@@ -771,7 +782,7 @@ const findSchoolRecipients = (schoolId) =>
     status: "active",
     deletedAt: null,
   })
-    .select("phone")
+    .select("phone schoolId")
     .lean();
 
 /**
@@ -891,15 +902,48 @@ const notifyPlanRequest = async (school, student, plan, { parentName, parentPhon
 /**
  * A parent writes to the school through the pay page.
  *
- * This is a *message*, not a support chat: three a day, one recipient, no thread,
- * no read receipts. The cap is enforced by the route's rate limiter as well as
- * here, because a form a parent can submit in a loop against a school's SMS
- * balance is a way to spend someone else's credits.
+ * This is a *message*, not a support chat: three a day, one recipient, no thread, no
+ * read receipts. The cap is enforced by the route's rate limiter as well as here,
+ * because a form a parent can submit in a loop against a school's SMS balance is a
+ * way to spend someone else's credits.
  *
- * The parent's number is masked in the durable record. The SMS carries it in full
- * because the bursar has to be able to call them back, but `Notification` is read
- * by every admin in the school and is not a place to accumulate parent phone
- * numbers that are already on the student record.
+ * ## What this writes, and why
+ *
+ * One `ParentMessage` row, one `Notification` per admin, and at most one SMS. The
+ * order matters and the failures are deliberately contained:
+ *
+ * 1. **The `ParentMessage` is written first and is the only thing that must
+ *    succeed.** If the row cannot be written, the parent is told so, because nothing
+ *    was recorded. Every other step is an *alert* about that row.
+ * 2. **The notification is guarded.** Previously it was not, and it sits before the
+ *    SMS — so an SMS failure threw a 500 out of a request that had already delivered
+ *    the notification. The parent saw "We could not send your message", tapped send
+ *    again, and every admin got a second copy of a message they had already received.
+ * 3. **The SMS is guarded**, and the outcome is reported honestly rather than as a
+ *    boolean that means "nothing threw".
+ *
+ * ## The two failures that made this message undeliverable
+ *
+ * Both were quiet, and both are fixed here rather than at the call sites:
+ *
+ * - **No admin had a phone number.** `User.phone` was relaxed from `required: true`
+ *   to optional when team invitations started accepting name + email only. The SMS
+ *   path then found nothing to send to and the message existed *only* as a
+ *   notification — which, until the notification UI landed, existed only as a row
+ *   nobody could read. The message is now a record the school opens deliberately, so
+ *   it survives having no phone at all, and the school's own published phone number
+ *   is used for the alert when no admin has one.
+ * - **The audit write never landed.** The action was `"PARENT_CONTACTED_SCHOOL"`,
+ *   which is in neither audit enum, so `auditService.log` swallowed the Mongoose
+ *   ValidationError into a `console.error` and the endpoint still returned 200.
+ *   A bursar asked to prove a parent had contacted the school had nothing to show.
+ *
+ * @param {string} token the student's pay token — the only credential the caller has
+ * @param {{ parentName: string, parentPhone: string, message?: string,
+ *   audio?: { buffer: Buffer, mimetype: string, bytes?: number } }} data
+ * @returns {Promise<{ messageId: string, delivered: boolean,
+ *   notificationLogged: boolean, adminsNotified: number,
+ *   audioUrl: string|null, schoolPhone: string|null, hasAudio: boolean }>}
  */
 export const notifySchool = async (token, data) => {
   const student = await requireStudentByToken(token);
@@ -913,65 +957,193 @@ export const notifySchool = async (token, data) => {
     );
   }
 
-  const { parentName, parentPhone, message } = data;
+  const { parentName, parentPhone, message, audio } = data;
+
+  const hasAudio = Boolean(audio?.buffer?.length);
+  const text = String(message || '').trim();
+
+  // A voice note on its own is a complete message; that is the point of the recorder.
+  // Refusing "no text" outright would have made the feature unusable for exactly the
+  // parent it exists for.
+  if (!text && !hasAudio) {
+    throw new ApiError(
+      'Write a message or record a voice note before sending',
+      400,
+      'MESSAGE_EMPTY'
+    );
+  }
 
   const recipients = await findSchoolRecipients(student.schoolId);
 
-  const subject = `Parent message — ${student.studentName}`;
+  // ── 1. The record. The only step allowed to fail the request. ──
+  //
+  // Audio is uploaded before the row is created rather than after, because a row
+  // pointing at a Cloudinary asset that was never uploaded is a dangling reference a
+  // bursar clicks and gets a 404 on. If the upload throws, nothing is written.
+  let audioMeta = null;
+  if (hasAudio) {
+    try {
+      const uploaded = await uploadAudioBuffer(audio.buffer, {
+        mimeType: audio.mimetype,
+        folder: `${CLOUDINARY_UPLOAD_FOLDER}/schools/${school.slug || student.schoolId}/parent-messages`,
+      });
+      audioMeta = {
+        url: uploaded.url,
+        publicId: uploaded.publicId,
+        mimeType: audio.mimetype,
+        bytes: uploaded.bytes,
+        durationSeconds: uploaded.duration,
+      };
+    } catch (error) {
+      // Surfaced to the parent as a plain failure rather than a 500: their recording
+      // did not save, and telling them "please try again" is actionable where
+      // "Something went wrong" is not.
+      throw new ApiError(
+        'We could not save your voice note. Please record it again, or send a written message.',
+        502,
+        'AUDIO_UPLOAD_FAILED'
+      );
+    }
+  }
 
-  await notifyAdmins(recipients, {
-    type: 'parent.message',
-    title: subject,
-    message: `${parentName} (${maskContact(parentPhone)}) asked about ${student.studentName} (${student.studentClass}): ${message}`,
-    link: '/dashboard/students',
-    // The verbatim message and the callback number live here rather than in the
-    // 500-character body, so a bursar reads what the parent actually wrote without
-    // the summary being truncated around it.
-    meta: {
+  const parentMessage = await ParentMessage.create({
+    schoolId: student.schoolId,
+    studentId: student._id,
+    studentRef: student.studentId,
+    studentName: student.studentName,
+    studentClass: student.studentClass,
+    parentName,
+    parentPhone,
+    message: text || null,
+    audio: audioMeta || undefined,
+    hasAudio,
+    status: 'new',
+    ip: data.ip || null,
+  });
+
+  // ── 2. The in-app alert. Guarded: a failure here must not fail the request. ──
+  const subject = hasAudio
+    ? `Parent voice note — ${student.studentName}`
+    : `Parent message — ${student.studentName}`;
+
+  // The body is a summary because `Notification.message` is capped at 500 characters;
+  // the verbatim text and the callback number live in `meta`, which is unbounded.
+  const summary = hasAudio
+    ? `${parentName} (${maskContact(parentPhone)}) sent a voice note about ${student.studentName} (${student.studentClass}).${text ? ` They also wrote: ${text}` : ''}`
+    : `${parentName} (${maskContact(parentPhone)}) asked about ${student.studentName} (${student.studentClass}): ${text}`;
+
+  let adminsNotified = 0;
+  try {
+    const result = await notifyAdmins(recipients, {
+      type: hasAudio ? 'parent.audio_message' : 'parent.message',
+      title: subject,
+      message: summary,
+      // The inbox, not the roster. `/dashboard/students` was the old link and it is
+      // a dead end for this: a bursar arriving there has no way to find the message
+      // that sent them there.
+      link: '/dashboard/messages',
+      meta: {
+        parentMessageId: parentMessage.messageId,
+        parentMessageRef: String(parentMessage._id),
+        studentRef: student.studentId,
+        studentName: student.studentName,
+        parentName,
+        parentPhone,
+        message: text,
+        audioUrl: audioMeta?.url || null,
+        hasAudio,
+      },
+    });
+    adminsNotified = result.written;
+  } catch (error) {
+    console.error(
+      `[PAY-PORTAL] Notification write failed for ${parentMessage.messageId}:`,
+      error.message
+    );
+  }
+
+  // ── 3. The SMS alert. Guarded, and its outcome recorded on the row. ──
+  //
+  // The recipient is an admin with a phone, or failing that the school's own published
+  // number. A school that has published a phone for parents to call has published it
+  // to be reached, and requiring a staff member to have personally entered one is a
+  // stricter condition than the product's own front page sets.
+  const adminRecipient = (recipients || []).map((a) => a.phone).find(Boolean);
+  const alertNumber = adminRecipient || school?.phone || null;
+
+  let delivered = false;
+  let smsFailure = null;
+
+  if (alertNumber) {
+    try {
+      const sms = await sendSms({
+        to: alertNumber,
+        // Trimmed to roughly one segment: the gateway would otherwise split this into
+        // three texts and bill the school for all three, to convey the same
+        // "please call this parent back".
+        message: hasAudio
+          ? `SukuuPay: ${parentName} (${parentPhone}) sent a voice note re ${student.studentName}. ${text}`.slice(0, 300)
+          : `SukuuPay: ${parentName} (${parentPhone}) re ${student.studentName}: ${text}`.slice(0, 300),
+        school,
+        purpose: 'parent_message',
+        studentId: student._id,
+        parentName,
+      });
+      delivered = Boolean(sms?.sent);
+      if (!delivered) smsFailure = 'The gateway accepted the request but did not confirm delivery';
+    } catch (error) {
+      smsFailure = String(error?.message || 'SMS alert failed').slice(0, 300);
+      console.error(
+        `[PAY-PORTAL] Parent message SMS alert failed for ${parentMessage.messageId}:`,
+        error.message
+      );
+    }
+  } else {
+    smsFailure = 'No administrator phone number and no school phone number on file';
+  }
+
+  // The outcome is written back rather than computed at read time, because "why did
+  // this parent get no call" is a question the bursar asks weeks later, when the
+  // admin list and the school's phone field may both have changed.
+  parentMessage.smsAlerted = delivered;
+  parentMessage.smsAlertFailure = smsFailure;
+  await parentMessage.save();
+
+  await auditService.log({
+    action: AUDIT_ACTIONS.PARENT_MESSAGE_SENT,
+    entity: 'ParentMessage',
+    entityId: parentMessage._id,
+    userId: null,
+    schoolId: student.schoolId,
+    ip: data.ip || null,
+    // No name, no phone, not even a count of the words. The audit log is read by more
+    // people than the roster and answers "was this endpoint abused", which the rate
+    // limiter's own counters answer better. The message itself is on the row.
+    details: {
+      ref: parentMessage.messageId,
       studentRef: student.studentId,
-      parentName,
-      parentPhone,
-      message: String(message || ''),
+      chars: text.length,
+      hasAudio,
+      audioBytes: audioMeta?.bytes ?? null,
+      notifiedAdmins: adminsNotified,
+      smsAlerted: delivered,
+      smsFailure,
     },
   });
 
-  let sms = null;
-  const recipient = (recipients || []).map((a) => a.phone).find(Boolean);
-  if (recipient) {
-    sms = await sendSms({
-      to: recipient,
-      // Trimmed to one segment's worth: the gateway would otherwise split this into
-      // three texts and bill the school for all three, to convey the same
-      // "please call this parent back".
-      message: `SukuuPay: ${parentName} (${parentPhone}) re ${student.studentName}: ${message}`.slice(
-        0,
-        300
-      ),
-      school,
-      purpose: 'parent_message',
-      studentId: student._id,
-      parentName,
-    });
-  }
-
-  await auditService.log({
-    action: 'PARENT_CONTACTED_SCHOOL',
-    entity: 'Student',
-    entityId: student._id,
-    userId: null,
-    schoolId: student.schoolId,
-    // No name, no phone, not even a count of the words. The audit log is read by
-    // more people than the roster and answers "was this endpoint abused", which
-    // the rate limiter's own counters answer better.
-    details: { studentRef: student.studentId, chars: String(message || '').length },
-  });
-
   return {
-    delivered: Boolean(sms?.sent),
-    // Not `notified: true`. With no admin phone on file nothing was sent, and a
-    // parent told "the school has been notified" when nothing left the building
-    // will simply wait. The message is on file either way, and the page says so.
-    notificationLogged: (recipients || []).length > 0,
+    messageId: parentMessage.messageId,
+    hasAudio,
+    audioUrl: audioMeta?.url || null,
+    // `delivered` means the SMS left the building, not that a human read it. The
+    // parent page words it accordingly.
+    delivered,
+    notificationLogged: adminsNotified > 0,
+    adminsNotified,
+    // Handed back so the confirmation screen can offer the school as a phone call
+    // when no alert could be sent. A parent told "the school will be in touch" with
+    // no way to make that happen is the exact failure this feature had.
+    schoolPhone: school?.phone || null,
   };
 };
 

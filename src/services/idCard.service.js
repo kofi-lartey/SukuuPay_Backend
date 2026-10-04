@@ -88,9 +88,20 @@ export const generateSingleStudentIdCard = async (studentId, requester) => {
   cardData.qrCodeUrl = qrDataUrl;
 
   // Generate a single-page PDF.
-  const pdfBuffer = await generatePdfFromTemplate({
+  //
+  // `generatePdfFromTemplate(template, data)` — the template name is the FIRST
+  // argument. Both call sites here passed a single object, so `template` received
+  // `{ pages, template }` and `data` received `undefined`. Inside the generator that
+  // made `pages` equal `[undefined]`, and every page rendered an empty bordered
+  // rectangle: the file was a valid PDF, the right number of pages, and completely
+  // blank. Nothing errored, which is why it survived.
+  //
+  // The call sites were fixed rather than the signature. `template` selects the layout
+  // and is named in the exported contract and in the JSDoc; making the generator
+  // tolerate an object in that position would have hidden the bug for the next caller
+  // instead of fixing it.
+  const pdfBuffer = await generatePdfFromTemplate("idCard", {
     pages: [cardData],
-    template: "idCard",
   });
 
   return {
@@ -434,9 +445,10 @@ export const generateIdCardPdf = async (batchId) => {
   );
 
   try {
-    const pdfBuffer = await generatePdfFromTemplate({
+    // Same two-argument contract as the single-card path above, and the same fix:
+    // this one was passing one object, so every batch PDF came out blank too.
+    const pdfBuffer = await generatePdfFromTemplate("idCard", {
       pages: cards,
-      template: "idCard",
     });
 
     const uploadResult = await uploadBuffer(pdfBuffer, {

@@ -96,6 +96,22 @@ export const AUDIT_ACTIONS = {
   ADMIN_MAINTENANCE_MODE: "admin.maintenance_mode",
   ADMIN_EXPORT: "admin.export",
   HEALTH_CHECK: "health.check",
+
+  // ── Parent → school messaging ──
+  //
+  // These three were previously attempted as `"PARENT_CONTACTED_SCHOOL"` — an
+  // UPPER_SNAKE string in a codebase whose action vocabulary is lower-case dotted,
+  // present in neither this map nor the `AuditLog` enum. `utils/auditService.log`
+  // swallows the resulting Mongoose ValidationError into a `console.error`, so for
+  // the life of the feature **every parent message wrote no audit row at all** and
+  // nobody found out, because the endpoint still returned 200. A bursar asked to
+  // prove that a particular parent contacted the school about a balance dispute had
+  // nothing to show. The three states a message moves through are recorded
+  // separately rather than as one "contacted" action, because the interesting
+  // question later is not whether it arrived but whether anyone dealt with it.
+  PARENT_MESSAGE_SENT: "parent.message_sent",
+  PARENT_MESSAGE_READ: "parent.message_read",
+  PARENT_MESSAGE_RESOLVED: "parent.message_resolved",
 };
 
 /**
@@ -111,6 +127,19 @@ export const AUDIT_ACTIONS = {
 export const AUDIT_ACTION_VALUES = Object.values(AUDIT_ACTIONS);
 
 // Notification types — matches the Notification `type` field enum.
+//
+// **This map and the enum in `models/Notification.js` had drifted**: this side held
+// 8 values while the schema held 11, and the three missing ones were exactly the types
+// raised from the public parent pay portal. Nothing threw — `Notification.type` is
+// validated against the *model's* enum, which was the longer list — so every parent
+// message wrote its row successfully. What broke was every read path that filters on
+// this map: `validations/notification.validation.js` validated `?type=` against a
+// hand-written copy of this list, so `GET /notifications?type=parent.message` returned
+// 422 for a type that demonstrably existed in the collection. The school could not
+// open the one inbox that was supposed to tell them a parent had called.
+//
+// The values below are now declared here and imported by the validation schema, so
+// there is one list to keep correct rather than three.
 export const NOTIFICATION_TYPES = {
   PAYMENT_RECEIVED: "payment.received",
   PLAN_CREATED: "plan.created",
@@ -120,6 +149,16 @@ export const NOTIFICATION_TYPES = {
   SMS_SENT: "sms.sent",
   SUBSCRIPTION_EXPIRING: "subscription.expiring",
   SYSTEM_ALERT: "system.alert",
+
+  // ── Raised from the public parent pay portal ──
+  /** An unlinked account asking to join a school. Routed to existing admins. */
+  SCHOOL_JOIN_REQUEST: "school.join_request",
+  /** A parent asked to split a balance. The school's queue entry for manual work. */
+  PLAN_REQUESTED: "plan.requested",
+  /** A parent wrote in about a balance, a payment or a schedule. */
+  PARENT_MESSAGE: "parent.message",
+  /** A parent attached a voice note to the pay portal. Carries `meta.audioUrl`. */
+  PARENT_AUDIO_MESSAGE: "parent.audio_message",
 };
 
 export const NOTIFICATION_TYPE_VALUES = Object.values(NOTIFICATION_TYPES);

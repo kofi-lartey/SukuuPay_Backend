@@ -300,14 +300,52 @@ export const payRequestPlanSchema = Joi.object({
  * `message` has a floor as well as a ceiling. A support inbox that accepts
  * `"?"` is one that gets `"?"` four times; a real message from a parent costs a
  * bursar a phone call and is worth a couple of seconds of typing.
+ *
+ * **`message` is no longer `required`.** It is conditionally required: a parent with
+ * something to say but who would rather speak than type sends `parentName`,
+ * `parentPhone` and an `audio` file and nothing else. That is not a corner case to be
+ * tolerated — it is the reason the recorder exists, so a schema that demanded the
+ * text would have made the feature unusable for exactly the parent it was built for.
+ *
+ * The "at least one of the two" rule cannot be expressed with `alternatives().try()`
+ * on two sibling keys, because Joi has no way to say "A or B, and I do not know
+ * which one the caller picked". It is enforced as a single schema-level `.custom()`
+ * that reads the validated value, and it reads `value.audio` rather than `req.file`
+ * deliberately: this function runs per field and has no request, so a custom here can
+ * only see what Joi has already produced.
+ *
+ * Which is why the service re-checks it. Both layers refusing the same thing is not
+ * redundancy for its own sake — the validation layer is reachable by a future
+ * non-multipart caller that never had an `audio` field at all, and this endpoint is
+ * unauthenticated.
  */
 export const payNotifySchoolSchema = Joi.object({
   parentName: Joi.string().trim().min(2).max(100).required(),
   parentPhone: ghanaPhone.required(),
-  message: Joi.string().trim().min(10).max(1000).required().messages({
+  // `.min(10)` with `.allow("")` — and the order matters more than it looks. An
+  // absent message is legal (a voice note on its own is a message), and `allow("")`
+  // is what exempts it from the floor. Anything *present* still has to be a real
+  // message: an inbox that accepts `"?"` is one that gets `"?"` four times, and a
+  // bursar spends a phone call on each one. Dropping the floor when it was optional
+  // was tried first and it let `"?"` straight through.
+  message: Joi.string().trim().allow("").min(10).max(1000).messages({
+    "string.empty": "",
     "string.min": "Please write at least a short message so the school can help",
     "string.max": "Please keep your message under 1000 characters",
   }),
+  // Present on a multipart submission. Declared so `stripUnknown: true` — which
+  // `middleware/validate.js` sets globally — does not discard it, and so the schema
+  // documents that this endpoint accepts a file.
+  audio: Joi.any().optional(),
+}).custom((value, helpers) => {
+  const text = String(value?.message || '').trim();
+  const hasAudio = Boolean(value?.audio);
+  return text.length > 0 || hasAudio
+    ? value
+    : helpers.message({
+        custom:
+          'Please write a message or record a voice note so the school can help',
+      });
 });
 
 /**

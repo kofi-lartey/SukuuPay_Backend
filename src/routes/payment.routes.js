@@ -19,6 +19,7 @@ import {
 import { recordManualPaymentController } from "../controllers/manualPayment.controller.js";
 import { authenticate, authorize } from "../middleware/authenticate.js";
 import { validate } from "../middleware/validate.js";
+import { uploadParentAudioRoute } from "../middleware/upload.js";
 import {
   payLinkViewLimit,
   payInitiateLimit,
@@ -114,10 +115,19 @@ paymentRoute.post(
   requestPaymentPlanController
 );
 
-// POST /pay/:token/notify-school - Parent sends a message to the bursar
+// POST /pay/:token/notify-school - Parent sends a message or a voice note to the bursar
+//
+// `uploadParentAudio` runs before `validate` because multer has to parse the
+// multipart body before Joi can see the text fields in it. It is `.single("audio")`,
+// which calls `next()` untouched when the request is not multipart, so the JSON
+// submission this endpoint accepted before still works with no branching.
+//
+// The limiter stays ahead of both, deliberately: a 5 MB upload costs far more to
+// receive than a 300-byte one, and this route is unauthenticated.
 paymentRoute.post(
   "/pay/:token/notify-school",
   payNotifySchoolLimit,
+  uploadParentAudioRoute,
   validate(payTokenParamSchema, "params"),
   validate(payNotifySchoolSchema),
   notifySchoolController

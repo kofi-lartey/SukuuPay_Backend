@@ -2,6 +2,7 @@ import multer from "multer";
 import cloudinary from "cloudinary";
 import { CloudinaryStorage } from "multer-storage-cloudinary";
 import { CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET, CLOUDINARY_UPLOAD_FOLDER } from "../config/env.js";
+import { PARENT_AUDIO_MIME_TYPES } from "../models/ParentMessage.js";
 
 cloudinary.v2.config({
   cloud_name: CLOUDINARY_CLOUD_NAME,
@@ -187,6 +188,85 @@ export const uploadBulk = multer({
   },
 }).single("file");
 
+// ─────────────────────────────────────────────
+// PARENT VOICE NOTES
+// In-memory storage, not CloudinaryStorage, because the upload has to be matched to
+// a `ParentMessage` row and Cloudinary's storage engine would hand the file straight
+// to Cloudinary before the service knows whether the message is valid. Two uploads
+// from an unauthenticated parent endpoint — one rejected for an empty message, one
+// for a missing parent phone — would otherwise leave orphans billed against the
+// account with no row pointing at them.
+//
+// `allowed_formats` covers the four containers `MediaRecorder` emits across the
+// browsers this portal is used on. The filter checks `mimetype` rather than
+// `originalname` because browsers disagree about the extension they attach to a
+// `Blob` — Safari writes `.mp4` to an `audio/mp4` blob and Firefox writes `.webm`
+// to `audio/webm`, but a desktop Chrome on some platforms reports
+// `audio/webm;codecs=opus`, which is an exact-string match failure waiting to happen.
+// ─────────────────────────────────────────────
+const parentAudioStorage = multer.memoryStorage();
+
+const parentAudioFileFilter = (req, file, cb) => {
+  if (!PARENT_AUDIO_MIME_TYPES.includes(file.mimetype)) {
+    return cb(
+      new Error(
+        `That audio format is not supported. Record from this page, or send a written message instead.`
+      ),
+      false
+    );
+  }
+  cb(null, true);
+};
+
+export const uploadParentAudio = multer({
+  storage: parentAudioStorage,
+  fileFilter: parentAudioFileFilter,
+  limits: {
+    // 5 MB. A parent speaking for a minute is roughly 500 KB as Opus; this is ten
+    // times that, which is generous for a voice note and still small enough that a
+    // buffer never threatens the process. Crossed by the client-side cap first, so
+    // this is the backstop for a client that ignores it.
+    fileSize: 5 * 1024 * 1024,
+    files: 1,
+  },
+}).single("audio");
+
+/**
+ * Wraps a multer middleware so its failures arrive as client errors.
+ *
+ * Multer signals a rejected file by calling `next(new Error(...))` — and a `MulterError`
+ * for its own limits. Neither carries a `.status`, so without this every oversized or
+ * wrong-format upload fell through `errorHandler` to a 500 with the body
+ * `"Something went wrong"`. On an unauthenticated parent endpoint that is the worst
+ * possible answer to a question a parent can act on: they are told to retry something
+ * that will never succeed, because the real cause was their browser's codec.
+ *
+ * The `fileFilter` rejections this translates are deliberately given the handler's
+ * own message, which is written for the parent rather than for a log line.
+ *
+ * @param {import('express').RequestHandler} middleware a multer middleware
+ * @returns {import('express').RequestHandler}
+ */
+const asClientErrors = (middleware) => (req, res, next) =>
+  middleware(req, res, (err) => {
+    if (!err) return next();
+
+    const status = err.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+    err.status = status;
+    err.code = err.code || err.code;
+
+    next(err);
+  });
+
+/**
+ * The parent voice-note upload, as a route-ready middleware.
+ *
+ * Use this rather than the raw multer instance: `export const uploadParentAudio` below
+ * is the unguarded middleware and is what the tests exercise directly, while this is
+ * what the route mounts.
+ */
+export const uploadParentAudioRoute = asClientErrors(uploadParentAudio);
+
 export const deleteFromCloudinary = async (publicId) => {
   if (!publicId) return;
   try {
@@ -210,6 +290,8 @@ export default {
   uploadStamp,
   uploadSchoolAd,
   uploadBulk,
+  uploadParentAudio,
+  uploadParentAudioRoute,
   studentPhotoUpload,
   schoolLogoUpload,
   zipUpload,
