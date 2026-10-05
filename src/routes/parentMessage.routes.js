@@ -7,6 +7,7 @@ import {
   resolveParentMessageController,
 } from "../controllers/parentMessage.controller.js";
 import { authenticate, authorize } from "../middleware/authenticate.js";
+import { requireSchool } from "../middleware/requireSchool.js";
 import { validate } from "../middleware/validate.js";
 import {
   listParentMessagesSchema,
@@ -45,6 +46,24 @@ export const parentMessageRoute = Router();
  */
 const requireReader = authorize('super_admin', 'school_admin', 'accountant');
 
+/**
+ * `requireSchool` on every route here, and the reason is a status code.
+ *
+ * `parentMessage.service.js` refuses an account with no school with a `403
+ * SCHOOL_ACCESS_DENIED`. That code means "you are a different school's bursar" everywhere
+ * else in the product, and `services/api.js:73` routes on the one code that means
+ * something else — `SCHOOL_NOT_LINKED`, a 409 with `action: 'school.provision'` — to
+ * send a new admin into onboarding. This router never raised it, so a school that had
+ * just signed up and not yet finished its profile opened Parent Messages and got
+ * "Your account is not linked to a school" rendered as a page-level failure. To a new
+ * administrator that reads as the feature being broken rather than as their own account
+ * being half-built, and the one action that fixes it was nowhere on the screen.
+ *
+ * Every other school-scoped module uses `requireSchool` for the same reason, so this
+ * router was the odd one out. It runs after `requireReader`, because a role that may
+ * not read the module at all has no business being told about onboarding from it.
+ */
+
 // ──────────────────── Reads ────────────────────
 
 // GET /parent-messages — the school inbox. Newest first.
@@ -52,6 +71,7 @@ parentMessageRoute.get(
   "/parent-messages",
   authenticate,
   requireReader,
+  requireSchool,
   validate(listParentMessagesSchema, "query"),
   listParentMessagesController
 );
@@ -68,6 +88,7 @@ parentMessageRoute.get(
   "/parent-messages/student/:studentId",
   authenticate,
   requireReader,
+  requireSchool,
   validate(studentMessageParamSchema, "params"),
   validate(listParentMessagesSchema, "query"),
   listStudentMessagesController
@@ -78,6 +99,7 @@ parentMessageRoute.get(
   "/parent-messages/:id",
   authenticate,
   requireReader,
+  requireSchool,
   validate(parentMessageIdParamSchema, "params"),
   getParentMessageController
 );
@@ -93,6 +115,7 @@ parentMessageRoute.put(
   "/parent-messages/:id/read",
   authenticate,
   requireReader,
+  requireSchool,
   validate(parentMessageIdParamSchema, "params"),
   markParentMessageReadController
 );
@@ -102,6 +125,7 @@ parentMessageRoute.put(
   "/parent-messages/:id/resolve",
   authenticate,
   requireReader,
+  requireSchool,
   validate(parentMessageIdParamSchema, "params"),
   validate(resolveParentMessageSchema),
   resolveParentMessageController

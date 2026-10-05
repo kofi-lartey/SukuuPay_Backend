@@ -5,6 +5,7 @@ import { User } from "../models/userModel.js";
 import { School } from "../models/schoolModel.js";
 import ApiError from "../utils/ApiError.js";
 import auditService from "../utils/auditService.js";
+import { readUploaded } from "../middleware/upload.js";
 import { NOTIFICATION_TYPES, AUDIT_ACTIONS } from "../config/constants.js";
 
 /**
@@ -96,7 +97,9 @@ export const getSchoolAdRequest = async (adId, schoolId) => {
  *
  * @param {object} data validated body
  * @param {{ _id, schoolId }} user
- * @param {{ secure_url: string, public_id: string } | null} uploaded the multer file
+ * @param {object|null} uploaded the multer file — read through `readUploaded`, which
+ *   knows that `multer-storage-cloudinary@4` puts the URL on `path` and the public id on
+ *   `filename` rather than on `secure_url`/`public_id`
  */
 export const createSchoolAdRequest = async (data, user, uploaded) => {
   const { schoolId } = user;
@@ -139,8 +142,8 @@ export const createSchoolAdRequest = async (data, user, uploaded) => {
     status: "pending",
     requestedBy: user._id,
     authoredByPlatform: false,
-    imageUrl: uploaded?.secure_url,
-    imagePublicId: uploaded?.public_id || null,
+    imageUrl: readUploaded(uploaded).url,
+    imagePublicId: readUploaded(uploaded).publicId || null,
   });
 
   // ── Tell the platform ──

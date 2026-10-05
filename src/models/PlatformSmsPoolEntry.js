@@ -111,8 +111,16 @@ platformSmsPoolEntrySchema.index({ requestId: 1 }, { unique: true, sparse: true 
 /** Which school a pool entry moved units to, when listing per-school consumption. */
 platformSmsPoolEntrySchema.index({ schoolId: 1, createdAt: -1 });
 
-/** Mints `entryId` before first write. */
-platformSmsPoolEntrySchema.pre("save", function mintEntryId(next) {
+/**
+ * Mints `entryId` before first write.
+ *
+ * **No `next` parameter**, and that is not a style choice. Mongoose 7 removed the
+ * callback argument from hooks — `kareem` applies a pre-hook with only its own arguments
+ * — so a hook that declared `next` and called it threw `TypeError: next is not a
+ * function` on **every** save of this document. This is the same defect as
+ * `ParentMessage.js`, where it meant a parent's message could not be recorded at all.
+ */
+platformSmsPoolEntrySchema.pre("save", function mintEntryId() {
   if (!this.entryId) {
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
     this.entryId = `POOL-${dateStr}-${Math.random()
@@ -120,7 +128,6 @@ platformSmsPoolEntrySchema.pre("save", function mintEntryId(next) {
       .slice(2, 8)
       .toUpperCase()}`;
   }
-  next();
 });
 
 platformSmsPoolEntrySchema.set("toJSON", {

@@ -187,8 +187,15 @@ smsPurchaseRequestSchema.index({ "payment.reference": 1 }, { unique: true, spars
  */
 smsPurchaseRequestSchema.index({ poolEntryId: 1 }, { unique: true, sparse: true });
 
-/** Mints `requestId` before first write, in the shape used across the product. */
-smsPurchaseRequestSchema.pre("save", function mintRequestId(next) {
+/**
+ * Mints `requestId` before first write, in the shape used across the product.
+ *
+ * **No `next` parameter.** Mongoose 7 removed the callback argument from hooks, so a
+ * hook declaring `next` and calling it threw `TypeError: next is not a function` on every
+ * save — which here means a school's SMS credit purchase could not be recorded, and the
+ * console's approve button had nothing to act on. Same defect as `ParentMessage.js`.
+ */
+smsPurchaseRequestSchema.pre("save", function mintRequestId() {
   if (!this.requestId) {
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
     this.requestId = `SMS-REQ-${dateStr}-${Math.random()
@@ -196,7 +203,6 @@ smsPurchaseRequestSchema.pre("save", function mintRequestId(next) {
       .slice(2, 8)
       .toUpperCase()}`;
   }
-  next();
 });
 
 smsPurchaseRequestSchema.set("toJSON", {

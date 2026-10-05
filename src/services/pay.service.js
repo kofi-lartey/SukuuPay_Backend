@@ -11,7 +11,7 @@ import auditService from "../utils/auditService.js";
 import { sendSms } from "../utils/smsService.js";
 import { uploadAudioBuffer } from "../utils/cloudinary.js";
 import { CLOUDINARY_UPLOAD_FOLDER } from "../config/env.js";
-import { AUDIT_ACTIONS } from "../config/constants.js";
+import { AUDIT_ACTIONS, NOTIFICATION_TYPES } from "../config/constants.js";
 import {
   generateInstallmentSchedule,
   generateAcceptanceToken,
@@ -1035,7 +1035,11 @@ export const notifySchool = async (token, data) => {
   let adminsNotified = 0;
   try {
     const result = await notifyAdmins(recipients, {
-      type: hasAudio ? 'parent.audio_message' : 'parent.message',
+      // Named rather than written out, because this is the value the
+      // `Notification.type` enum is checked against and a literal here is exactly how
+      // `parent.audio_message` came to be storable nowhere: the type existed, this
+      // call site produced it, and the model's copy of the list had never heard of it.
+      type: hasAudio ? NOTIFICATION_TYPES.PARENT_AUDIO_MESSAGE : NOTIFICATION_TYPES.PARENT_MESSAGE,
       title: subject,
       message: summary,
       // The inbox, not the roster. `/dashboard/students` was the old link and it is

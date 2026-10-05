@@ -1,30 +1,28 @@
 import mongoose from "mongoose";
+import { NOTIFICATION_TYPE_VALUES } from "../config/constants.js";
 
-const NOTIFICATION_TYPES = [
-  "payment.received",
-  "plan.created",
-  "plan.accepted",
-  "plan.overdue",
-  "student.imported",
-  "sms.sent",
-  "subscription.expiring",
-  // An unlinked account asking to join this school. Routed to existing admins
-  // because a school code alone must never grant access — see SchoolJoinRequest.
-  "school.join_request",
-  "system.alert",
-
-  // ── Raised by the public parent pay portal ──
-  // A parent asked to split a balance, from the pay link, with no account. This
-  // is the school's queue entry for work it has to do by hand, which is why it
-  // needs a type of its own: "plan.created" means a bursar already approved
-  // something, and a dashboard filtering on that would hide every request forever.
-  "plan.requested",
-
-  // A parent wrote in through their pay link about a balance, a payment or a
-  // schedule. Not support-chat — one message, no thread — but it needs to reach the
-  // bursar's notifications and not be lost in the SMS log where nothing surfaces it.
-  "parent.message",
-];
+/*
+ * The enum is the shared list, imported rather than written out here.
+ *
+ * This file carried its own copy of eleven values. `config/constants.js` had grown to
+ * eighteen — `parent.audio_message`, `sms.request`, `sms.request_approved`,
+ * `sms.request_rejected`, `ad.request`, `ad.approved`, `ad.rejected` were added to it
+ * and never to this list — and `Notification.type` is `enum`-validated against *this*
+ * one. So Mongoose rejected every notification carrying one of those seven types.
+ *
+ * The failure was invisible in the worst way. `notifyAdmins` in `pay.service.js:818`
+ * catches the write error and returns `{ written: 0 }`, deliberately, so that a failed
+ * announcement cannot turn a parent's successful request into an error they retry. The
+ * consequence is that **a parent's voice note created its `ParentMessage` row and
+ * notified nobody**: no bell entry, no badge, no "waiting for an answer" count. The
+ * message existed, in the inbox, and nobody was told. The same held for every SMS
+ * credit purchase notification and every advertisement request.
+ *
+ * Importing the values makes that impossible to repeat. A type is now addable in one
+ * place, and it is filterable (`validations/notification.validation.js` reads the same
+ * export), storable and renderable the moment it exists.
+ */
+const NOTIFICATION_TYPES = NOTIFICATION_TYPE_VALUES;
 
 const notificationSchema = new mongoose.Schema(
   {
@@ -92,4 +90,7 @@ notificationSchema.set("toJSON", {
 });
 
 export const Notification = mongoose.model("Notification", notificationSchema);
+
+// Re-exported so any importer of this module's list keeps working. It is now the same
+// array as `NOTIFICATION_TYPE_VALUES`, which is the point: there is one list.
 export { NOTIFICATION_TYPES };

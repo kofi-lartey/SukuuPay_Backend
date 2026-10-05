@@ -39,7 +39,39 @@ const adBody = {
   sortWeight: Joi.number().integer().min(-100).max(100).default(0),
 };
 
-export const createSchoolAdSchema = Joi.object(adBody)
+/**
+ * `POST /admin/school-ads` — the platform console authoring a creative.
+ *
+ * **This is the only ad schema that can produce a live ad, and it still cannot be
+ * told *what* status to write.** There is no `status` key. What it has instead is
+ * `publish`, a boolean that means "post this straight to the public pages", and it
+ * defaults to `false`.
+ *
+ * That indirection is the whole design, and it is worth being explicit about why a
+ * bare `status` field was not added instead:
+ *
+ *   - **A status field is an open vocabulary.** `status: "approved"` written into a
+ *     document is indistinguishable from `"pending"` a year later, and the next person
+ *     to add `Joi.valid("expired")` to this schema has quietly given the console a
+ *     way to expire an ad — which is a *different* operation with a different reason.
+ *   - **`publish` is a verb, not a state.** It says what the caller is asking to
+ *     happen, and the server decides what that means. `true` resolves to `approved`
+ *     plus `approvedBy`/`approvedAt`; `false` resolves to `pending`. A future "post it
+ *     now but starting in March" is a change to what `true` does, not a new value a
+ *     caller can pass.
+ *   - **The safe answer is the default one.** A creative written by the platform
+ *     owner is normally posted directly, but the invariant that matters — *nothing
+ *     reaches the login page of every visitor without somebody asking for it* — must
+ *     not depend on a field the caller remembered to set. `false` means a caller that
+ *     forgets the flag gets a filed pending ad and a toast, not a live one.
+ *
+ * `status` stays absent from `updateSchoolAdSchema` for the same reason it was absent
+ * here before: an edit that could set a status would be a second way to publish.
+ */
+export const createSchoolAdSchema = Joi.object({
+  ...adBody,
+  publish: Joi.boolean().default(false),
+})
   .custom((value, helpers) => {
     // A null startsAt means "live immediately".
     if (value.endsAt && new Date(value.endsAt) <= new Date()) {

@@ -1,4 +1,5 @@
 import Joi from "joi";
+import { MAX_PER_PAGE, DEFAULT_PER_PAGE } from "../utils/platformQuery.js";
 
 const schoolIdParamSchema = Joi.object({
   id: Joi.string()
@@ -9,9 +10,31 @@ const schoolIdParamSchema = Joi.object({
     }),
 });
 
+/**
+ * `GET /admin/schools`
+ *
+ * **The page bounds are imported, not written as `20` and `100`.**
+ *
+ * This schema read `perPage: … .max(100)`, which is a fourth statement of a rule
+ * that already had three: `MAX_PER_PAGE = 200` in `platformQuery.js`, which
+ * `resolvePagination` clamps every list to, and `listAdminSchoolsQuerySchema` in
+ * `admin.schools.validation.js:296`, which already allows 200.
+ *
+ * That disagreement was not academic. Every school picker in the console asks for
+ * the maximum — `SchoolPicker` (used by the broadcast dialog, the SMS credit form,
+ * the announcement form and the ad form), `SchoolSelect` and `ImpersonationHistory`
+ * all send `perPage: 200` — so each of them got a 422 whose only content was
+ * `"perPage" must be less than or equal to 100`, on a picker whose whole job is to
+ * name an arbitrary school. The picker reported "No schools on the platform" and
+ * the operator concluded the platform had none.
+ *
+ * Importing the constant is the fix and the reason it cannot drift again: the
+ * schema's ceiling and the clamp in the service layer are now the same number, so
+ * there is no way for a valid request to be quietly reshaped by the service.
+ */
 const listAllSchoolsQuerySchema = Joi.object({
   page: Joi.number().integer().min(1).default(1),
-  perPage: Joi.number().integer().min(1).max(100).default(20),
+  perPage: Joi.number().integer().min(1).max(MAX_PER_PAGE).default(DEFAULT_PER_PAGE),
   status: Joi.string().valid("active", "suspended", "archived").optional(),
   region: Joi.string().optional(),
   plan: Joi.string().valid("trial", "basic", "standard", "premium", "enterprise").optional(),

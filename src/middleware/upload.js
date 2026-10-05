@@ -323,12 +323,66 @@ export const deleteFromCloudinary = async (publicId) => {
   }
 };
 
+/**
+ * The Cloudinary URL and public id of a multer file, whatever shape they arrive in.
+ *
+ * ## Why this exists
+ *
+ * `multer-storage-cloudinary@4` does **not** put the Cloudinary response on `req.file`.
+ * It maps it onto multer's own field names:
+ *
+ *     callback(undefined, {
+ *       path: resp.secure_url,     // the URL
+ *       size: resp.bytes,
+ *       filename: resp.public_id,  // the public id
+ *     });
+ *
+ * Versions 1 and 2 merged the whole response, so `req.file.secure_url` existed. Code
+ * written against that shape still asks for it, and on v4 it is `undefined` — **always**,
+ * not intermittently. So `uploaded.secure_url || imageUrl` silently discarded every
+ * uploaded file and fell through to the pasted-URL branch, and the ad endpoints answered
+ * *"an image is required"* about a request that had carried a picture in every field.
+ * `req.file.public_id` failed the same way, which also meant every orphan-cleanup path
+ * called `deleteFromCloudinary(undefined)` and leaked the asset it existed to remove.
+ *
+ * ## Both shapes are accepted
+ *
+ * `path`/`secure_url` and `filename`/`public_id` respectively, `secure_url`/`public_id`
+ * first. A library upgrade that restores the old shape must not turn every upload back
+ * into a no-op, and reading both means this file does not have to be changed when it
+ * does.
+ *
+ * `filename` is safe to read here **because only a `CloudinaryStorage`-backed multer
+ * ever reaches these helpers**, and for that engine `filename` is the public id. On a
+ * `memoryStorage` or `diskStorage` file it would be the client's filename instead — so
+ * these are not for arbitrary `req.file` objects.
+ *
+ * @param {object|null} file a `req.file` produced by a `CloudinaryStorage` multer
+ * @returns {{ url: string|null, publicId: string|null }}
+ */
+export const readUploaded = (file) => ({
+  url: file?.path || file?.secure_url || null,
+  publicId: file?.public_id || file?.filename || null,
+});
+
 export const extractPublicId = (url) => {
   if (!url) return null;
-  // Matches both image and raw resource URLs, e.g.:
+  // Matches image, raw and video resource URLs, e.g.:
   //  /image/upload/v123456/filename.jpg
+  //  /image/upload/v123456/sukuuPay/ads/school-ad-1699.webp
   //  /raw/upload/v123456/filename.pdf
-  const matches = url.match(/\/upload\/v\d+\/([^/]+)\.([a-z0-9]+)/i);
+  //
+  // **The folder is part of the public id, so the capture cannot stop at the first
+  // segment.** Every upload in this file sets `folder`, so the URL always carries one
+  // and the old `([^/]+)` returned the bare folder name — `sukuuPay` for an ad, which
+  // is not a deletable asset. `deleteFromCloudinary("sukuuPay")` fails, and every
+  // cleanup that used this to tidy an orphaned upload was quietly keeping it.
+  //
+  // The version segment is not part of the id, so the capture starts after it. The
+  // extension is dropped because that is what Cloudinary's `destroy` expects, and
+  // `resource_type` is not part of the id either — `destroy` infers it from the asset,
+  // and passing a guessed one is how the wrong asset gets destroyed.
+  const matches = url.match(/\/upload\/v\d+\/(.+)\.[a-z0-9]+$/i);
   return matches ? matches[1] : null;
 };
 
@@ -345,4 +399,5 @@ export default {
   zipUpload,
   deleteFromCloudinary,
   extractPublicId,
+  readUploaded,
 };

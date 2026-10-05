@@ -14,6 +14,7 @@
 // Each block names the defect it is holding shut.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import mongoose from 'mongoose';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,7 +31,11 @@ import {
   parentMessageIdParamSchema,
 } from '../src/validations/parentMessage.validation.js';
 import { exposeParentAudioToBody } from '../src/middleware/upload.js';
-import { NOTIFICATION_TYPES, AUDIT_ACTIONS } from '../src/config/constants.js';
+import {
+  NOTIFICATION_TYPES,
+  NOTIFICATION_TYPE_VALUES,
+  AUDIT_ACTIONS,
+} from '../src/config/constants.js';
 import { notificationQuerySchema } from '../src/validations/notification.validation.js';
 import parentMessageRoute from '../src/routes/parentMessage.routes.js';
 import adminRoute from '../src/routes/admin.routes.js';
@@ -254,6 +259,70 @@ describe('parent messaging: notification types', () => {
   test('an unknown type is still rejected', () => {
     const { error } = validate(notificationQuerySchema, { type: 'not.a.real.type' });
     assert.ok(error, 'the schema must not become permissive by being derived');
+  });
+
+  test('every type the product can emit is storable by the model', async () => {
+    // The half that was missing, and the half that mattered.
+    //
+    // The three tests above all assert the type is **filterable** — that
+    // `?type=parent.audio_message` passes the query schema. They passed throughout the
+    // period when a parent's voice note notified nobody, because filterability and
+    // storability were two different lists. `Notification.type` is `enum`-validated
+    // against the model's own copy of the list, and that copy had eleven values while
+    // `config/constants.js` had eighteen.
+    //
+    // So `notifyAdmins` (`pay.service.js:818`) got a Mongoose ValidationError, caught it
+    // — deliberately, so a parent's successful submission is not turned into an error
+    // they retry — and returned `{ written: 0 }`. The `ParentMessage` row existed. No
+    // bell entry, no badge, no "waiting for an answer". A voice note reached the inbox
+    // and no notification at all, which is the bug this asserts shut.
+    //
+    // Validated through the real model rather than by reading the exported array, so a
+    // list that is exported correctly but not wired to the schema cannot pass.
+    const { Notification } = await import('../src/models/Notification.js');
+
+    for (const type of Object.values(NOTIFICATION_TYPES)) {
+      const doc = new Notification({
+        userId: new mongoose.Types.ObjectId(),
+        type,
+        title: 'x',
+        message: 'y',
+      });
+      const error = doc.validateSync();
+      assert.equal(error, undefined, `Notification must accept type "${type}": ${error?.message}`);
+    }
+  });
+
+  test('the model enum and the filterable list are one list, not two', async () => {
+    // The structural version of the test above. Whatever a future change adds to
+    // `constants.js` is immediately storable and immediately filterable, because both
+    // now read the same export — and if someone reintroduces a second list anywhere,
+    // this fails rather than the bug reappearing silently.
+    const { NOTIFICATION_TYPES: modelEnum } = await import('../src/models/Notification.js');
+    assert.deepEqual(
+      [...modelEnum].sort(),
+      [...NOTIFICATION_TYPE_VALUES].sort(),
+      'the Notification model enum and config/constants.js must be the same list'
+    );
+  });
+
+  test('every inbox route runs requireSchool, so an unlinked admin is redirected', () => {
+    // A school that has signed up but not finished its profile has no messages, and it
+    // needs to be sent into onboarding — not told it lacks permission. `requireSchool`
+    // raises the 409 `SCHOOL_NOT_LINKED` that `services/api.js:73` routes on; the
+    // service's own 403 `SCHOOL_ACCESS_DENIED` means "a different school's bursar" and
+    // rendered as a page-level "Messages could not be loaded", which reads as a broken
+    // feature rather than a half-built account.
+    //
+    // Asserted on every route, not just the list: the per-message read, the student
+    // thread and both state changes all resolve a school the same way.
+    for (const layer of (parentMessageRoute.stack || []).filter((l) => l.route)) {
+      const names = layer.route.stack.map((entry) => entry.name);
+      assert.ok(
+        names.includes('requireSchool'),
+        `${layer.route.path} must run requireSchool so an unlinked account gets the onboarding redirect`
+      );
+    }
   });
 });
 

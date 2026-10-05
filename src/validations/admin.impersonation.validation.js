@@ -49,13 +49,15 @@ const startImpersonationSchema = Joi.object({
  * reachable from places that have no request - but a filter that arrives as
  * `"abc"` has no business reaching Mongo either way.
  *
- * The page bounds are **imported**, not written as `20` and `200`, unlike
- * `listAllSchoolsQuerySchema` in `admin.validation.js:13` which hard-codes them.
- * That literal and `platformQuery.js` are two statements of one rule, and the
- * console already has a `MAX_PER_PAGE` that the service layer clamps to: a
- * schema allowing 1000 and a service capping at 200 is a validation that
- * accepts a request the API then quietly changes the shape of, and the person
- * debugging that is the one who typed the number.
+ * The page bounds are **imported** from `platformQuery.js`, not written as `20` and
+ * `200`. `listAllSchoolsQuerySchema` in `admin.validation.js` used to hard-code `20`
+ * and `100` instead, which made it a fourth statement of a rule that already had
+ * three — and it 422'd every school picker in the console, which all ask for the
+ * maximum. That schema imports the constants now too, so a schema and the
+ * `resolvePagination` clamp it feeds cannot disagree: a schema allowing 1000 and a
+ * service capping at 200 is a validation that accepts a request the API then
+ * quietly changes the shape of, and the person debugging that is the one who typed
+ * the number.
  */
 const listImpersonationSessionsQuerySchema = Joi.object({
   schoolId: Joi.string()

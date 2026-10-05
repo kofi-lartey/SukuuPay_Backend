@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 
 import { SchoolAd, AD_STATUSES, AD_PLACEMENTS } from '../src/models/SchoolAd.js';
 import {
+  createSchoolAdSchema,
   createSchoolAdRequestSchema,
   listSchoolAdRequestsSchema,
   approveSchoolAdSchema,
@@ -23,6 +24,8 @@ import {
 } from '../src/validations/schoolAd.validation.js';
 import { NOTIFICATION_TYPES, AUDIT_ACTIONS } from '../src/config/constants.js';
 import { schoolAdRoute, publicAdRoute } from '../src/routes/schoolAd.routes.js';
+import { MAX_PER_PAGE } from '../src/utils/platformQuery.js';
+import { listAllSchoolsQuerySchema } from '../src/validations/admin.validation.js';
 
 /** Runs a Joi schema the way `middleware/validate.js` does, without a request. */
 const validate = (schema, payload) =>
@@ -39,6 +42,13 @@ const validRequest = () => {
     endsAt: endsAt.toISOString(),
   };
 };
+
+/** The same body the console sends, which carries two fields the school path cannot. */
+const validConsoleAd = () => ({
+  schoolName: 'Greenfield Academy',
+  imageUrl: 'https://res.cloudinary.com/demo/image/upload/sample.jpg',
+  ...validRequest(),
+});
 
 // ─────────────────────────────────────────────
 // The escalation path
@@ -251,6 +261,98 @@ describe('ad requests: who wrote it and who approved it', () => {
       !Object.keys(updateSchoolAdSchema.describe().keys).includes('status'),
       'updateSchoolAdSchema must not accept a status'
     );
+  });
+});
+
+// ─────────────────────────────────────────────
+// Posting straight to the public pages
+// ─────────────────────────────────────────────
+describe('ad requests: the platform can post an ad without a second reader', () => {
+  test('the console schema still cannot be told what status to write', () => {
+    // The point of `publish` being a verb rather than a status field. A `status` key
+    // here would hand the console an open vocabulary — `approved`, and the next value
+    // anybody adds — where the schema should express exactly one decision: post it, or
+    // file it.
+    const keys = Object.keys(createSchoolAdSchema.describe().keys);
+    assert.ok(!keys.includes('status'), 'createSchoolAdSchema must not accept a status');
+    assert.ok(keys.includes('publish'), 'createSchoolAdSchema must accept publish');
+  });
+
+  test('the school schema cannot publish, however it is asked', () => {
+    // The escalation counterpart to the checks above. A school has no route to the
+    // public pages at all, and a `publish` key on this schema would be the beginning
+    // of one.
+    const keys = Object.keys(createSchoolAdRequestSchema.describe().keys);
+    assert.ok(!keys.includes('publish'), 'createSchoolAdRequestSchema must not accept publish');
+  });
+
+  test('publishing is opt-in: an ad is filed pending unless asked otherwise', () => {
+    // The invariant is *nothing reaches the login page of every visitor without
+    // somebody asking for it*, and it must not depend on a field the caller
+    // remembered to send. So the default is the safe answer, and `stripUnknown`
+    // means a `publish` that is not the boolean is not a publish either.
+    const { error, value } = validate(createSchoolAdSchema, validConsoleAd());
+    assert.equal(error, undefined);
+    assert.equal(value.publish, false);
+
+    const explicit = validate(createSchoolAdSchema, { ...validConsoleAd(), publish: true });
+    assert.equal(explicit.value.publish, true);
+
+    // Multipart bodies arrive as strings; Joi coerces the two honest spellings and
+    // refuses the rest rather than treating a truthy value as an instruction.
+    assert.equal(validate(createSchoolAdSchema, { ...validConsoleAd(), publish: 'true' }).value.publish, true);
+    assert.ok(validate(createSchoolAdSchema, { ...validConsoleAd(), publish: 'yes' }).error);
+  });
+
+  test('a posted status in the body is stripped, not honoured', () => {
+    // Belt and braces around the schema shape above: even if `status` were ever added
+    // back, `stripUnknown` (set in `middleware/validate.js`) drops it on the way in.
+    const { value } = validate(createSchoolAdSchema, {
+      ...validConsoleAd(),
+      status: 'approved',
+    });
+    assert.equal(value.status, undefined);
+  });
+
+  test('the console ad carries a name whether or not it is attributed to a school', () => {
+    // `schoolId` is optional — a platform-run ad belongs to nobody's advertising
+    // record — but `schoolName` is what the public carousel prints above the headline,
+    // so an ad with neither is an ad with no author on the page.
+    assert.equal(validate(createSchoolAdSchema, validConsoleAd()).error, undefined);
+
+    const { error } = validate(createSchoolAdSchema, {
+      ...validConsoleAd(),
+      schoolName: '',
+    });
+    assert.ok(error, 'schoolName is required even with no schoolId');
+
+    // The school's own request path takes neither, which is the other half of this.
+    assert.equal(
+      validate(createSchoolAdRequestSchema, { ...validRequest(), schoolName: 'X' }).error,
+      undefined
+    );
+    assert.equal(
+      validate(createSchoolAdRequestSchema, validRequest()).schoolName,
+      undefined
+    );
+  });
+});
+
+// ─────────────────────────────────────────────
+// The page size every console school picker asks for
+// ─────────────────────────────────────────────
+describe('ad requests: the school picker can ask for a full page of schools', () => {
+  test('GET /admin/schools accepts the page size the pickers request', () => {
+    // `SchoolPicker`, `SchoolSelect` and `ImpersonationHistory` all send
+    // `perPage: 200` — the platform's own `MAX_PER_PAGE`. This schema capped at 100,
+    // which 422'd every one of them with `"perPage" must be less than or equal to 100`
+    // and made a platform with hundreds of schools report having none.
+    //
+    // Asserted against the constant rather than the number, so raising `MAX_PER_PAGE`
+    // later cannot quietly re-break it.
+    assert.equal(validate(listAllSchoolsQuerySchema, { perPage: MAX_PER_PAGE }).error, undefined);
+    assert.equal(validate(listAllSchoolsQuerySchema, {}).value.perPage, 20);
+    assert.ok(validate(listAllSchoolsQuerySchema, { perPage: MAX_PER_PAGE + 1 }).error);
   });
 });
 

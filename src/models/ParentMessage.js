@@ -199,8 +199,28 @@ parentMessageSchema.index({ studentId: 1, createdAt: -1 });
  * A pre-save hook rather than a caller-assigned value because there are two callers
  * today and a third is one refactor away, and a duplicate-key failure on a public
  * unauthenticated endpoint is a bad trade for one line of shared code.
+ *
+ * **No `next` parameter.** This hook took one and called `next()`, which worked on the
+ * Mongoose the code was written against and throws on the installed one:
+ *
+ *     TypeError: next is not a function
+ *
+ * Mongoose 7 removed the callback argument from hooks; `kareem`, the hook library
+ * underneath, applies a pre-hook with only its own arguments (`pres[i].fn.apply(context,
+ * $args)`), so a `next` identifier is simply `undefined`. Verified against the installed
+ * `kareem` rather than assumed from the changelog.
+ *
+ * The damage was not a crash on one endpoint. Every save of this document threw, so **a
+ * parent message could not be recorded at all** — the row the school inbox reads was
+ * never written, and `notifySchool` failed after the write attempt with an error the
+ * controller passed straight back, so the parent was told "next is not a function" on an
+ * unauthenticated page. The notification fix in `pay.service.js` was real but secondary:
+ * nothing was ever created to notify anyone about.
+ *
+ * A hook with no parameters is promise-style and needs no callback. Keeping `function`
+ * rather than an arrow is required — the hook reads `this`.
  */
-parentMessageSchema.pre("save", function mintMessageId(next) {
+parentMessageSchema.pre("save", function mintMessageId() {
   if (!this.messageId) {
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
     this.messageId = `PMSG-${dateStr}-${Math.random()
@@ -208,7 +228,6 @@ parentMessageSchema.pre("save", function mintMessageId(next) {
       .slice(2, 8)
       .toUpperCase()}`;
   }
-  next();
 });
 
 parentMessageSchema.set("toJSON", {

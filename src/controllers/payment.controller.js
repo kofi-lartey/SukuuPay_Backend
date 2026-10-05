@@ -19,6 +19,13 @@ import {
   buildParentReceipt,
 } from "../services/pay.service.js";
 import { generateReceiptPdf, receiptFilename } from "../utils/receiptService.js";
+// Every `catch` in this file answers the request itself, so it cannot use the
+// `errorHandler` middleware — and each one used to echo `error.message` unconditionally,
+// which bypassed the rule that middleware enforces. That is how an internal
+// `TypeError: next is not a function` was shown to a parent on an unauthenticated pay
+// link: a 5xx message read by a visitor. `resolveErrorMessage` is the same decision,
+// in one place, and logs the detail where it can be read.
+import { resolveErrorMessage } from "../middleware/errorHandler.js";
 import { streamCsv } from "../utils/csvWriter.js";
 
 // ──────────────────── Public: Get student by pay token ────────────────────
@@ -34,7 +41,7 @@ export const getStudentByPayTokenController = async (req, res) => {
   } catch (error) {
     return res.status(error.status || 500).json({
       success: false,
-      message: error.message,
+      message: resolveErrorMessage(error),
     });
   }
 };
@@ -52,7 +59,7 @@ export const initiatePaymentController = async (req, res) => {
   } catch (error) {
     return res.status(error.status || 500).json({
       success: false,
-      message: error.message,
+      message: resolveErrorMessage(error),
     });
   }
 };
@@ -70,7 +77,7 @@ export const verifyPaymentController = async (req, res) => {
   } catch (error) {
     return res.status(error.status || 500).json({
       success: false,
-      message: error.message,
+      message: resolveErrorMessage(error),
     });
   }
 };
@@ -88,7 +95,7 @@ export const getReceiptController = async (req, res) => {
   } catch (error) {
     return res.status(error.status || 500).json({
       success: false,
-      message: error.message,
+      message: resolveErrorMessage(error),
     });
   }
 };
@@ -121,7 +128,7 @@ export const verifyPaymentByReferenceController = async (req, res) => {
   } catch (error) {
     return res.status(error.status || 500).json({
       success: false,
-      message: error.message,
+      message: resolveErrorMessage(error),
     });
   }
 };
@@ -142,7 +149,7 @@ export const getPaymentHistoryController = async (req, res) => {
   } catch (error) {
     return res.status(error.status || 500).json({
       success: false,
-      message: error.message,
+      message: resolveErrorMessage(error),
     });
   }
 };
@@ -163,7 +170,7 @@ export const requestPaymentPlanController = async (req, res) => {
   } catch (error) {
     return res.status(error.status || 500).json({
       success: false,
-      message: error.message,
+      message: resolveErrorMessage(error),
     });
   }
 };
@@ -212,7 +219,7 @@ export const notifySchoolController = async (req, res) => {
   } catch (error) {
     return res.status(error.status || 500).json({
       success: false,
-      message: error.message,
+      message: resolveErrorMessage(error),
     });
   }
 };
@@ -263,7 +270,7 @@ export const getReceiptDownloadController = async (req, res) => {
 
     return res.status(error.status || 500).json({
       success: false,
-      message: error.message,
+      message: resolveErrorMessage(error),
     });
   }
 };
@@ -282,7 +289,7 @@ export const listPaymentsController = async (req, res) => {
   } catch (error) {
     return res.status(error.status || 500).json({
       success: false,
-      message: error.message,
+      message: resolveErrorMessage(error),
     });
   }
 };
@@ -300,7 +307,7 @@ export const getPaymentSummaryController = async (req, res) => {
   } catch (error) {
     return res.status(error.status || 500).json({
       success: false,
-      message: error.message,
+      message: resolveErrorMessage(error),
     });
   }
 };
@@ -326,7 +333,7 @@ export const exportPaymentsController = async (req, res) => {
     if (!res.headersSent) {
       return res.status(error.status || 500).json({
         success: false,
-        message: error.message,
+        message: resolveErrorMessage(error),
       });
     }
     res.end();
@@ -346,7 +353,7 @@ export const getPaymentDetailController = async (req, res) => {
   } catch (error) {
     return res.status(error.status || 500).json({
       success: false,
-      message: error.message,
+      message: resolveErrorMessage(error),
     });
   }
 };
@@ -364,7 +371,7 @@ export const getPaymentReceiptController = async (req, res) => {
   } catch (error) {
     return res.status(error.status || 500).json({
       success: false,
-      message: error.message,
+      message: resolveErrorMessage(error),
     });
   }
 };
@@ -381,7 +388,7 @@ export const hubtelWebhookController = async (req, res) => {
     // Still return 200 to prevent Hubtel retries for processing errors
     return res.status(200).json({
       success: false,
-      message: error.message,
+      message: resolveErrorMessage(error),
     });
   }
 };
@@ -399,7 +406,7 @@ export const refundPaymentController = async (req, res) => {
   } catch (error) {
     return res.status(error.status || 500).json({
       success: false,
-      message: error.message,
+      message: resolveErrorMessage(error),
     });
   }
 };
