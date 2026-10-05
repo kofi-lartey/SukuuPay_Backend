@@ -267,6 +267,53 @@ const asClientErrors = (middleware) => (req, res, next) =>
  */
 export const uploadParentAudioRoute = asClientErrors(uploadParentAudio);
 
+/**
+ * Makes an accepted upload visible to the **body**, so a Joi schema can see it.
+ *
+ * ## The bug this exists to prevent
+ *
+ * `multer` does not put an uploaded file in `req.body`. It removes it from the
+ * multipart payload and sets `req.file`, leaving `req.body` with the *text fields
+ * only*. So for `POST /pay/:token/notify-school` sent as multipart with a voice note
+ * and nothing typed:
+ *
+ *   req.body = { parentName, parentPhone }   ← no `audio`
+ *   req.file = <the recording>
+ *
+ * The schema's "a message **or** a recording" rule reads `value.audio`, finds it
+ * `undefined`, and answers **422** — so a parent who recorded a voice note was told to
+ * write a message instead. The recorder was unusable on its own, which is the one case
+ * it exists for.
+ *
+ * The schema's own comment reasoned that a per-field custom "has no request" and could
+ * only see what Joi had produced. That is true, and it is the trap: the value Joi is
+ * given genuinely does not contain the file, so the rule was correct about its inputs
+ * and wrong about the world.
+ *
+ * ## Why a marker rather than loosening the schema
+ *
+ * Copying the whole file onto `req.body` would be worse than it sounds: Joi would then
+ * deep-clone a multi-megabyte `Buffer` on every validation pass, and `stripUnknown`
+ * would hand the controller a second copy of the audio that `req.file` already holds.
+ *
+ * So this sets a **truthy placeholder**. The rule only ever asks "was a file attached",
+ * which `true` answers, and the real bytes stay on `req.file` where the controller reads
+ * them. Idempotent: a request with no file is left completely untouched, so the plain
+ * JSON path cannot be affected.
+ *
+ * Mounted between `uploadParentAudio` and `validate`.
+ */
+const exposeUploadToBody = (field = 'audio') => (req, _res, next) => {
+  if (req.file && !req.body?.[field]) {
+    // `req.body` is guaranteed here: multer has run, so it exists and is an object.
+    req.body[field] = { filename: req.file.filename, size: req.file.size };
+  }
+  next();
+};
+
+/** As above, wired for the pay portal's voice-note field. */
+export const exposeParentAudioToBody = exposeUploadToBody('audio');
+
 export const deleteFromCloudinary = async (publicId) => {
   if (!publicId) return;
   try {
@@ -292,6 +339,7 @@ export default {
   uploadBulk,
   uploadParentAudio,
   uploadParentAudioRoute,
+  exposeParentAudioToBody,
   studentPhotoUpload,
   schoolLogoUpload,
   zipUpload,

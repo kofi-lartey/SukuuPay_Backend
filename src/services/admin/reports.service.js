@@ -697,7 +697,7 @@ export const getGrowthReport = async ({ from, to } = {}) => {
   /*
    * `activated` is counted once into a local rather than filtering `newSchools` twice
    * inline, and read off the **top-level** `onboardingCompletedAt` (schoolModel.js:303).
-   * Filtering twice was harmless; reading the wrong path was not � `undefined` is falsy,
+   * Filtering twice was harmless; reading the wrong path was not — `undefined` is falsy,
    * so the activation rate would report 0% forever and read as a product failure.
    */
   const activatedSchools = newSchools.filter((s) => s.onboardingCompletedAt).length;

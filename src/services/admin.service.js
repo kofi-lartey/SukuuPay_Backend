@@ -536,7 +536,7 @@ export const updatePlatformSettings = async (patch, updatedById) => {
   const updated = await PlatformSettings.findOneAndUpdate(
     { singletonKey: "platform" },
     { $set: { ...patch, singletonKey: "platform" }, updatedBy: updatedById || null },
-    { new: true, upsert: true, setDefaultsOnInsert: true, runValidators: true }
+    { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true, runValidators: true }
   ).lean();
 
   // Invalidate **after** the write, not before.

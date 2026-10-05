@@ -55,7 +55,7 @@ export const markNotificationRead = async (notificationId, requester) => {
   const notification = await Notification.findOneAndUpdate(
     { _id: notificationId, userId: requester._id },
     { read: true, readAt: new Date() },
-    { new: true }
+    { returnDocument: 'after' }
   ).lean();
 
   if (!notification) {

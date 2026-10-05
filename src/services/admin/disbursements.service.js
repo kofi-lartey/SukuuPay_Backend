@@ -95,7 +95,7 @@ const nextBatchNumber = async (at = new Date()) => {
   const counter = await Counter.findOneAndUpdate(
     { key: `disbursementBatch:${year}` },
     { $inc: { seq: 1 } },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
+    { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
   );
 
   return `DISB-${year}-${String(counter.seq).padStart(6, "0")}`;

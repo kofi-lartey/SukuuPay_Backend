@@ -150,7 +150,7 @@ export const recordManualPayment = async (body, user) => {
       );
 
       await auditService.log({
-        action: "RECORD_MANUAL_PAYMENT",
+        action: "payment.record_manual",
         entity: "Payment",
         entityId: payment[0]._id,
         userId: user._id,
@@ -188,7 +188,7 @@ const nextPaymentSequence = async (schoolId, session) => {
   const doc = await Counter.findOneAndUpdate(
     { key: `payment:manual:${schoolId}:${year}` },
     { $inc: { seq: 1 } },
-    { new: true, upsert: true, setDefaultsOnInsert: true, session }
+    { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true, session }
   );
   return `${year}-${String(doc?.seq || 1).padStart(6, "0")}`;
 };

@@ -112,6 +112,114 @@ export const AUDIT_ACTIONS = {
   PARENT_MESSAGE_SENT: "parent.message_sent",
   PARENT_MESSAGE_READ: "parent.message_read",
   PARENT_MESSAGE_RESOLVED: "parent.message_resolved",
+
+  // ── Regulated SMS credit purchase ──
+  //
+  // Distinct actions for requesting, topping the pool up, approving and rejecting,
+  // because the questions asked of an audit log differ per action: "who asked" is an
+  // access question, "who released the units" is a money question, and "what did we
+  // buy from Arkesel" is a cost question. One `sms.updated` entry answers none of them.
+  SMS_CREDIT_REQUEST: "sms.credit_request",
+  SMS_POOL_TOPUP: "sms.pool_topup",
+  SMS_REQUEST_APPROVE: "sms.request_approve",
+  SMS_REQUEST_REJECT: "sms.request_reject",
+
+  // ── Advertisement requests ──
+  // `ad.review` covers both decisions on purpose — approving and rejecting are the
+  // same act (a moderator looked at a submission) and the outcome is on the row. The
+  // school-originated `ad.request` is separate because "who asked" is a different
+  // question from "who decided".
+  AD_REQUEST: "ad.request",
+  AD_REVIEW: "ad.review",
+
+  // ─────────────────────────────────────────────
+  // Recovered vocabulary
+  // ─────────────────────────────────────────────
+  //
+  // These were in use for years and **written to no audit row at all**.
+  //
+  // `utils/auditService.log` catches the Mongoose ValidationError an out-of-enum action
+  // produces and logs it, so the request succeeded and the audit entry simply did not
+  // exist. Fifty-three call sites were affected — `CREATE`, `UPDATE`, `REMOVE`,
+  // `BULK_ARCHIVE`, `ANALYTICS_READ`, `PROVISION_SCHOOL` — in UPPER_SNAKE while the
+  // vocabulary around them is dotted lowercase. The audit log for a whole school year
+  // was missing its student lifecycle, its bulk operations and its plan changes, and the
+  // only symptom was a console line nobody was reading.
+  //
+  // They are normalised rather than added-as-written, so there is one convention. Two
+  // judgement calls worth knowing about:
+  //
+  //  - **Bulk operations get their own `bulk.` prefix.** The question an audit log is
+  //    usually asked is "was this one student or the whole school", and a prefix answers
+  //    it without reading the entity id.
+  //  - **`ANALYTICS_READ` became `report.viewed`**, which already existed for exactly
+  //    that. Ten call sites had been inventing their own word for it.
+  //
+  // `scripts/find-invalid-audit-actions.mjs` reports any literal outside the enum, and
+  // `tests/contractTests.test.js` fails the build if this map and the schema disagree.
+  // Run the sweep after touching either.
+  //
+  // ── Student lifecycle ──
+  STUDENT_ARCHIVE: "student.archive",
+  STUDENT_RESTORE: "student.restore",
+  STUDENT_SUSPEND: "student.suspend",
+  STUDENT_UNSUSPEND: "student.unsuspend",
+  STUDENT_REACTIVATE: "student.reactivate",
+  STUDENT_PROMOTE: "student.promote",
+  STUDENT_GRADUATE: "student.graduate",
+  STUDENT_REPEAT_FLAG: "student.repeat_flag",
+  STUDENT_REPEAT_CLEAR: "student.repeat_clear",
+  STUDENT_TRANSFER_CLASS: "student.transfer_class",
+  STUDENT_TRANSFER_OUT: "student.transfer_out",
+  STUDENT_PAY_LINK_REGENERATE: "student.pay_link_regenerate",
+  STUDENT_PARENT_ADD: "student.parent_add",
+  STUDENT_PARENT_UPDATE: "student.parent_update",
+  STUDENT_PARENT_REMOVE: "student.parent_remove",
+  STUDENT_PARENT_PRIMARY_SET: "student.parent_primary_set",
+
+  // ── Bulk operations ──
+  BULK_STUDENT_CREATE: "bulk.student_create",
+  BULK_STUDENT_UPDATE: "bulk.student_update",
+  BULK_STUDENT_ARCHIVE: "bulk.student_archive",
+  BULK_STUDENT_GRADUATE: "bulk.student_graduate",
+  BULK_STUDENT_PROMOTE: "bulk.student_promote",
+  BULK_STUDENT_VALIDATE: "bulk.student_validate",
+  BULK_STUDENT_STATUS: "bulk.student_status",
+  BULK_STUDENT_PAY_LINK_REGENERATE: "bulk.student_pay_link_regenerate",
+
+  // ── Payment plans ──
+  PLAN_UPDATE: "plan.update",
+  PLAN_PREPAY: "plan.prepay",
+  PLAN_PAYMENT_APPLIED: "plan.payment_applied",
+  PLAN_INSTALLMENT_UPDATE: "plan.installment_update",
+  PLAN_REQUEST: "plan.request",
+
+  // ── Payments ──
+  PAYMENT_INITIATE: "payment.initiate",
+  PAYMENT_RECORD_MANUAL: "payment.record_manual",
+  PAYMENT_SETTLEMENT_APPLIED: "payment.settlement_applied",
+
+  // ── Email ──
+  EMAIL_SEND: "email.send",
+  EMAIL_BULK_SEND: "email.bulk_send",
+  EMAIL_JOB_CANCEL: "email.job_cancel",
+
+  // ── School lifecycle ──
+  // `school.archive` is deliberately distinct from `student.archive`. An earlier pass at
+  // this normalised both from the bare word `ARCHIVE`, which would have made archiving a
+  // school indistinguishable from archiving a student.
+  SCHOOL_ARCHIVE: "school.archive",
+  SCHOOL_PROVISION: "school.provision",
+  SCHOOL_JOIN_REQUEST: "school.join_request",
+  SCHOOL_JOIN_APPROVED: "school.join_approved",
+  SCHOOL_JOIN_REJECTED: "school.join_rejected",
+
+  // ── School assets ──
+  // `school.logo_update` rather than the existing `settings.update`, which means a
+  // *platform* setting changed. Conflating the two makes the settings audit answer a
+  // question it was never asked.
+  SCHOOL_LOGO_UPDATE: "school.logo_update",
+  SCHOOL_STAMP_UPDATE: "school.stamp_update",
 };
 
 /**
@@ -159,7 +267,50 @@ export const NOTIFICATION_TYPES = {
   PARENT_MESSAGE: "parent.message",
   /** A parent attached a voice note to the pay portal. Carries `meta.audioUrl`. */
   PARENT_AUDIO_MESSAGE: "parent.audio_message",
+
+  // ── Regulated SMS credit purchase ──
+  /** A school asked to buy credit and is awaiting its MoMo prompt or its payment. */
+  SMS_REQUEST: "sms.request",
+  /** An admin released the units. Goes to the school, not the platform. */
+  SMS_REQUEST_APPROVED: "sms.request_approved",
+  SMS_REQUEST_REJECTED: "sms.request_rejected",
+
+  // ── Advertisement requests ──
+  /** A school submitted an advertisement for review. Goes to the platform. */
+  AD_REQUEST: "ad.request",
+  AD_APPROVED: "ad.approved",
+  AD_REJECTED: "ad.rejected",
 };
+
+/**
+ * What a `Payment` — or, since SMS and ID-card purchases deliberately do **not** mint
+ * one, an order's inline `payment` subdocument — is paying for.
+ *
+ * Present because "what did this money buy?" is a question that has to have an answer
+ * on the row, not in the service that happened to create it. A school admin looking at
+ * a receipt needs it, and a support conversation about an unexplained debit needs it.
+ *
+ * `studentId` is `required: true` on `Payment`, so a school's credit purchase cannot be
+ * a `Payment` without loosening a field that settlement, the Daily Payments report and
+ * four compound indexes all depend on — and would then render in that report as
+ * "Unknown student". So these live on their own collections instead, and this list is
+ * the vocabulary they share.
+ */
+export const PURCHASE_PURPOSES = ["sms_credit", "id_card_print"];
+
+/** States a `SmsPurchaseRequest` moves through. Mirrored on the model's enum. */
+export const SMS_REQUEST_STATUS = {
+  AWAITING_PAYMENT: "awaiting_payment",
+  AWAITING_APPROVAL: "awaiting_approval",
+  APPROVED: "approved",
+  REJECTED: "rejected",
+  CANCELLED: "cancelled",
+};
+export const SMS_REQUEST_STATUS_VALUES = Object.values(SMS_REQUEST_STATUS);
+
+/** Sign convention for the pool ledger — see `models/PlatformSmsPoolEntry.js`. */
+export const PLATFORM_SMS_POOL_DIRECTIONS = ["topup", "allocation", "reversal"];
+export const PLATFORM_SMS_POOL_DIRECTION_VALUES = PLATFORM_SMS_POOL_DIRECTIONS;
 
 export const NOTIFICATION_TYPE_VALUES = Object.values(NOTIFICATION_TYPES);
 

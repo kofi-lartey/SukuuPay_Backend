@@ -142,7 +142,7 @@ export const processUnsubscribe = async (email, token) => {
   const preference = await EmailPreference.findOneAndUpdate(
     { email: address },
     { $set: { unsubscribed: true, unsubscribedAt: new Date(), lastEventAt: new Date() } },
-    { new: true, upsert: true }
+    { returnDocument: 'after', upsert: true }
   );
 
   // Mark any in-flight message from this address as unsubscribed.
@@ -596,7 +596,7 @@ export const sendSingleEmail = async (data, user, { idempotencyKey = null } = {}
   }
 
   await auditService.log({
-    action: 'SEND_EMAIL',
+    action: 'email.send',
     entity: 'EmailMessage',
     entityId: messages[0]?._id,
     userId: user?._id,
@@ -750,7 +750,7 @@ export const sendBulkEmail = async (schoolIdParam, data, user, { idempotencyKey 
   });
 
   await auditService.log({
-    action: 'BULK_EMAIL',
+    action: 'email.bulk_send',
     entity: 'EmailJob',
     entityId: job._id,
     userId: user._id,
@@ -962,7 +962,7 @@ export const cancelEmailJob = async (jobId, data, user) => {
   await job.save();
 
   await auditService.log({
-    action: 'CANCEL_EMAIL_JOB',
+    action: 'email.job_cancel',
     entity: 'EmailJob',
     entityId: job._id,
     userId: user._id,

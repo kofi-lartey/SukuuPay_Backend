@@ -6,6 +6,12 @@ import { IdCardBatch } from "../models/IdCardBatch.js";
 import { Notification } from "../models/Notification.js";
 import { createNotification } from "../services/notification.service.js";
 import { generatePdfFromTemplate } from "../utils/pdfGenerator.js";
+import {
+  generateIdCardSheets,
+  sheetGeometry,
+  DEFAULT_SHEET_LAYOUT,
+} from "../utils/idCardSheet.js";
+import { getCachedPlatformSettings } from "./platformSettings.service.js";
 import { uploadBuffer } from "../utils/cloudinary.js";
 import { CLOUDINARY_UPLOAD_FOLDER } from "../config/env.js";
 import { AUDIT_ACTIONS, ID_CARD_BATCH_STATUS } from "../config/constants.js";
@@ -411,6 +417,9 @@ export const getIdCardBatchPdf = async (batchId, requester) => {
   };
 };
 
+/** Cards per sheet for a layout name. Thin wrapper so callers read as intent. */
+const cardsPerSheet = (layoutName) => sheetGeometry(layoutName).perPage;
+
 export const generateIdCardPdf = async (batchId) => {
   const batch = await IdCardBatch.findById(batchId);
   if (!batch) throw new ApiError("Batch not found", 404, "NOT_FOUND");
@@ -445,10 +454,30 @@ export const generateIdCardPdf = async (batchId) => {
   );
 
   try {
-    // Same two-argument contract as the single-card path above, and the same fix:
-    // this one was passing one object, so every batch PDF came out blank too.
-    const pdfBuffer = await generatePdfFromTemplate("idCard", {
-      pages: cards,
+    // **Printable sheets, not proof sheets.**
+    //
+    // This called `generatePdfFromTemplate("idCard", { pages: cards })`, which renders
+    // **one card per A4 page** at 40pt margins with 16pt type. That is a proof sheet: it
+    // is useful on screen and useless in the hand — 90% of every sheet is empty, and
+    // nothing on it is at ID-card size, so cutting it down produces cards that are not
+    // CR80 and do not fit a badge holder or a lanyard.
+    //
+    // `generateIdCardSheets` draws true-size CR80 cards (85.60 × 53.98 mm), five to an
+    // A4 sheet by default, with the backs on paired pages in matching slot order so a
+    // sheet printed double-sided and cut yields matched cards. The layout is a platform
+    // setting, so it can be moved to the denser 8-up without a redeploy.
+    //
+    // Both produce a PDF of the same shape, so everything downstream — the Cloudinary
+    // upload, the notification, the download link — is unchanged.
+    const settings = await getCachedPlatformSettings();
+    const sheetLayout =
+      settings?.idCards?.sheetLayout || DEFAULT_SHEET_LAYOUT;
+
+    const sheetCount = Math.max(1, Math.ceil(cards.length / cardsPerSheet(sheetLayout)));
+
+    const pdfBuffer = await generateIdCardSheets(cards, {
+      layout: sheetLayout,
+      side: settings?.idCards?.sides || "front_back",
     });
 
     const uploadResult = await uploadBuffer(pdfBuffer, {
@@ -461,6 +490,12 @@ export const generateIdCardPdf = async (batchId) => {
     batch.publicId = uploadResult?.public_id;
     batch.status = ID_CARD_BATCH_STATUS.READY;
     batch.generationError = null;
+    // Recorded so the download page can tell the school what they are about to print
+    // ("5 per sheet, double-sided") rather than leaving them to work it out from a
+    // one-line print instruction on a PDF.
+    batch.sheetLayout = sheetLayout;
+    batch.sheetCount = sheetCount;
+    batch.cardsPerSheet = cardsPerSheet(sheetLayout);
     await batch.save();
 
     // Notify the requester that the batch is ready.
@@ -469,7 +504,7 @@ export const generateIdCardPdf = async (batchId) => {
       schoolId: batch.schoolId,
       type: "system.alert",
       title: "ID cards ready",
-      message: `Your ID card batch (${batch.totalCards} cards) has been generated and is ready for download.`,
+      message: `Your ID card batch (${batch.totalCards} cards) is ready to download. Print at A4, ${batch.cardsPerSheet} cards per sheet, double-sided — flip on the short edge.`,
     });
 
     return batch;

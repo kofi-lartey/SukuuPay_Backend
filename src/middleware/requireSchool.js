@@ -25,7 +25,7 @@ export const requireSchool = async (req, res, next) => {
       success: false,
       message: 'Set up your school profile to continue.',
       code: 'SCHOOL_NOT_LINKED',
-      action: 'PROVISION_SCHOOL',
+      action: 'school.provision',
       reason: state.reason,
     });
   }

@@ -254,11 +254,11 @@ export const updatePlatformSettingsController = async (req, res) => {
 };
 
 /**
- * `PUT /admin/settings/commission` — the two percentages SukuuPay takes.
+ * `PUT /admin/settings/commission` â€” the two percentages SukuuPay takes.
  *
  * Its own endpoint, and its own confirmation on the console side, because "save
  * settings" and "change what we earn" are different decisions. Both required by the
- * schema, so unlike the general settings write this can never be a partial patch —
+ * schema, so unlike the general settings write this can never be a partial patch â€”
  * which is what makes it safe to audit unconditionally rather than only when
  * `changed.length` is non-zero.
  *
@@ -297,11 +297,11 @@ export const updateCommissionController = async (req, res) => {
 };
 
 /**
- * `PUT /admin/settings/disbursement` — payout schedule, and whether it self-approves.
+ * `PUT /admin/settings/disbursement` â€” payout schedule, and whether it self-approves.
  *
  * Partial, so a client changing only the frequency does not reset `autoApprove` to
  * whatever a stale form held. The `changed` list therefore names the field that
- * actually moved — which for this endpoint is very often `disbursement.autoApprove`,
+ * actually moved â€” which for this endpoint is very often `disbursement.autoApprove`,
  * and that entry is the record that the platform stopped waiting for a human.
  *
  * The `autoApprove` flag is also called out in `meta` as a boolean rather than left

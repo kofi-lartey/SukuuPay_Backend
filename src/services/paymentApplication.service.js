@@ -69,7 +69,7 @@ export const applyPaymentToStudent = async (studentId, amountCredited) => {
   const updated = await Student.findByIdAndUpdate(
     studentId,
     { $inc: { totalPaid: delta } },
-    { new: true }
+    { returnDocument: 'after' }
   );
 
   if (!updated) return null;
@@ -264,7 +264,7 @@ export const settlePayment = async (payment) => {
   await bookPlatformLedgerEntries(payment);
 
   await auditService.log({
-    action: "APPLY_PAYMENT_SETTLEMENT",
+    action: "payment.settlement_applied",
     entity: "Payment",
     entityId: payment._id,
     userId: null,

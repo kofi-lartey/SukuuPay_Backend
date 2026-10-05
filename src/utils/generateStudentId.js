@@ -78,7 +78,7 @@ export const reserveStudentIds = async (schoolCode, academicYear, count = 1) => 
       doc = await Counter.findOneAndUpdate(
         { key },
         { $inc: { seq: count } },
-        { new: true, upsert: true, setDefaultsOnInsert: true }
+        { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true }
       );
       break;
     } catch (error) {

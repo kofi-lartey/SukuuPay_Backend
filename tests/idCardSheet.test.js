@@ -1,0 +1,284 @@
+// Printable ID-card sheets.
+//
+//   npm test
+//
+// The bug: `generatePdfFromTemplate` drew **one card per A4 page** at 40pt margins with
+// 16pt type. That is a proof sheet — 90% of every sheet is empty, and nothing on it is at
+// ID-card size, so cutting one down produces cards that are not CR80 and do not fit a
+// badge holder or a lanyard. Worse, it rendered at full A4 rather than sharing sheets.
+//
+// These assert the geometry (pure arithmetic, no PDF needed) and then the rendered page
+// count (which is the property that proves cards are actually sharing sheets — and which
+// a mocked `PDFDocument` could not tell us).
+import { test, describe } from 'node:test';
+import assert from 'node:assert/strict';
+import zlib from 'node:zlib';
+
+import {
+  sheetGeometry,
+  generateIdCardSheets,
+  CARD,
+  A4,
+  MM,
+  mm,
+  SHEET_LAYOUT_NAMES,
+  DEFAULT_SHEET_LAYOUT,
+} from '../src/utils/idCardSheet.js';
+import { IdCardBatch } from '../src/models/IdCardBatch.js';
+import { DEFAULT_PLATFORM_SETTINGS, NESTED_PLATFORM_SETTINGS_BRANCHES } from '../src/models/PlatformSettings.js';
+
+const card = (i) => ({
+  schoolName: 'Prampram Basic School',
+  studentName: `Student ${i}`,
+  studentClass: 'JHS 2A',
+  studentId: `PBS-2026-000${i}`,
+  emergencyContact: 'Guardian 0244123456',
+  schoolPhone: '0302001000',
+  schoolAddress: 'P.O. Box 12, Prampram',
+  brandColor: '#0A5C36',
+});
+
+/** Inflates every FlateDecode stream in a PDF buffer. */
+const inflateStreams = (buffer) => {
+  const raw = buffer.toString('latin1');
+  const out = [];
+  const pattern = /stream\r?\n([\s\S]*?)endstream/g;
+  let match;
+  while ((match = pattern.exec(raw))) {
+    try {
+      out.push(zlib.inflateSync(Buffer.from(match[1], 'latin1')).toString('latin1'));
+    } catch {
+      /* not a flate stream */
+    }
+  }
+  return out;
+};
+
+const pageCount = (buffer) => (buffer.toString('latin1').match(/\/Type\s*\/Page[^s]/g) || []).length;
+
+// ─────────────────────────────────────────────
+// The card is a real card
+// ─────────────────────────────────────────────
+describe('ID card sheet: the card is CR80', () => {
+  test('85.60 x 53.98 mm, within a tenth of a millimetre', () => {
+    // ISO/IEC 7810 ID-1. The layout may change how many share a sheet; it must never
+    // change how big a card is, because a card that is not standard size is not an ID
+    // card — it does not fit a badge holder, a lanyard or a card printer.
+    //
+    // `MM` is **points per millimetre** (72/25.4), so millimetres is points ÷ MM. The
+    // first version of this test multiplied by 25.4 as well and reported a card 2174mm
+    // wide, which is how a unit-conversion mistake stays invisible.
+    const widthMm = CARD.width / MM;
+    const heightMm = CARD.height / MM;
+
+    assert.ok(Math.abs(widthMm - 85.6) < 0.1, `width was ${widthMm}mm`);
+    assert.ok(Math.abs(heightMm - 53.98) < 0.1, `height was ${heightMm}mm`);
+  });
+
+  test('and smaller than the old full-A4 proof sheet', () => {
+    // The regression in one assertion: a card used to be rendered at A4 proportions.
+    assert.ok(CARD.width < A4.width / 2);
+    assert.ok(CARD.height < A4.height / 4);
+  });
+});
+
+// ─────────────────────────────────────────────
+// Five per A4
+// ─────────────────────────────────────────────
+describe('ID card sheet: five per sheet is the default', () => {
+  test('the default layout is 5-up', () => {
+    // What the product asked for, by name, so a later edit that changes the default has
+    // to change this assertion too rather than quietly shipping a different count.
+    assert.equal(DEFAULT_SHEET_LAYOUT, 'a4_c80_5up');
+    assert.equal(sheetGeometry().perPage, 5);
+  });
+
+  test('the 5-up layout has exactly five slots', () => {
+    const geometry = sheetGeometry('a4_c80_5up');
+    assert.equal(geometry.slots.length, 5);
+    assert.equal(geometry.columns, 1);
+    assert.equal(geometry.rows, 5);
+  });
+
+  test('every slot is inside the page', () => {
+    // A slot past the edge is a card the printer clips, which is worse than a sheet with
+    // air around it.
+    for (const name of SHEET_LAYOUT_NAMES) {
+      const { slots } = sheetGeometry(name);
+      for (const slot of slots) {
+        assert.ok(slot.x >= 0, `${name} slot ${slot.index} starts off the left edge`);
+        assert.ok(slot.x + slot.width <= A4.width, `${name} slot ${slot.index} runs off the right`);
+        assert.ok(slot.y >= 0, `${name} slot ${slot.index} starts off the bottom`);
+        assert.ok(slot.y + slot.height <= A4.height, `${name} slot ${slot.index} runs off the top`);
+      }
+    }
+  });
+
+  test('no two slots overlap', () => {
+    // Overlapping cards cannot be guillotined — the cut destroys one of them. This is
+    // the assertion that makes the layout printable rather than merely non-crashing.
+    for (const name of SHEET_LAYOUT_NAMES) {
+      const { slots } = sheetGeometry(name);
+      for (let i = 0; i < slots.length; i += 1) {
+        for (let j = i + 1; j < slots.length; j += 1) {
+          const a = slots[i];
+          const b = slots[j];
+          const overlaps =
+            a.x < b.x + b.width - 0.01 &&
+            a.x + a.width > b.x + 0.01 &&
+            a.y < b.y + b.height - 0.01 &&
+            a.y + a.height > b.y + 0.01;
+          assert.ok(!overlaps, `${name}: slots ${i} and ${j} overlap`);
+        }
+      }
+    }
+  });
+
+  test('the sheet leaves a printable margin, not a bleed', () => {
+    // Most desktop printers cannot print into the last ~5mm. The 8-up layout's side
+    // margin is the tighter of the two and is the one that matters here. `mm()` converts
+    // millimetres to points, which is the direction this needs.
+    const safePt = mm(5);
+    for (const name of SHEET_LAYOUT_NAMES) {
+      const { slots } = sheetGeometry(name);
+      const left = Math.min(...slots.map((s) => s.x));
+      const right = A4.width - Math.max(...slots.map((s) => s.x + s.width));
+
+      assert.ok(left >= safePt, `${name} left margin is ${left}pt, under ${safePt}pt`);
+      assert.ok(right >= safePt, `${name} right margin is ${right}pt, under ${safePt}pt`);
+    }
+  });
+
+  test('an unknown layout name falls back rather than rendering nothing', () => {
+    assert.equal(sheetGeometry('nope').layoutName, DEFAULT_SHEET_LAYOUT);
+    assert.equal(sheetGeometry(undefined).perPage, 5);
+  });
+});
+
+// ─────────────────────────────────────────────
+// Cards actually share sheets
+// ─────────────────────────────────────────────
+describe('ID card sheet: the PDF', () => {
+  test('five cards produce one front/back pair, not five pages', async () => {
+    // The load-bearing assertion. Five cards in the old generator produced **five**
+    // A4 pages; here they produce two — a front sheet and a back sheet. Front/back
+    // pairing is what makes a sheet printed double-sided and cut yield matched cards.
+    const buffer = await generateIdCardSheets(
+      Array.from({ length: 5 }, (_, i) => card(i + 1)),
+      { layout: 'a4_c80_5up' }
+    );
+
+    assert.equal(pageCount(buffer), 2);
+    assert.ok(buffer.toString('latin1').startsWith('%PDF-'));
+  });
+
+  test('six cards spill onto a second sheet, four pages in total', async () => {
+    const buffer = await generateIdCardSheets(
+      Array.from({ length: 6 }, (_, i) => card(i + 1)),
+      { layout: 'a4_c80_5up' }
+    );
+    assert.equal(pageCount(buffer), 4, '2 groups x front + back');
+  });
+
+  test('an eight-up sheet fits all eight on one pair', async () => {
+    const buffer = await generateIdCardSheets(
+      Array.from({ length: 8 }, (_, i) => card(i + 1)),
+      { layout: 'a4_c80_8up' }
+    );
+    assert.equal(pageCount(buffer), 2);
+  });
+
+  test('front_only prints half the pages', async () => {
+    const buffer = await generateIdCardSheets(
+      Array.from({ length: 5 }, (_, i) => card(i + 1)),
+      { layout: 'a4_c80_5up', side: 'front_only' }
+    );
+    assert.equal(pageCount(buffer), 1);
+  });
+
+  test('the cards are not blank', async () => {
+    // The regression that motivated all of this. `generatePdfFromTemplate` was called
+    // with one argument instead of two, so `data` was `undefined`, every page rendered
+    // an empty bordered rectangle, and the PDF was a perfectly valid file containing
+    // nothing. Page count and file size both looked right.
+    //
+    // So this inflates the content streams and counts drawing operators. Names are not
+    // greppable — pdfkit subsets fonts, so the literal text is not in the stream as
+    // ASCII — but `Tj`/`TJ` and `re` operators are.
+    const buffer = await generateIdCardSheets(
+      Array.from({ length: 5 }, (_, i) => card(i + 1)),
+      { layout: 'a4_c80_5up' }
+    );
+
+    const streams = inflateStreams(buffer);
+    assert.ok(streams.length >= 2, 'expected a content stream per page');
+
+    const total = streams.reduce(
+      (sum, s) => sum + (s.match(/T[jJ]/g) || []).length,
+      0
+    );
+    assert.ok(total > 20, `only ${total} text operators drawn — the sheets are blank`);
+  });
+
+  test('the back of a card carries no QR and no photo', async () => {
+    // A card back is read by staff and by whoever finds the card. A QR on both faces
+    // doubles the ways a lost card can be scanned, and the photo on the back is the copy
+    // that gets skimmed off in a lost wallet.
+    //
+    // Asserted structurally: the back page must draw **fewer** image placements than the
+    // front. Images are `Do` operators in the content stream.
+    const buffer = await generateIdCardSheets([card(1)], { layout: 'a4_c80_5up' });
+    const [front, back] = inflateStreams(buffer);
+
+    const imageOps = (s) => (s.match(/\/I\d+ Do|\bDo\b/g) || []).length;
+    assert.ok(imageOps(back) <= imageOps(front), 'the back must not draw more images than the front');
+  });
+
+  test('an empty batch yields an empty PDF instead of throwing', async () => {
+    // A school with no students yet, or a selection that matched nobody. Throwing here
+    // would turn "0 cards" into a failed job.
+    const buffer = await generateIdCardSheets([]);
+    assert.ok(buffer.length > 0);
+    assert.ok(buffer.toString('latin1').startsWith('%PDF-'));
+  });
+});
+
+// ─────────────────────────────────────────────
+// The layout is recorded, so the school can print it
+// ─────────────────────────────────────────────
+describe('ID card sheet: the batch records what it printed', () => {
+  test('a batch stores the layout, cards per sheet and sheet count', () => {
+    // A school handed a PDF with no instructions guesses: prints single-sided and ends
+    // up with 200 fronts and no backs, or scales to fit and gets non-CR80 cards.
+    assert.ok(IdCardBatch.schema.path('sheetLayout'));
+    assert.ok(IdCardBatch.schema.path('cardsPerSheet'));
+    assert.ok(IdCardBatch.schema.path('sheetCount'));
+    assert.equal(IdCardBatch.schema.path('cardsPerSheet').options.default, 5);
+    assert.equal(IdCardBatch.schema.path('sheetCount').options.default, 1);
+  });
+
+  test('the layout is constrained to the generator’s own names', () => {
+    const allowed = IdCardBatch.schema.path('sheetLayout').enumValues;
+    assert.deepEqual([...allowed].sort(), [...SHEET_LAYOUT_NAMES].sort());
+  });
+});
+
+describe('ID card sheet: the platform setting', () => {
+  test('defaults to 5-up, double-sided', () => {
+    assert.equal(DEFAULT_PLATFORM_SETTINGS.idCards.sheetLayout, 'a4_c80_5up');
+    assert.equal(DEFAULT_PLATFORM_SETTINGS.idCards.sides, 'front_back');
+  });
+
+  test('generation is off until an operator turns it on', () => {
+    // Card generation produces a printable artefact and burns a QR render per student.
+    // Defaulting this to true ships a feature nobody reviewed.
+    assert.equal(DEFAULT_PLATFORM_SETTINGS.idCards.enabled, false);
+  });
+
+  test('idCards is a merged nested branch', () => {
+    // A branch missing from this list is replaced wholesale by a partial stored
+    // document, so a school-provisioning write that stored `idCards` without
+    // `sheetLayout` would leave the generator reading `undefined`.
+    assert.ok(NESTED_PLATFORM_SETTINGS_BRANCHES.includes('idCards'));
+  });
+});

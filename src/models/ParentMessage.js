@@ -74,11 +74,28 @@ const parentMessageSchema = new mongoose.Schema(
       index: true,
     },
 
+    /**
+     * `studentId` deliberately carries **no** `index: true`.
+     *
+     * It did, alongside `schema.index({ studentId: 1, createdAt: -1 })` below, and
+     * mongoose warned at boot:
+     *
+     *   Duplicate schema index on {"studentId":1,"createdAt":-1} for model
+     *   "ParentMessage" … MongoDB will not create the duplicate index
+     *
+     * Declaring a field index *and* a compound index that starts with that field
+     * produces two index definitions for the same key pattern. Mongo keeps one and drops
+     * the other, so whichever loses takes its options with it — and "whichever loses" is
+     * decided by declaration order, not by anything stated here.
+     *
+     * The compound index serves `find({ studentId })` perfectly well on its own: a
+     * compound index is usable by any query on a prefix of its keys. So the standalone
+     * field index buys nothing and risks silently losing an option.
+     */
     studentId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Student",
       default: null,
-      index: true,
     },
 
     // Denormalised on purpose — see the class comment.
@@ -165,14 +182,16 @@ parentMessageSchema.index({ schoolId: 1, status: 1, createdAt: -1 });
 parentMessageSchema.index({ studentId: 1, createdAt: -1 });
 
 /**
- * Stops one parent's "just checking" becoming a wall of identical rows on one
- * student's record. Advisory only — the rate limiter is the real control — because a
- * duplicate sent inside the window is a genuine repeat and should still be recorded.
+ * No second, partial index on `{ studentId, createdAt }`.
+ *
+ * There was one, on the theory that a `{ $type: "objectId" }` partial filter would keep
+ * it small by excluding archived students. Two problems: a partial index needs its own
+ * `$expr`/`$type` filter on every query to be chosen, so the unpartial index above is what
+ * the query planner actually picks and this one is dead weight; and having the same key
+ * pattern twice is what produced the boot warning above. The archived-student rows are a
+ * rounding error against the messages that matter, so filtering them out of the index was
+ * optimising the wrong thing.
  */
-parentMessageSchema.index(
-  { studentId: 1, createdAt: -1 },
-  { partialFilterExpression: { studentId: { $type: "objectId" } } }
-);
 
 /**
  * Mints `messageId` before first write.

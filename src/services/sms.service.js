@@ -235,7 +235,7 @@ const chargeCredits = async (schoolId, units) => {
   const school = await School.findOneAndUpdate(
     { _id: schoolId, 'sms.balance': { $gte: units } },
     { $inc: { 'sms.balance': -units } },
-    { new: true }
+    { returnDocument: 'after' }
   ).select('sms.balance');
 
   if (school) return { ok: true, balance: school.sms.balance };
@@ -253,7 +253,7 @@ const refundCredits = async (schoolId, units) => {
   const school = await School.findOneAndUpdate(
     { _id: schoolId, 'sms.balance': { $lt: LIMITS.MAX_SMS_CREDIT_TOP_UP_UNITS } },
     { $inc: { 'sms.balance': units } },
-    { new: true }
+    { returnDocument: 'after' }
   ).select('sms.balance');
   return school?.sms.balance ?? null;
 };
@@ -1888,7 +1888,7 @@ export const topUpSmsCredits = async (data, user) => {
   const school = await School.findOneAndUpdate(
     { _id: schoolId },
     { $inc: { 'sms.balance': data.units } },
-    { new: true }
+    { returnDocument: 'after' }
   )
     .select('sms.balance')
     .lean();

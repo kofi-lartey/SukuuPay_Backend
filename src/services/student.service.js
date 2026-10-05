@@ -294,7 +294,7 @@ export const createStudent = async (data, user) => {
   );
 
   await auditService.log({
-    action: "CREATE",
+    action: "student.create",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
@@ -464,7 +464,7 @@ export const bulkCreateStudents = async (file, meta, user) => {
   // the server's rules to avoid that.
   if (meta.dryRun) {
     await auditService.log({
-      action: "BULK_VALIDATE",
+      action: "bulk.student_validate",
       entity: "Student",
       entityId: schoolId,
       userId: user._id,
@@ -543,7 +543,7 @@ export const bulkCreateStudents = async (file, meta, user) => {
   }
 
   await auditService.log({
-    action: "BULK_CREATE",
+    action: "bulk.student_create",
     entity: "Student",
     entityId: schoolId,
     userId: user._id,
@@ -956,7 +956,7 @@ export const updateStudent = async (id, data, user) => {
   await student.save();
 
   await auditService.log({
-    action: "UPDATE",
+    action: "student.update",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
@@ -990,7 +990,7 @@ const archiveStudent = async (id, user, reason = null) => {
   );
 
   await auditService.log({
-    action: "REMOVE",
+    action: "student.delete",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
@@ -1045,7 +1045,7 @@ export const restoreStudent = async (id, user) => {
   await School.updateOne({ _id: student.schoolId }, { $inc: { "stats.totalStudents": 1 } });
 
   await auditService.log({
-    action: "RESTORE",
+    action: "student.restore",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
@@ -1071,7 +1071,7 @@ export const suspendStudent = async (id, reason, user) => {
   await student.save();
 
   await auditService.log({
-    action: "SUSPEND",
+    action: "student.suspend",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
@@ -1096,7 +1096,7 @@ export const reactivateStudent = async (id, user) => {
   await student.save();
 
   await auditService.log({
-    action: "REACTIVATE",
+    action: "student.reactivate",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
@@ -1139,7 +1139,7 @@ export const transferStudentClass = async (id, newClass, reason, user) => {
   await student.save();
 
   await auditService.log({
-    action: "TRANSFER_CLASS",
+    action: "student.transfer_class",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
@@ -1173,7 +1173,7 @@ export const regeneratePayLink = async (id, user, { notify = false } = {}) => {
   }
 
   await auditService.log({
-    action: "REGENERATE_PAY_LINK",
+    action: "student.pay_link_regenerate",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
@@ -1394,7 +1394,7 @@ export const promoteStudent = async (id, data, user) => {
   await student.save();
 
   await auditService.log({
-    action: "PROMOTE",
+    action: "student.promote",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
@@ -1518,7 +1518,7 @@ export const bulkPromoteStudents = async (schoolId, data, user) => {
   }
 
   await auditService.log({
-    action: "BULK_PROMOTE",
+    action: "bulk.student_promote",
     entity: "Student",
     entityId: resolvedSchoolId,
     userId: user._id,
@@ -1694,7 +1694,7 @@ export const repeatStudent = async (id, data, user) => {
   await student.save();
 
   await auditService.log({
-    action: "REPEAT",
+    action: "student.repeat_flag",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
@@ -1772,7 +1772,7 @@ export const graduateStudent = async (id, data, user) => {
   await student.save();
 
   await auditService.log({
-    action: "GRADUATE",
+    action: "student.graduate",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
@@ -1902,7 +1902,7 @@ export const bulkGraduateStudents = async (schoolId, data, user) => {
   }
 
   await auditService.log({
-    action: "BULK_GRADUATE",
+    action: "bulk.student_graduate",
     entity: "Student",
     entityId: resolvedSchoolId,
     userId: user._id,
@@ -1977,7 +1977,7 @@ export const transferOutStudent = async (id, data, user) => {
   };
 
   await auditService.log({
-    action: "TRANSFER_OUT",
+    action: "student.transfer_out",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
@@ -2330,7 +2330,7 @@ export const addParent = async (studentId, data, user) => {
   const added = guardiansOf(student).at(-1);
 
   await auditService.log({
-    action: "ADD_PARENT",
+    action: "student.parent_add",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
@@ -2369,7 +2369,7 @@ export const updateParent = async (studentId, parentId, data, user) => {
   await student.save();
 
   await auditService.log({
-    action: "UPDATE_PARENT",
+    action: "student.parent_update",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
@@ -2392,7 +2392,7 @@ export const setPrimaryParent = async (studentId, parentId, user) => {
   await student.save();
 
   await auditService.log({
-    action: "SET_PRIMARY_PARENT",
+    action: "student.parent_primary_set",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
@@ -2423,7 +2423,7 @@ export const removeParent = async (studentId, parentId, user) => {
   await student.save();
 
   await auditService.log({
-    action: "REMOVE_PARENT",
+    action: "student.parent_remove",
     entity: "Student",
     entityId: student._id,
     userId: user._id,
@@ -2452,7 +2452,7 @@ const nextCertificateNumber = async (schoolId, year, prefix = "CERT") => {
   const doc = await Counter.findOneAndUpdate(
     { key },
     { $inc: { seq: 1 } },
-    { new: true, upsert: true, setDefaultsOnInsert: true }
+    { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true }
   );
   return `${prefix}-${year}-${String(doc?.seq || 1).padStart(6, "0")}`;
 };
@@ -2624,7 +2624,7 @@ export const bulkUpdateStudents = async (body, user) => {
   );
 
   await auditService.log({
-    action: "BULK_UPDATE",
+    action: "bulk.student_update",
     entity: "Student",
     entityId: schoolId,
     userId: user._id,
@@ -2708,7 +2708,7 @@ export const bulkArchiveStudents = async (body, user) => {
   }
 
   await auditService.log({
-    action: "BULK_ARCHIVE",
+    action: "bulk.student_archive",
     entity: "Student",
     entityId: schoolId,
     userId: user._id,
@@ -2793,7 +2793,7 @@ export const bulkSetStatus = async (body, user) => {
     : { modifiedCount: 0 };
 
   await auditService.log({
-    action: "BULK_STATUS",
+    action: "bulk.student_status",
     entity: "Student",
     entityId: schoolId,
     userId: user._id,
@@ -2840,7 +2840,7 @@ export const bulkRegeneratePayLinks = async (body, user) => {
   }
 
   await auditService.log({
-    action: "BULK_REGENERATE_PAY_LINK",
+    action: "bulk.student_pay_link_regenerate",
     entity: "Student",
     entityId: schoolId,
     userId: user._id,
@@ -2876,7 +2876,7 @@ export const clearRepeat = async (id, data, user) => {
   await student.save();
 
   await auditService.log({
-    action: "CLEAR_REPEAT",
+    action: "student.repeat_clear",
     entity: "Student",
     entityId: student._id,
     userId: user._id,

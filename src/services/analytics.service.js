@@ -187,7 +187,7 @@ export const getOverview = async (schoolIdParam, query, user) => {
   };
 
   await auditService.log({
-    action: "ANALYTICS_READ",
+    action: "report.viewed",
     entity: "AnalyticsOverview",
     entityId: schoolId,
     userId: user._id,
@@ -373,7 +373,7 @@ export const getRevenue = async (schoolIdParam, query, user) => {
   };
 
   await auditService.log({
-    action: "ANALYTICS_READ",
+    action: "report.viewed",
     entity: "AnalyticsRevenue",
     entityId: schoolId,
     userId: user._id,
@@ -461,7 +461,7 @@ export const getPaidOwed = async (schoolIdParam, query, user) => {
   };
 
   await auditService.log({
-    action: "ANALYTICS_READ",
+    action: "report.viewed",
     entity: "AnalyticsPaidOwed",
     entityId: schoolId,
     userId: user._id,
@@ -553,7 +553,7 @@ export const getPersons = async (schoolIdParam, query, user) => {
   };
 
   await auditService.log({
-    action: "ANALYTICS_READ",
+    action: "report.viewed",
     entity: "AnalyticsPersons",
     entityId: schoolId,
     userId: user._id,
@@ -743,7 +743,7 @@ export const getRevenueChart = async (schoolIdParam, query, user) => {
   };
 
   await auditService.log({
-    action: "ANALYTICS_READ",
+    action: "report.viewed",
     entity: "AnalyticsRevenueChart",
     entityId: schoolId,
     userId: user._id,
@@ -917,7 +917,7 @@ export const getOverdue = async (schoolIdParam, query, user) => {
   };
 
   await auditService.log({
-    action: "ANALYTICS_READ",
+    action: "report.viewed",
     entity: "AnalyticsOverdue",
     entityId: schoolId,
     userId: user._id,
@@ -1045,7 +1045,7 @@ export const getCashflow = async (schoolIdParam, query, user) => {
   };
 
   await auditService.log({
-    action: "ANALYTICS_READ",
+    action: "report.viewed",
     entity: "AnalyticsCashflow",
     entityId: schoolId,
     userId: user._id,
@@ -1190,7 +1190,7 @@ export const getCompliance = async (schoolIdParam, query, user) => {
   };
 
   await auditService.log({
-    action: "ANALYTICS_READ",
+    action: "report.viewed",
     entity: "AnalyticsCompliance",
     entityId: schoolId,
     userId: user._id,
@@ -1277,7 +1277,7 @@ export const getDefaultRate = async (schoolIdParam, query, user) => {
   };
 
   await auditService.log({
-    action: "ANALYTICS_READ",
+    action: "report.viewed",
     entity: "AnalyticsDefaultRate",
     entityId: schoolId,
     userId: user._id,
@@ -1342,7 +1342,7 @@ export const getClassPerformance = async (schoolIdParam, query, user) => {
   };
 
   await auditService.log({
-    action: "ANALYTICS_READ",
+    action: "report.viewed",
     entity: "AnalyticsClassPerformance",
     entityId: schoolId,
     userId: user._id,

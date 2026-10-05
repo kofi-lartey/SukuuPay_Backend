@@ -731,7 +731,7 @@ export const requestPaymentPlan = async (token, data) => {
   await notifyPlanRequest(school, student, plan, { parentName, parentPhone, interval });
 
   await auditService.log({
-    action: 'REQUEST_PAYMENT_PLAN',
+    action: 'plan.request',
     entity: 'PaymentPlan',
     entityId: plan._id,
     userId: null,

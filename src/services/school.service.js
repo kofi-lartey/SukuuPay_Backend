@@ -72,7 +72,7 @@ export const createSchool = async (data, createdBy, stampUrl = null) => {
   });
 
   await auditService.log({
-    action: "CREATE",
+    action: "student.create",
     entity: "School",
     entityId: school._id,
     userId: createdBy,
@@ -216,7 +216,7 @@ export const provisionSchoolForUser = async (data, user) => {
   }
 
   await auditService.log({
-    action: "PROVISION",
+    action: "school.provision",
     entity: "School",
     entityId: result.school._id,
     userId: user._id,
@@ -304,7 +304,7 @@ export const requestToJoinSchool = async (user, { schoolCode, applicantName, app
   }
 
   await auditService.log({
-    action: "JOIN_REQUEST",
+    action: "school.join_request",
     entity: "School",
     entityId: school._id,
     userId: user._id,
@@ -389,7 +389,7 @@ export const decideJoinRequest = async (user, requestId, { decision, note }) => 
     await request.save();
 
     await auditService.log({
-      action: "JOIN_REJECTED",
+      action: "school.join_rejected",
       entity: "SchoolJoinRequest",
       entityId: request._id,
       userId: user._id,
@@ -415,7 +415,7 @@ export const decideJoinRequest = async (user, requestId, { decision, note }) => 
     });
 
     await auditService.log({
-      action: "JOIN_APPROVED",
+      action: "school.join_approved",
       entity: "SchoolJoinRequest",
       entityId: request._id,
       userId: user._id,
@@ -595,7 +595,7 @@ export const updateSchool = async (schoolId, data, requester) => {
   await school.save();
 
   await auditService.log({
-    action: "UPDATE",
+    action: "student.update",
     entity: "School",
     entityId: school._id,
     userId: requester._id,
@@ -623,7 +623,7 @@ export const updateSchoolLogo = async (schoolId, logoUrl, oldLogoUrl, requester)
   await school.save();
 
   await auditService.log({
-    action: "UPDATE_LOGO",
+    action: "school.logo_update",
     entity: "School",
     entityId: school._id,
     userId: requester._id,
@@ -651,7 +651,7 @@ export const updateSchoolStamp = async (schoolId, stampUrl, oldStampUrl, request
   await school.save();
 
   await auditService.log({
-    action: "UPDATE_STAMP",
+    action: "school.stamp_update",
     entity: "School",
     entityId: school._id,
     userId: requester._id,
@@ -696,7 +696,7 @@ export const suspendSchool = async (schoolId, reason, requester) => {
   );
 
   await auditService.log({
-    action: "SUSPEND",
+    action: "student.suspend",
     entity: "School",
     entityId: school._id,
     userId: requester._id,
@@ -735,7 +735,7 @@ export const archiveSchool = async (schoolId, requester) => {
   );
 
   await auditService.log({
-    action: "ARCHIVE",
+    action: "school.archive",
     entity: "School",
     entityId: school._id,
     userId: requester._id,
@@ -776,7 +776,7 @@ export const unsuspendSchool = async (schoolId, requester) => {
   );
 
   await auditService.log({
-    action: "UNSUSPEND",
+    action: "student.unsuspend",
     entity: "School",
     entityId: school._id,
     userId: requester._id,

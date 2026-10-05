@@ -322,7 +322,7 @@ export const createPaymentPlan = async (studentId, data, user) => {
   const sms = await notifyPlanCreated(school, student, plan, acceptanceToken);
 
   await auditService.log({
-    action: "CREATE_PAYMENT_PLAN",
+    action: "plan.create",
     entity: "PaymentPlan",
     entityId: plan._id,
     userId: user._id,
@@ -432,7 +432,7 @@ export const updatePaymentPlan = async (planId, data, user) => {
   await plan.save();
 
   await auditService.log({
-    action: "UPDATE_PAYMENT_PLAN",
+    action: "plan.update",
     entity: "PaymentPlan",
     entityId: plan._id,
     userId: user._id,
@@ -481,7 +481,7 @@ export const cancelPaymentPlan = async (planId, data = {}, user) => {
   }
 
   await auditService.log({
-    action: "CANCEL_PAYMENT_PLAN",
+    action: "plan.cancel",
     entity: "PaymentPlan",
     entityId: plan._id,
     userId: user._id,
@@ -531,7 +531,7 @@ export const acceptPaymentPlan = async (planId, data) => {
   }
 
   await auditService.log({
-    action: "ACCEPT_PAYMENT_PLAN",
+    action: "plan.accept",
     entity: "PaymentPlan",
     entityId: plan._id,
     userId: null,
@@ -619,7 +619,7 @@ export const updateInstallment = async (planId, installmentNumber, data, user) =
   }
 
   await auditService.log({
-    action: "UPDATE_INSTALLMENT",
+    action: "plan.installment_update",
     entity: "PaymentPlan",
     entityId: plan._id,
     userId: user._id,
@@ -741,7 +741,7 @@ export const prepayPlan = async (planId, data) => {
   });
 
   await auditService.log({
-    action: "PREPAY_PAYMENT_PLAN",
+    action: "plan.prepay",
     entity: "PaymentPlan",
     entityId: plan._id,
     userId: null,
@@ -889,7 +889,7 @@ export const applyCompletedPaymentToPlan = async (payment) => {
   }
 
   await auditService.log({
-    action: "APPLY_PAYMENT_TO_PLAN",
+    action: "plan.payment_applied",
     entity: "PaymentPlan",
     entityId: plan._id,
     userId: null,

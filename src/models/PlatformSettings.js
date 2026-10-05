@@ -1,4 +1,8 @@
 import mongoose from "mongoose";
+import {
+  SHEET_LAYOUT_NAMES,
+  DEFAULT_SHEET_LAYOUT,
+} from "../utils/idCardSheet.js";
 
 /**
  * Platform-wide settings: **one document, ever.**
@@ -156,6 +160,49 @@ const platformSettingsSchema = new mongoose.Schema(
         default: "arke",
       },
       ratePesewas: { type: Number, default: 25, min: 0 },
+
+      /**
+       * At what remaining balance the console warns.
+       *
+       * A plain number rather than a boolean because the useful question is not "is
+       * the pool empty" but "is there enough left to serve a normal school", and one
+       * school's purchase can be 200 units where the next is 20,000. Default is zero,
+       * which means "only warn at empty" — the behaviour before this setting existed —
+       * so a deployment that has never been configured is not suddenly noisy.
+       */
+      poolLowThreshold: { type: Number, default: 0, min: 0 },
+    },
+
+    /**
+     * How ID-card batches are printed.
+     *
+     * Configuration rather than a constant because it is a printing decision a school
+     * makes about its own stock: 5-up is one straight guillotine cut five times down a
+     * sheet, 8-up is the denser conventional layout for printing hundreds. Neither is
+     * better, and changing it should not need a redeploy.
+     *
+     * `sheetLayout` is validated against the generator's own names rather than restated,
+     * so a renamed layout cannot be left behind here as a value the generator rejects.
+     */
+    idCards: {
+      sheetLayout: {
+        type: String,
+        enum: SHEET_LAYOUT_NAMES,
+        default: DEFAULT_SHEET_LAYOUT,
+      },
+      sides: {
+        type: String,
+        enum: ["front_back", "front_only"],
+        default: "front_back",
+      },
+      /**
+       * Whether a school may generate a batch at all.
+       *
+       * Defaults **false**. Card generation produces a printable artefact and consumes
+       * a QR-code render per student, so "on by default for every school" is a feature
+       * flag that ships switched on and never reviewed. An operator turns it on.
+       */
+      enabled: { type: Boolean, default: false },
     },
 
     /**
@@ -219,7 +266,12 @@ export const DEFAULT_PLATFORM_SETTINGS = {
   defaultMonthlyFee: 15000,
   features: { adsEnabled: true, selfSignupEnabled: true, trialDays: 30 },
   disbursement: { frequency: "weekly", dayOfWeek: 1, autoApprove: false },
-  sms: { provider: "arke", ratePesewas: 25 },
+  sms: { provider: "arke", ratePesewas: 25, poolLowThreshold: 0 },
+  idCards: {
+    sheetLayout: DEFAULT_SHEET_LAYOUT,
+    sides: "front_back",
+    enabled: false,
+  },
   support: { phone: "", email: "" },
   maintenance: { mode: "off", message: "" },
 };
@@ -238,6 +290,7 @@ export const NESTED_PLATFORM_SETTINGS_BRANCHES = [
   "features",
   "disbursement",
   "sms",
+  "idCards",
   "support",
   "maintenance",
 ];

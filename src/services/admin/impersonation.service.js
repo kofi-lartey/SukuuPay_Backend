@@ -234,7 +234,7 @@ export const startImpersonation = async (schoolId, reason, actor, req) => {
           impersonationSessionId: session._id,
         },
       },
-      { new: true, runValidators: true }
+      { returnDocument: 'after', runValidators: true }
     );
   } catch (error) {
     /*

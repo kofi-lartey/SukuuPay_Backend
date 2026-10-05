@@ -18,8 +18,9 @@ import { adminRoute } from './admin.routes.js';
 import { healthRoute } from './health.routes.js';
 import { whatsappRoute } from './whatsapp.routes.js';
 import { smsRoute } from './sms.routes.js';
+import { smsRequestRoute } from './smsRequest.routes.js';
 import { webhookRoute } from './webhooks.routes.js';
-import { publicAdRoute } from './schoolAd.routes.js';
+import { publicAdRoute, schoolAdRoute } from './schoolAd.routes.js';
 import { maintenanceGuard } from '../middleware/maintenance.js';
 
 const router = Router();
@@ -64,7 +65,13 @@ router.use('/notifications', notificationRoute);
 router.use('/', parentMessageRoute);
 router.use('/settings', settingsRoute);
 router.use('/admin', adminRoute);
+// The unauthenticated ad slider.
 router.use('/', publicAdRoute);
+// A school's own advertisement requests. Mounted separately from the public router
+// because it is `authenticate`d — and kept adjacent so the two halves of the ad feature
+// stay in one file, where the contrast between "may read everything" and "may read only
+// its own" is the thing a reader is meant to notice.
+router.use('/', schoolAdRoute);
 
 // WhatsApp, SMS and the third-party callback routers declare absolute paths, so
 // they are mounted at the root of this router: they answer /api/whatsapp/*,
@@ -72,6 +79,11 @@ router.use('/', publicAdRoute);
 // are configured with.
 router.use('/', whatsappRoute);
 router.use('/', smsRoute);
+// Regulated SMS credit purchase. Adjacent to `smsRoute` rather than inside it: that one
+// is about *sending* messages and is mounted at the root, and this one is about buying
+// the credit to send them with. Both answer `/sms-*`, and keeping them in separate
+// routers means the purchase flow can be read without the sending flow's history.
+router.use('/', smsRequestRoute);
 router.use('/', webhookRoute);
 
 export default router;

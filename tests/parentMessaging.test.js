@@ -14,6 +14,9 @@
 // Each block names the defect it is holding shut.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { payNotifySchoolSchema } from '../src/validations/payment.validation.js';
 import {
@@ -26,6 +29,7 @@ import {
   resolveParentMessageSchema,
   parentMessageIdParamSchema,
 } from '../src/validations/parentMessage.validation.js';
+import { exposeParentAudioToBody } from '../src/middleware/upload.js';
 import { NOTIFICATION_TYPES, AUDIT_ACTIONS } from '../src/config/constants.js';
 import { notificationQuerySchema } from '../src/validations/notification.validation.js';
 import parentMessageRoute from '../src/routes/parentMessage.routes.js';
@@ -79,10 +83,10 @@ describe('parent messaging: audit actions are writable', () => {
 
   test('the old, invalid action string is not passed to the audit service', async () => {
     // Guards the regression at its source rather than at the model. Scoped to an
-    // `action:` assignment rather than a bare substring, because the string is named
-    // in the comment above the call — explaining why the old value was invalid is the
-    // point of that comment, and a naive scan would forbid documenting the bug it
-    // describes.
+    // `action:` assignment rather than a bare substring, because the string that
+    // silently failed is named in the comment above the call — explaining why the old
+    // value was invalid is the point of that comment, and a naive scan would forbid
+    // documenting the bug it describes.
     const { readFile } = await import('node:fs/promises');
     const source = await readFile(
       new URL('../src/services/pay.service.js', import.meta.url),
@@ -110,6 +114,110 @@ describe('parent messaging: audit actions are writable', () => {
       references.includes('PARENT_MESSAGE_SENT'),
       'pay.service.js should log the shared PARENT_MESSAGE_SENT action'
     );
+  });
+});
+
+// ─────────────────────────────────────────────
+// Every audit action in the codebase is writable
+// ─────────────────────────────────────────────
+describe('audit actions: nothing is written to nowhere', () => {
+  /**
+   * The whole failure mode here was silence.
+   *
+   * `utils/auditService.log` catches the Mongoose ValidationError that an `action`
+   * outside the enum raises and logs it. The request succeeds, the endpoint returns 200,
+   * and the audit row does not exist. Fifty-three call sites were in that state —
+   * `CREATE`, `UPDATE`, `REMOVE`, `BULK_ARCHIVE`, `ANALYTICS_READ` — in UPPER_SNAKE while
+   * the vocabulary is dotted lowercase, so a full school year of student lifecycle, bulk
+   * operations and plan changes was missing with only a console line as evidence.
+   *
+   * A parity test between the constants map and the schema enum is not enough on its
+   * own: it proved the two *lists* agreed while every *call site* was outside both. This
+   * sweeps the source, which is the only place the bug was visible.
+   */
+  const KNOWN_NON_ACTIONS = new Map([
+    // Return values and helper markers, not audit calls. Named rather than pattern-matched
+    // so that "the sweep stopped reporting these" has to be a decision someone made.
+    ['created', 'src/boot/ensureSuperAdmin.js — a return value'],
+    ['none', 'src/services/whatsapp.service.js — a return value'],
+    ['plan_accept', 'src/services/whatsapp.service.js — a return value'],
+  ]);
+
+  const walk = (dir, out = []) => {
+    for (const entry of readdirSync(dir)) {
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) walk(full, out);
+      else if (entry.endsWith('.js')) out.push(full);
+    }
+    return out;
+  };
+
+  test('no `action:` literal is outside the AuditLog enum', async () => {
+    const { AuditLog } = await import('../src/models/AuditLog.js');
+    const allowed = new Set(AuditLog.schema.path('action').enumValues);
+
+    const root = fileURLToPath(new URL('../src', import.meta.url));
+    const offenders = [];
+
+    for (const file of walk(root)) {
+      const source = readFileSync(file, 'utf8');
+      const pattern = /action:\s*['"]([A-Za-z_.]+)['"]/g;
+      let match;
+      while ((match = pattern.exec(source))) {
+        const action = match[1];
+        if (allowed.has(action) || KNOWN_NON_ACTIONS.has(action)) continue;
+        offenders.push(
+          `${action} — ${relative(root, file).replace(/\\/g, '/')}`
+        );
+      }
+    }
+
+    assert.deepEqual(
+      offenders,
+      [],
+      `these actions write no audit row:\n      ${offenders.join('\n      ')}`
+    );
+  });
+
+  test('the known non-actions are still the only exemptions', async () => {
+    // Guards the exemption list itself. If someone adds an action to it to make the
+    // sweep above pass, this fails — which is the point of naming the reasons.
+    const { AuditLog } = await import('../src/models/AuditLog.js');
+    const allowed = new Set(AuditLog.schema.path('action').enumValues);
+
+    for (const literal of KNOWN_NON_ACTIONS.keys()) {
+      assert.ok(
+        !allowed.has(literal),
+        `${literal} is now a real enum value, so it no longer needs an exemption`
+      );
+    }
+  });
+
+  test('student.archive and school.archive are different actions', async () => {
+    const { AuditLog } = await import('../src/models/AuditLog.js');
+    const allowed = AuditLog.schema.path('action').enumValues;
+
+    // An earlier normalisation pass keyed the map on the bare literal `ARCHIVE` and sent
+    // both `student.service.js` and `school.service.js` to `student.archive`, which
+    // would have made archiving a school indistinguishable from archiving a student in
+    // the one log that exists to tell them apart.
+    assert.ok(allowed.includes('student.archive'));
+    assert.ok(allowed.includes('school.archive'));
+  });
+
+  test('bulk operations carry a `bulk.` prefix', async () => {
+    const { AuditLog } = await import('../src/models/AuditLog.js');
+    const allowed = AuditLog.schema.path('action').enumValues;
+
+    // So "one student or the whole school" is answerable from the action alone, without
+    // reading the entity id.
+    for (const action of allowed.filter((value) => value.includes('student_'))) {
+      if (action.startsWith('student.')) continue;
+      assert.ok(
+        action.startsWith('bulk.'),
+        `${action} looks like a single-student operation but is not prefixed`
+      );
+    }
   });
 });
 
@@ -231,6 +339,90 @@ describe('parent messaging: the message is a record', () => {
         `${field} should be denormalised onto the message`
       );
     }
+  });
+// ─────────────────────────────────────────────────────────────────────
+  // The voice note, as the *route* actually assembles it
+  // ─────────────────────────────────────────────
+  //
+  // Asserted through `exposeParentAudioToBody` and the real schema, because the bug was
+  // never in either piece — it was in what sat between them. Testing the schema alone
+  // passes: hand it `{ audio: {...} }` and the rule works. Testing multer alone passes:
+  // the file lands on `req.file`. The failure only exists in the assembled chain, and
+  // the chain is what runs.
+  test('a voice note with no text is accepted end to end', () => {
+    const expose = exposeParentAudioToBody;
+    assert.equal(typeof expose, 'function');
+
+    // What multer leaves behind for a multipart submission that carried only a file.
+    const req = {
+      file: { filename: 'voice-note.webm', size: 120_000, mimetype: 'audio/webm' },
+      body: { parentName: 'Mrs. Mensah', parentPhone: '0244123456' },
+    };
+
+    assert.equal(
+      req.body.audio,
+      undefined,
+      'precondition: multer leaves no `audio` key in the body'
+    );
+
+    expose(req, {}, () => {});
+
+    // The real schema, on the real post-multer body.
+    const { error } = validate(payNotifySchoolSchema, req.body);
+    assert.equal(
+      error,
+      undefined,
+      'a recording with no text must be a complete message — this was the 422'
+    );
+  });
+
+  test('the marker is the file’s identity, not its contents', () => {
+    // Joi must never be handed the bytes. A `Buffer` in the validated value would be
+    // deep-cloned on every validation pass and then duplicated by `stripUnknown`,
+    // while `req.file` already holds the original.
+    const req = {
+      file: { filename: 'voice-note.webm', size: 900_000, mimetype: 'audio/webm' },
+      body: { parentName: 'Mrs. Mensah', parentPhone: '0244123456' },
+    };
+    exposeParentAudioToBody(req, {}, () => {});
+
+    assert.deepEqual(req.body.audio, { filename: 'voice-note.webm', size: 900_000 });
+    assert.ok(!Buffer.isBuffer(req.body.audio), 'Joi must never see the bytes');
+  });
+
+  test('a JSON submission is left completely untouched', () => {
+    // The middleware must be a no-op without a file, or it would add an `audio` key to
+    // every text-only message and quietly change what validates.
+    const req = { body: { parentName: 'Mrs. Mensah', parentPhone: '0244123456', message: 'A real message about fees.' } };
+    const before = JSON.stringify(req.body);
+
+    exposeParentAudioToBody(req, {}, () => {});
+
+    assert.equal(JSON.stringify(req.body), before);
+    assert.equal(req.body.audio, undefined);
+  });
+
+  test('text alone still works, and still needs real words', () => {
+    const withText = {
+      parentName: 'Mrs. Mensah',
+      parentPhone: '0244123456',
+      message: 'I paid 300 cedis at the office and it is not showing.',
+    };
+    assert.equal(validate(payNotifySchoolSchema, withText).error, undefined);
+
+    // The floor survives the audio path — the parent who sends "?" has not used the
+    // recorder, and still gets told to write something real.
+    assert.ok(validate(payNotifySchoolSchema, { ...withText, message: '?' }).error);
+  });
+
+  test('neither a recording nor text is still refused', () => {
+    const req = {
+      body: { parentName: 'Mrs. Mensah', parentPhone: '0244123456' },
+    };
+    exposeParentAudioToBody(req, {}, () => {});
+
+    const { error } = validate(payNotifySchoolSchema, req.body);
+    assert.ok(error, 'an empty submission must still be refused');
   });
 
   test('the Cloudinary public id is never selected by default', () => {

@@ -64,6 +64,20 @@ import {
   approveSchoolAdSchema,
   schoolAdIdParamSchema,
 } from '../validations/schoolAd.validation.js';
+import {
+  listAllRequests,
+  approveSmsRequest,
+  rejectSmsRequest,
+  markSmsRequestRefunded,
+  getPlatformSmsPool,
+  recordPoolTopUp,
+} from '../services/smsPurchaseRequest.service.js';
+import {
+  poolTopUpSchema,
+  rejectSmsRequestSchema,
+  markRefundedSchema,
+  smsRequestIdParamSchema,
+} from '../validations/smsRequest.validation.js';
 
 // ── Platform console: schools and users ────────────────────────────────────
 import {
@@ -719,6 +733,162 @@ adminRoute.get('/payments/:paymentId', validate(paymentIdParamSchema, 'params'),
 
 adminRoute.get('/sms/overview', getSmsOverviewController);
 adminRoute.get('/sms/credits', getSmsCreditsController);
+
+// ── Regulated SMS credit purchase ──
+//
+// The console side of `smsRequest.routes.js`: the pool the platform allocates from, and
+// the queue of schools waiting for an approval. Inherits `authorize('super_admin')`
+// from the router above, which is the point of the feature — the whole design is that
+// money arriving does not release units on its own.
+//
+// Order is deliberate. `/sms/pool/topup` and `/sms/requests/:requestId/approve` are
+// both longer than `/sms/overview`, and Express matches in declaration order, so the
+// literals are declared before the parameterised sibling they would otherwise shadow.
+
+adminRoute.get('/sms/pool', async (req, res) => {
+  try {
+    return res.status(200).json({ success: true, data: await getPlatformSmsPool() });
+  } catch (error) {
+    return res.status(error.status || 500).json({ success: false, message: error.message });
+  }
+});
+
+adminRoute.post(
+  '/sms/pool/topup',
+  limits.write,
+  validate(poolTopUpSchema),
+  async (req, res) => {
+    try {
+      const result = await recordPoolTopUp(req.body, req.user);
+      return res.status(201).json({
+        success: true,
+        message: `${result.entry.units.toLocaleString('en-GB')} units added to the pool`,
+        data: { entry: result.entry, availableUnits: result.availableUnits },
+      });
+    } catch (error) {
+      return res
+        .status(error.status || 500)
+        .json({ success: false, message: error.message });
+    }
+  }
+);
+
+adminRoute.get('/sms/requests', async (req, res) => {
+  try {
+    const { page, perPage, status } = req.query;
+    const result = await listAllRequests({
+      status,
+      page: Number(page) || 1,
+      perPage: Math.min(Number(perPage) || 20, 100),
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: result.rows,
+      meta: {
+        page: result.page,
+        perPage: result.perPage,
+        total: result.total,
+        totalPages: Math.ceil(result.total / result.perPage),
+      },
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({ success: false, message: error.message });
+  }
+});
+
+adminRoute.post(
+  '/sms/requests/:requestId/approve',
+  limits.write,
+  validate(smsRequestIdParamSchema, 'params'),
+  async (req, res) => {
+    try {
+      const result = await approveSmsRequest(req.params.requestId, req.user);
+
+      // 200 rather than 201 on the second call: nothing was created, and a double-click
+      // is a UI event, not a second approval.
+      return res.status(200).json({
+        success: true,
+        message: result.alreadyApproved
+          ? 'This request was already approved'
+          : `${result.request.units.toLocaleString('en-GB')} units released to ${
+              result.schoolBalance.toLocaleString('en-GB')
+            } total balance`,
+        data: {
+          requestId: result.request.requestId,
+          schoolBalance: result.schoolBalance,
+          alreadyApproved: result.alreadyApproved,
+        },
+      });
+    } catch (error) {
+      return res
+        .status(error.status || 500)
+        .json({ success: false, message: error.message });
+    }
+  }
+);
+
+adminRoute.post(
+  '/sms/requests/:requestId/reject',
+  limits.write,
+  validate(smsRequestIdParamSchema, 'params'),
+  validate(rejectSmsRequestSchema),
+  async (req, res) => {
+    try {
+      const result = await rejectSmsRequest(req.params.requestId, req.body, req.user);
+
+      return res.status(200).json({
+        success: true,
+        message:
+          'Request declined. The school has been told why, and the payment can now be refunded.',
+        data: {
+          requestId: result.request.requestId,
+          alreadyRejected: result.alreadyRejected,
+        },
+      });
+    } catch (error) {
+      return res
+        .status(error.status || 500)
+        .json({ success: false, message: error.message });
+    }
+  }
+);
+
+/**
+ * Recording that a refund was issued — deliberately *not* performing one.
+ *
+ * Reversing a school administrator's MoMo payment is a support operation with its own
+ * confirmation at the gateway, and it is not something that should happen as a side
+ * effect of a state transition. So an operator performs it and records it here, which
+ * is what the school and the next support conversation both need to see.
+ */
+adminRoute.post(
+  '/sms/requests/:requestId/refund',
+  limits.write,
+  validate(smsRequestIdParamSchema, 'params'),
+  validate(markRefundedSchema),
+  async (req, res) => {
+    try {
+      const result = await markSmsRequestRefunded(
+        req.params.requestId,
+        req.body.refundReference,
+        req.user
+      );
+
+      return res.status(200).json({
+        success: true,
+        message: result.alreadyRefunded
+          ? 'A refund was already recorded for this request'
+          : 'Refund recorded',
+        data: { requestId: result.request.requestId },
+      });
+    } catch (error) {
+      return res
+        .status(error.status || 500)
+        .json({ success: false, message: error.message });
+    }
+  }
+);
 adminRoute.post(
   '/sms/credits/topup',
   limits.write,

@@ -309,15 +309,21 @@ export const payRequestPlanSchema = Joi.object({
  *
  * The "at least one of the two" rule cannot be expressed with `alternatives().try()`
  * on two sibling keys, because Joi has no way to say "A or B, and I do not know
- * which one the caller picked". It is enforced as a single schema-level `.custom()`
- * that reads the validated value, and it reads `value.audio` rather than `req.file`
- * deliberately: this function runs per field and has no request, so a custom here can
- * only see what Joi has already produced.
+ * which one the caller picked". It is enforced as a schema-level `.custom()` reading
+ * the validated value.
  *
- * Which is why the service re-checks it. Both layers refusing the same thing is not
- * redundancy for its own sake — the validation layer is reachable by a future
- * non-multipart caller that never had an `audio` field at all, and this endpoint is
- * unauthenticated.
+ * **`value.audio` is a marker, not the file.** Multer moves an uploaded file to
+ * `req.file` and leaves `req.body` holding the text fields only, so on a multipart
+ * submission there is no `audio` key here even when a recording is attached — and this
+ * rule answered 422, telling a parent who had recorded a voice note to write a
+ * message instead. `exposeParentAudioToBody` (`middleware/upload.js`) now sets a
+ * truthy placeholder between multer and this schema, so the rule can see that a file
+ * arrived. The bytes stay on `req.file`, where the controller reads them; nothing
+ * multi-megabyte is ever handed to Joi.
+ *
+ * Which is why the service re-checks it from `req.file`. Both layers refusing the same
+ * thing is not redundancy for its own sake: this one depends on a middleware being
+ * mounted in the right position, and the endpoint is unauthenticated.
  */
 export const payNotifySchoolSchema = Joi.object({
   parentName: Joi.string().trim().min(2).max(100).required(),
@@ -333,9 +339,9 @@ export const payNotifySchoolSchema = Joi.object({
     "string.min": "Please write at least a short message so the school can help",
     "string.max": "Please keep your message under 1000 characters",
   }),
-  // Present on a multipart submission. Declared so `stripUnknown: true` — which
-  // `middleware/validate.js` sets globally — does not discard it, and so the schema
-  // documents that this endpoint accepts a file.
+  // A marker placed by `exposeParentAudioToBody` when a recording was attached.
+  // Declared as `any` because only its truthiness matters to the rule below, and
+  // declared at all so `stripUnknown: true` does not discard it.
   audio: Joi.any().optional(),
 }).custom((value, helpers) => {
   const text = String(value?.message || '').trim();

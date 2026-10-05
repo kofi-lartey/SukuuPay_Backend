@@ -19,7 +19,7 @@ import {
 import { recordManualPaymentController } from "../controllers/manualPayment.controller.js";
 import { authenticate, authorize } from "../middleware/authenticate.js";
 import { validate } from "../middleware/validate.js";
-import { uploadParentAudioRoute } from "../middleware/upload.js";
+import { uploadParentAudioRoute, exposeParentAudioToBody } from "../middleware/upload.js";
 import {
   payLinkViewLimit,
   payInitiateLimit,
@@ -115,19 +115,23 @@ paymentRoute.post(
   requestPaymentPlanController
 );
 
-// POST /pay/:token/notify-school - Parent sends a message or a voice note to the bursar
+// POST /pay/:token/notify-school - Parent sends a message, a voice note, or both
 //
-// `uploadParentAudio` runs before `validate` because multer has to parse the
-// multipart body before Joi can see the text fields in it. It is `.single("audio")`,
-// which calls `next()` untouched when the request is not multipart, so the JSON
-// submission this endpoint accepted before still works with no branching.
-//
-// The limiter stays ahead of both, deliberately: a 5 MB upload costs far more to
-// receive than a 300-byte one, and this route is unauthenticated.
+// Order is load-bearing:
+//   payNotifySchoolLimit          — a 5 MB upload costs far more to receive than a
+//                                   300-byte one, and this route is unauthenticated
+//   uploadParentAudioRoute        — `.single("audio")`, a no-op for a JSON body
+//   exposeParentAudioToBody       — puts a marker in `req.body` so the schema below can
+//                                   see that a file arrived (multer leaves it on
+//                                   `req.file`); without this an audio-only submission
+//                                   is rejected with 422 and the recorder cannot be
+//                                   used on its own
+//   validate                      — reads the marker, not the file
 paymentRoute.post(
   "/pay/:token/notify-school",
   payNotifySchoolLimit,
   uploadParentAudioRoute,
+  exposeParentAudioToBody,
   validate(payTokenParamSchema, "params"),
   validate(payNotifySchoolSchema),
   notifySchoolController

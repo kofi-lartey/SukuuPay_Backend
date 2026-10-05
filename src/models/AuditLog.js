@@ -129,6 +129,106 @@ const AUDIT_ACTIONS = [
   "parent.message_sent",
   "parent.message_read",
   "parent.message_resolved",
+
+  // Regulated SMS credit purchase. Kept separate because the questions asked of an
+  // audit log differ per action: "who asked" is an access question, "who released the
+  // units" is a money question, and "what did we buy from Arkesel" is a cost one. A
+  // single `sms.updated` answers none of them.
+  //
+  // NOTE: any value added here must also be added to `AUDIT_ACTIONS` in
+  // `config/constants.js`. The two have drifted before, and
+  // `tests/contractTests.test.js` fails when they disagree — but that test asserts the
+  // *parity*, not the intent, so it would happily pass with two wrong values.
+  "sms.credit_request",
+  "sms.pool_topup",
+  "sms.request_approve",
+  "sms.request_reject",
+
+  // Advertisement requests. `ad.request` is school-originated and `ad.review` is the
+  // moderator's decision — separate because "who asked" is a different question from
+  // "who decided", and an audit log that conflates them answers neither.
+  "ad.request",
+  "ad.review",
+
+  // ─────────────────────────────────────────────
+  // Recovered vocabulary
+  // ─────────────────────────────────────────────
+  //
+  // These were in use for years and **written to no audit row at all**:
+  // `utils/auditService.log` catches the ValidationError an out-of-enum action raises,
+  // so the request succeeded and the audit entry did not exist. Fifty-three call sites
+  // across ten services — `CREATE`, `UPDATE`, `BULK_ARCHIVE`, `ANALYTICS_READ`,
+  // `PROVISION_SCHOOL` — in UPPER_SNAKE while the surrounding vocabulary is dotted
+  // lowercase.
+  //
+  // Normalised rather than added as written, so there is one convention.
+  // `scripts/find-invalid-audit-actions.mjs` reports any literal outside this enum, and
+  // `tests/contractTests.test.js` fails if this list and `AUDIT_ACTIONS` in
+  // `config/constants.js` disagree.
+  //
+  // Any value added here must also be added there.
+  //
+  // ── Student lifecycle ──
+  "student.archive",
+  "student.restore",
+  "student.suspend",
+  "student.unsuspend",
+  "student.reactivate",
+  "student.promote",
+  "student.graduate",
+  "student.repeat_flag",
+  "student.repeat_clear",
+  "student.transfer_class",
+  "student.transfer_out",
+  "student.pay_link_regenerate",
+  "student.parent_add",
+  "student.parent_update",
+  "student.parent_remove",
+  "student.parent_primary_set",
+
+  // ── Bulk operations ──
+  // Prefixed `bulk.` so "was this one student or the whole school" is answerable from
+  // the action alone.
+  "bulk.student_create",
+  "bulk.student_update",
+  "bulk.student_archive",
+  "bulk.student_graduate",
+  "bulk.student_promote",
+  "bulk.student_validate",
+  "bulk.student_status",
+  "bulk.student_pay_link_regenerate",
+
+  // ── Payment plans ──
+  "plan.update",
+  "plan.prepay",
+  "plan.payment_applied",
+  "plan.installment_update",
+  "plan.request",
+
+  // ── Payments ──
+  "payment.initiate",
+  "payment.record_manual",
+  "payment.settlement_applied",
+
+  // ── Email ──
+  "email.send",
+  "email.bulk_send",
+  "email.job_cancel",
+
+  // ── School lifecycle ──
+  // `school.archive` is deliberately distinct from `student.archive`. An earlier pass
+  // normalised both from the bare word `ARCHIVE`, which would have made archiving a
+  // school indistinguishable from archiving a student.
+  "school.archive",
+  "school.provision",
+  "school.join_request",
+  "school.join_approved",
+  "school.join_rejected",
+
+  // ── School assets ──
+  // Not `settings.update`, which means a *platform* setting changed.
+  "school.logo_update",
+  "school.stamp_update",
 ];
 
 const auditLogSchema = new mongoose.Schema(

@@ -276,7 +276,7 @@ const initiateMtnPayment = async (payment, student, school, token) => {
     await payment.save();
 
     await auditService.log({
-      action: "INITIATE_PAYMENT",
+      action: "payment.initiate",
       entity: "Payment",
       entityId: payment._id,
       userId: student.createdBy,
@@ -338,7 +338,7 @@ const initiateHubtelPayment = async (payment, student, school, token) => {
   await payment.save();
 
   await auditService.log({
-    action: "INITIATE_PAYMENT",
+    action: "payment.initiate",
     entity: "Payment",
     entityId: payment._id,
     userId: student.createdBy,
@@ -1119,7 +1119,7 @@ export const claimPaymentSettlement = async (payment) => {
   const claim = await Payment.findOneAndUpdate(
     { _id: payment._id, "settlement.appliedAt": null },
     { $set: { "settlement.appliedAt": new Date() } },
-    { new: true }
+    { returnDocument: 'after' }
   );
 
   if (!claim) return null;
@@ -1223,7 +1223,52 @@ export const handleMtnResult = async (rawPayload) => {
   }
 
   const payment = await Payment.findOne(filter);
+
   if (!payment) {
+    /**
+     * Not a fee payment — try the regulated purchase flows.
+     *
+     * SMS credit and ID-card orders deliberately do **not** mint a `Payment`:
+     * `Payment.studentId` is `required: true` and a school buying credit has no
+     * student, so loosening it would have reached into the settlement path, the Daily
+     * Payments `$lookup` and four compound indexes — and would have rendered a credit
+     * purchase in that report as "Unknown student".
+     *
+     * So those references (`SMS-PAY-…`) live on their own collections and arrive here
+     * on the same shared MTN callback. Matched **before** the "not found" reply below,
+     * which would otherwise acknowledge the callback and drop it on the floor — the
+     * school's money would arrive and their request would sit at `awaiting_payment`
+     * forever, with a support conversation as the only way out.
+     *
+     * Matched on both `referenceId` and `externalId` because `requestToPay` was called
+     * with the same value for each, but MTN does not guarantee which it echoes back on
+     * a given delivery.
+     */
+    const orderRef =
+      transaction.referenceId || transaction.externalId || null;
+
+    if (orderRef) {
+      const { onSmsRequestPaymentConfirmed } = await import(
+        "./smsPurchaseRequest.service.js"
+      );
+
+      const order = await onSmsRequestPaymentConfirmed(orderRef, {
+        financialTransactionId: transaction.financialTransactionId,
+        reason: transaction.statusReason,
+      });
+
+      if (order.matched) {
+        return {
+          success: true,
+          message: order.changed
+            ? "SMS purchase payment confirmed; awaiting administrator approval"
+            : "SMS purchase already recorded",
+          payment: null,
+          order: order.request?.toJSON?.() || null,
+        };
+      }
+    }
+
     console.warn("[MTN-WEBHOOK] Payment not found for payload:", transaction);
     // Acknowledged rather than retried: MTN will redeliver a reference this
     // deployment never issued, and a retry loop turns that into a support
@@ -1246,7 +1291,7 @@ export const handleMtnResult = async (rawPayload) => {
   }
 
   await auditService.log({
-    action: "WEBHOOK_RECEIVED",
+    action: "webhook.received",
     entity: "Payment",
     entityId: payment._id,
     userId: payment.createdBy,
@@ -1357,7 +1402,7 @@ export const handleHubtelWebhook = async (payload) => {
   }
 
   await auditService.log({
-    action: "WEBHOOK_RECEIVED",
+    action: "webhook.received",
     entity: "Payment",
     entityId: payment._id,
     userId: payment.createdBy,
