@@ -1,8 +1,15 @@
 import mongoose from "mongoose";
 
 // Placements keep the ad surface addressable without duplicating the document.
-// `auth_aside` is the green CTA panel on the authentication screens.
-export const AD_PLACEMENTS = ["auth_aside", "home_hero", "dashboard_sidebar"];
+// `advertisement_page` is the public School Advertisements hub (`/advertisements`)
+// and `home_hero` is the auto-playing slider in the homepage hero.
+//
+// `auth_aside` and `dashboard_sidebar` are retired, not aliased: an alias would
+// leave two enum members meaning one surface, and the next reader would not know
+// which one a new submission should use. Creatives still holding a retired value
+// are remapped by `scripts/migrate-ad-placements.mjs` and are simply not served
+// until then — no query matches them.
+export const AD_PLACEMENTS = ["advertisement_page", "home_hero"];
 
 export const AD_STATUSES = [
   "draft",

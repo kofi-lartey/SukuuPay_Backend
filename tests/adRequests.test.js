@@ -38,7 +38,7 @@ const validRequest = () => {
     headline: 'Admissions open for 2026/27',
     imageAlt: 'Students in the school assembly hall',
     linkUrl: 'https://example.edu.gh/admissions',
-    placement: 'auth_aside',
+    placement: 'advertisement_page',
     endsAt: endsAt.toISOString(),
   };
 };
@@ -381,11 +381,14 @@ describe('ad requests: filters and vocabulary', () => {
   test('the placements the form offers are the model’s', () => {
     // `services/adRequests.js` keeps its own copy so the form can show help text. If
     // the two drift, a school picks a placement that is then rejected server-side.
+    //
+    // The vocabulary is exactly two placements: the School Advertisements hub and
+    // the homepage hero. `auth_aside` and `dashboard_sidebar` are retired — the
+    // login/signup aside and the dashboard sidebar no longer carry advertisements.
     const keys = Object.keys(createSchoolAdRequestSchema.describe().keys);
     assert.ok(keys.includes('placement'));
     assert.deepEqual([...AD_PLACEMENTS].sort(), [
-      'auth_aside',
-      'dashboard_sidebar',
+      'advertisement_page',
       'home_hero',
     ]);
   });

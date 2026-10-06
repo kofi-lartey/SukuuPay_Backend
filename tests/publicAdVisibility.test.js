@@ -29,7 +29,7 @@ import { createSchoolAdSchema } from '../src/validations/schoolAd.validation.js'
 import { liveAdsQuery, isLive, visibilityReason } from '../src/controllers/schoolAd.controller.js';
 
 const NOW = new Date('2026-10-05T12:00:00.000Z');
-const PLACEMENT = 'auth_aside';
+const PLACEMENT = 'advertisement_page';
 
 const days = (n) => new Date(NOW.getTime() + n * 24 * 60 * 60 * 1000);
 
@@ -152,11 +152,19 @@ describe('nothing that should be hidden is served', () => {
     assert.ok(!isVisible(filed), 'a pending creative must not be public');
   });
 
-  test('the other placements are not shown on the auth aside', () => {
-    for (const placement of ['home_hero', 'dashboard_sidebar']) {
+  test('the other placements are not shown on this placement', () => {
+    // `home_hero` is the one other live placement. The retired values are
+    // kept in the loop on purpose: no query matches them, so a creative
+    // still holding one is invisible everywhere until the migration
+    // remaps it — which is the safety net, and this is the proof it works.
+    //
+    // The placement is overridden **after** construction: the schema
+    // refuses a retired value, and the subject under test is the query,
+    // not the validator.
+    for (const placement of ['home_hero', 'auth_aside', 'dashboard_sidebar']) {
       assert.ok(
-        !isVisible(persisted({ placement })),
-        `${placement} must not render in the auth aside`
+        !isVisible({ ...persisted(), placement }),
+        `${placement} must not render in the ${PLACEMENT} slot`
       );
     }
   });
@@ -165,12 +173,12 @@ describe('nothing that should be hidden is served', () => {
     // Half-open: `endsAt > now`, so the last second of the run still renders and the
     // next one does not. An expired ad needs no cleanup to stop being served.
     //
-    // `endsAt` is set on the **persisted document** rather than through the schema: the
-    // schema refuses a past date, which is correct for a request and useless here,
-    // because an ad's window closes by the clock moving rather than by anyone editing
-    // it. The subject under test is the query, and the query must survive a document
+    // `endsAt` is overridden **after** construction, not passed through
+    // the schema: the schema refuses a past date — and a date that was
+    // future when this test was written is past by now — while the
+    // subject under test is the query, which must survive a document
     // that has aged.
-    assert.ok(isVisible(persisted({ endsAt: days(1).toISOString() })));
+    assert.ok(isVisible({ ...persisted(), endsAt: days(1) }));
     assert.ok(!isVisible({ ...persisted(), endsAt: days(-1) }));
     assert.ok(!isVisible({ ...persisted(), endsAt: NOW }), 'endsAt == now is over');
   });
@@ -248,33 +256,34 @@ describe('the console is told why a creative is not showing', () => {
   });
 });
 
-describe('the placement the login page asks for', () => {
-  test('the auth aside defaults to auth_aside', () => {
+describe('the placement the public pages ask for', () => {
+  test('the public endpoint defaults to advertisement_page', () => {
     // `listSchoolAdsQuerySchema.placement` has no default on purpose — the shared schema
     // would then hide every other placement from the moderation queue — so
     // `listPublicSchoolAds` applies its own fallback. Both the fallback and what the
-    // carousel requests have to be the same string, and this pins the server half.
+    // hub page requests have to be the same string, and this pins the server half.
     const source = readFileSync(
       new URL('../src/controllers/schoolAd.controller.js', import.meta.url),
       'utf8'
     );
-    assert.match(source, /req\.query\.placement \|\| "auth_aside"/);
-    assert.equal(PLACEMENT, 'auth_aside');
+    assert.match(source, /req\.query\.placement \|\| "advertisement_page"/);
+    assert.equal(PLACEMENT, 'advertisement_page');
   });
 
-  test('the carousel requests the same placement the console form defaults to', () => {
+  test('the service default and the model enum agree, and the aside fetches nothing', () => {
     const frontend = new URL('../../frontend/src/', import.meta.url);
 
-    // The default is written in three places and must not drift: the carousel's prop, the
-    // service's parameter, and the console form's initial state. Each was `auth_aside`
-    // independently, which is exactly why a rename is a three-file change.
-    const carousel = readFileSync(new URL('components/auth/SchoolAdCarousel.jsx', frontend), 'utf8');
+    // The vocabulary is written in the model, the validation schemas and the
+    // frontend service, and the three must not drift. The auth aside is the
+    // third place it used to be written, and it is deliberately **absent**
+    // now: the `auth_aside` placement was retired, so the aside renders its
+    // metrics band permanently and must not fetch advertisements at all.
     const service = readFileSync(new URL('services/schoolAds.js', frontend), 'utf8');
     const aside = readFileSync(new URL('components/auth/OnboardingAside.jsx', frontend), 'utf8');
 
-    assert.match(carousel, /placement = 'auth_aside'/);
-    assert.match(service, /placement = 'auth_aside'\)/);
-    assert.match(aside, /SchoolAdSlot placement="auth_aside"/);
+    assert.match(service, /placement = 'advertisement_page'[),]/);
+    assert.ok(!aside.includes('SchoolAdSlot'), 'the aside must not mount an ad band');
+    assert.ok(!aside.includes('SchoolAdCarousel'), 'the aside must not fetch advertisements');
   });
 });
 

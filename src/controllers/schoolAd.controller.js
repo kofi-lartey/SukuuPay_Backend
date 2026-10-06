@@ -33,7 +33,12 @@ import auditService from "../utils/auditService.js";
  * `{ placement, status, endsAt }` on the model is legible as being served by it.
  */
 const liveAdsQuery = (placement, now = new Date()) => ({
-  placement,
+  // A null placement means "every placement" — the term is omitted
+  // rather than matched literally, because `placement: null` in a Mongo
+  // query matches only documents whose placement *is* null, and no
+  // document has one. This is what `placement=all` on the public
+  // endpoint resolves to.
+  ...(placement ? { placement } : {}),
   status: "approved",
   deletedAt: null,
   endsAt: { $gt: now },
@@ -98,13 +103,32 @@ export const listPublicSchoolAds = async (req, res) => {
       return res.status(200).json({ success: true, ads: [], adsEnabled: false });
     }
 
-    const placement = req.query.placement || "auth_aside";
+    const placement = req.query.placement || "advertisement_page";
     const now = new Date();
 
-    const ads = await SchoolAd.find(liveAdsQuery(placement, now))
+    // `placement=all` is the School Advertisements hub's query: every
+    // live creative, across every placement, in one request. The term is
+    // simply omitted from the query rather than matched literally — no
+    // document carries a placement of "all".
+    const query = liveAdsQuery(placement === "all" ? null : placement, now);
+
+    // The hub page asks for up to 24; the default of 6 keeps the small
+    // consumers (a single-placement band) exactly as cheap as before.
+    const perPage = Math.min(
+      Math.max(Number(req.query.perPage) || 6, 1),
+      24
+    );
+
+    const ads = await SchoolAd.find(query)
       .sort({ sortWeight: -1, createdAt: 1 })
-      .limit(6)
-      .select("schoolName headline imageUrl imageAlt linkUrl")
+      .limit(perPage)
+      // `placement`, `writeup` and `endsAt` are the three fields the hub
+      // page renders (a placement badge, the body copy and a run-until
+      // date) and the slider does not need — but the projection is shared,
+      // and naming them here is what makes one endpoint serve both.
+      .select(
+        "schoolId schoolName headline writeup imageUrl imageAlt linkUrl placement endsAt"
+      )
       .lean();
 
     /*
@@ -169,7 +193,11 @@ export const listSchoolAds = async (req, res) => {
     const { page = 1, perPage = 20, placement, status } = req.query;
 
     const filter = { deletedAt: null };
-    if (placement) filter.placement = placement;
+    // `placement=all` is accepted on the shared schema so the public hub
+    // and the moderation queue validate the same vocabulary; here it means
+    // "no placement filter" rather than a literal match, which would
+    // silently return an empty queue.
+    if (placement && placement !== "all") filter.placement = placement;
     if (status) filter.status = status;
 
     const [ads, total] = await Promise.all([

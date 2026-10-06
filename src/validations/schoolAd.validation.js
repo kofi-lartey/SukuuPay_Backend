@@ -34,7 +34,7 @@ const adBody = {
     .messages({ "array.max": "An advertisement carries at most 4 images" }),
   imageAlt: Joi.string().trim().min(5).max(160).required(),
   linkUrl: safeUrl,
-  placement: Joi.string().valid(...AD_PLACEMENTS).default("auth_aside"),
+  placement: Joi.string().valid(...AD_PLACEMENTS).default("advertisement_page"),
   endsAt: Joi.date().iso().required(),
   sortWeight: Joi.number().integer().min(-100).max(100).default(0),
 };
@@ -139,7 +139,7 @@ export const createSchoolAdRequestSchema = Joi.object({
   // is unreadable to a screen reader, and these render on every unauthenticated page.
   imageAlt: Joi.string().trim().min(5).max(160).required(),
   linkUrl: safeUrl,
-  placement: Joi.string().valid(...AD_PLACEMENTS).default("auth_aside"),
+  placement: Joi.string().valid(...AD_PLACEMENTS).default("advertisement_page"),
   endsAt: Joi.date().min("now").required().messages({
     "date.min": "Choose an end date in the future",
   }),
@@ -161,8 +161,13 @@ export const schoolAdIdParamSchema = Joi.object({
 export const listSchoolAdsQuerySchema = Joi.object({
   // No default here: this schema is shared by the public slider and the admin
   // moderation queue, and a default would hide every other placement from the
-  // queue. listPublicSchoolAds falls back to "auth_aside" itself.
-  placement: Joi.string().valid(...AD_PLACEMENTS).optional(),
+  // queue. listPublicSchoolAds falls back to "advertisement_page" itself.
+  //
+  // "all" is accepted so the public School Advertisements hub can fetch every
+  // live creative in one request. Both controllers treat it as "no placement
+  // filter" — the admin queue does `placement !== "all"` before filtering,
+  // because filtering on the literal string "all" would match nothing.
+  placement: Joi.string().valid(...AD_PLACEMENTS, "all").optional(),
   status: Joi.string().valid(...AD_STATUSES).optional(),
   page: Joi.number().integer().min(1).default(1),
   perPage: Joi.number().integer().min(1).max(100).default(20),

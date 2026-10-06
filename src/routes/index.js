@@ -21,6 +21,7 @@ import { smsRoute } from './sms.routes.js';
 import { smsRequestRoute } from './smsRequest.routes.js';
 import { webhookRoute } from './webhooks.routes.js';
 import { publicAdRoute, schoolAdRoute } from './schoolAd.routes.js';
+import { publicSchoolRoute } from './public.routes.js';
 import { maintenanceGuard } from '../middleware/maintenance.js';
 
 const router = Router();
@@ -67,6 +68,10 @@ router.use('/settings', settingsRoute);
 router.use('/admin', adminRoute);
 // The unauthenticated ad slider.
 router.use('/', publicAdRoute);
+// The unauthenticated school surface — the homepage logo carousel.
+// Separate from the ad router: a different resource, a different
+// projection to protect.
+router.use('/', publicSchoolRoute);
 // A school's own advertisement requests. Mounted separately from the public router
 // because it is `authenticate`d — and kept adjacent so the two halves of the ad feature
 // stay in one file, where the contrast between "may read everything" and "may read only
