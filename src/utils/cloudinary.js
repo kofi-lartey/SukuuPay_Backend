@@ -7,56 +7,81 @@ cloudinary.config({
   api_secret: CLOUDINARY_API_SECRET,
 });
 
+const CLOUDINARY_UPLOAD_TIMEOUT_MS = 20000;
+
+const isCloudinaryConfigured = () =>
+  CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET;
+
+const uploadWithTimeout = (promise, timeoutMs = CLOUDINARY_UPLOAD_TIMEOUT_MS) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Cloudinary upload timed out')), timeoutMs)
+    ),
+  ]);
+
 // Uploads a raw Buffer to Cloudinary.  Used for post-processing flows where
 // image data is resized/validated before being handed to Cloudinary.
 export const uploadBuffer = async (buffer, options = {}) => {
+  if (!isCloudinaryConfigured()) {
+    throw new Error('Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.');
+  }
+
   const timestamp = Date.now();
   const publicId = `sukuupay-${timestamp}-${Math.round(Math.random() * 1e9)}`;
   const folder = options.folder || CLOUDINARY_UPLOAD_FOLDER;
   const transformation = options.transformation || [];
   const resourceType = options.resourceType || "image";
 
-  return new Promise((resolve, reject) => {
-    cloudinary.v2.uploader.upload(
-      `data:image/png;base64,${buffer.toString("base64")}`,
-      {
-        folder,
-        public_id: publicId,
-        resource_type: resourceType,
-        transformation,
-        ...options,
-      },
-      (error, result) => {
-        if (error) reject(error);
-        else resolve(result);
-      }
-    );
-  });
+  return uploadWithTimeout(
+    new Promise((resolve, reject) => {
+      cloudinary.v2.uploader.upload(
+        `data:image/png;base64,${buffer.toString("base64")}`,
+        {
+          folder,
+          public_id: publicId,
+          resource_type: resourceType,
+          transformation,
+          ...options,
+        },
+        (error, result) => {
+          if (error) reject(error);
+          else resolve(result);
+        }
+      );
+    })
+  );
 };
 
 // Uploads from a readable stream (used by ZIP bulk upload).
 export const uploadStream = async (stream, options = {}) => {
+  if (!isCloudinaryConfigured()) {
+    throw new Error('Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.');
+  }
+
   const timestamp = Date.now();
   const publicId = `sukuupay-${timestamp}-${Math.round(Math.random() * 1e9)}`;
   const folder = options.folder || CLOUDINARY_UPLOAD_FOLDER;
 
-  return new Promise((resolve, reject) => {
-    const upload = cloudinary.v2.uploader.upload_stream(
-      {
-        folder,
-        public_id: publicId,
-        resource_type: options.resourceType || "image",
-        transformation: options.transformation || [],
-        ...options,
-      },
-      (error, result) => {
-        if (error) reject(error);
-        else resolve(result);
-      }
-    );
+  return uploadWithTimeout(
+    new Promise((resolve, reject) => {
+      const upload = cloudinary.v2.uploader.upload_stream(
+        {
+          folder,
+          public_id: publicId,
+          resource_type: options.resourceType || "image",
+          transformation: options.transformation || [],
+          ...options,
+        },
+        (error, result) => {
+          if (error) reject(error);
+          else resolve(result);
+        }
+      );
 
-    stream.pipe(upload);
-  });
+      stream.pipe(upload);
+    })
+  );
 };
 
 /**
@@ -84,6 +109,10 @@ export const uploadStream = async (stream, options = {}) => {
  * @returns {Promise<{ url: string, publicId: string, bytes: number, duration: number|null }>}
  */
 export const uploadAudioBuffer = async (buffer, options = {}) => {
+  if (!isCloudinaryConfigured()) {
+    throw new Error('Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.');
+  }
+
   const mimeType = options.mimeType || "application/octet-stream";
   const folder = options.folder || CLOUDINARY_UPLOAD_FOLDER;
   const prefix = options.publicIdPrefix || "parent-audio";
@@ -97,24 +126,26 @@ export const uploadAudioBuffer = async (buffer, options = {}) => {
 
   const dataUri = `data:${mimeType};base64,${buffer.toString("base64")}`;
 
-  const result = await new Promise((resolve, reject) => {
-    cloudinary.v2.uploader.upload(
-      dataUri,
-      {
-        folder,
-        resource_type: "video",
-        public_id: `${prefix}-${Date.now()}-${Math.round(Math.random() * 1e9)}`,
-        // `audio_codec: "none"` stops Cloudinary generating an audio-only
-        // transcoded derivative that nothing in the product serves. We store the
-        // original and stream it.
-        audio_codec: "none",
-      },
-      (error, res) => {
-        if (error) reject(error);
-        else resolve(res);
-      }
-    );
-  });
+  const result = await uploadWithTimeout(
+    new Promise((resolve, reject) => {
+      cloudinary.v2.uploader.upload(
+        dataUri,
+        {
+          folder,
+          resource_type: "video",
+          public_id: `${prefix}-${Date.now()}-${Math.round(Math.random() * 1e9)}`,
+          // `audio_codec: "none"` stops Cloudinary generating an audio-only
+          // transcoded derivative that nothing in the product serves. We store the
+          // original and stream it.
+          audio_codec: "none",
+        },
+        (error, res) => {
+          if (error) reject(error);
+          else resolve(res);
+        }
+      );
+    })
+  );
 
   return {
     url: result.secure_url,
