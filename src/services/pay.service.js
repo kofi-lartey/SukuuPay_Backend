@@ -1014,7 +1014,7 @@ export const notifySchool = async (token, data) => {
       audioFailure = String(error?.message || 'Audio upload failed').slice(0, 300);
       if (!text) {
         throw new ApiError(
-          'We could not save your voice note. Please record it again, or send a written message.',
+          `We could not save your voice note: ${audioFailure}. Please record it again, or send a written message.`,
           502,
           'AUDIO_UPLOAD_FAILED'
         );
