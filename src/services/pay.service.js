@@ -998,10 +998,79 @@ export const notifySchool = async (token, data) => {
   let audioMeta = null;
   let audioFailure = null;
   if (hasAudio) {
+    // ── Pre-flight: validate the voice note before it reaches Cloudinary ──
+    //
+    // Cloudinary's errors are written for developers ("Cannot output video. No
+    // video or audio channel detected.") and would surface to a parent as a
+    // 502 that implies the server is down. Validate here first, so the parent
+    // gets an actionable 400 and Cloudinary never sees a file it cannot read.
+    if (!audio.buffer || audio.buffer.length < 1024) {
+      throw new ApiError(
+        'That voice note was too short to save. Please record again, or write your message.',
+        400,
+        'AUDIO_TOO_SHORT'
+      );
+    }
+
+    const allowedMimes = [
+      'audio/webm',
+      'audio/ogg',
+      'audio/mp4',
+      'audio/m4a',
+      'audio/x-m4a',
+      'audio/mpeg',
+      'audio/mp3',
+      'audio/wav',
+      // Some browsers report video/* for audio-only recordings.
+      'video/webm',
+      'video/mp4',
+    ];
+
+    const mime = (audio.mimetype || '').toLowerCase();
+    const mimeOk = allowedMimes.some((allowed) => mime.startsWith(allowed));
+
+    if (!mimeOk) {
+      throw new ApiError(
+        'That file type is not supported for voice notes. Please record again.',
+        400,
+        'AUDIO_UNSUPPORTED_TYPE',
+        { receivedMime: mime }
+      );
+    }
+
+    // Check the magic bytes. Multer's `mimetype` is client-supplied and lies
+    // whenever the frontend is confused; the first four bytes never lie.
+    const head = audio.buffer.slice(0, 4);
+    const headerHex = head.toString('hex').toLowerCase();
+    const isWebM = headerHex.startsWith('1a45dfa3');
+    const isMP4 = headerHex.startsWith('000000');
+    const isOgg = headerHex.startsWith('4f676753');
+    const isWav = headerHex.startsWith('52494646');
+    const isMp3 = headerHex.startsWith('494433') || headerHex.startsWith('fffb') || headerHex.startsWith('fff3');
+
+    if (!isWebM && !isMP4 && !isOgg && !isWav && !isMp3) {
+      throw new ApiError(
+        'That voice note is not in a format we can process. Please record again, or write your message.',
+        400,
+        'AUDIO_BAD_HEADER',
+        { headerHex }
+      );
+    }
+
     try {
       const uploaded = await uploadAudioBuffer(audio.buffer, {
         mimeType: audio.mimetype,
         folder: `${CLOUDINARY_UPLOAD_FOLDER}/schools/${school.slug || student.schoolId}/parent-messages`,
+        // Explicit Cloudinary options. `resource_type: "video"` is required:
+        // audio is a subtype of the video pipeline on Cloudinary, and `auto` may
+        // misclassify an Opus/WebM file, producing exactly the "no audio channel"
+        // error the parent is seeing. `format: "m4a"` forces re-containerization
+        // to MP4/AAC so the stored asset is decodable by every browser and every
+        // player the bursar might reach for.
+        resourceType: 'video',
+        format: 'm4a',
+        audioCodec: 'aac',
+        timeout: 60000,
       });
       audioMeta = {
         url: uploaded.url,
@@ -1011,12 +1080,24 @@ export const notifySchool = async (token, data) => {
         durationSeconds: uploaded.duration,
       };
     } catch (error) {
-      audioFailure = String(error?.message || 'Audio upload failed').slice(0, 300);
+      // Cloudinary's message is developer-facing; translate the common cases.
+      const raw = String(error?.message || '').toLowerCase();
+
+      const isUnreadable =
+        raw.includes('no video or audio channel') ||
+        raw.includes('unsupported') ||
+        raw.includes('invalid file');
+
+      audioFailure = isUnreadable
+        ? 'We could not read that voice note. Please try recording again, or send a written message.'
+        : 'We could not save your voice note right now. Please try again, or send a written message.';
+
       if (!text) {
         throw new ApiError(
-          `We could not save your voice note: ${audioFailure}. Please record it again, or send a written message.`,
-          502,
-          'AUDIO_UPLOAD_FAILED'
+          audioFailure,
+          isUnreadable ? 400 : 502,
+          isUnreadable ? 'AUDIO_UNREADABLE' : 'AUDIO_UPLOAD_FAILED',
+          { cloudinaryMessage: error?.message }
         );
       }
     }
@@ -1127,49 +1208,12 @@ export const notifySchool = async (token, data) => {
     );
   }
 
-  // ── 3. The SMS alert. Guarded, and its outcome recorded on the row. ──
-  //
-  // The recipient is an admin with a phone, or failing that the school's own published
-  // number. A school that has published a phone for parents to call has published it
-  // to be reached, and requiring a staff member to have personally entered one is a
-  // stricter condition than the product's own front page sets.
-  const adminRecipient = (recipients || []).map((a) => a.phone).find(Boolean);
-  const alertNumber = adminRecipient || school?.phone || null;
-
+  // ── 3. The SMS alert. DISABLED for parent messages per product decision. ──
+  // The in-app notification (step 2) is sufficient; SMS was causing delivery
+  // failures and billing issues. Kept fields on the model for audit history.
   let delivered = false;
-  let smsFailure = null;
+  let smsFailure = 'SMS alerts disabled for parent messages';
 
-  if (alertNumber) {
-    try {
-      const sms = await sendSms({
-        to: alertNumber,
-        // Trimmed to roughly one segment: the gateway would otherwise split this into
-        // three texts and bill the school for all three, to convey the same
-        // "please call this parent back".
-        message: deliveredAudio
-          ? `SukuuPay: ${parentName} (${parentPhone}) sent a voice note re ${student.studentName}. ${text}`.slice(0, 300)
-          : `SukuuPay: ${parentName} (${parentPhone}) re ${student.studentName}: ${text}`.slice(0, 300),
-        school,
-        purpose: 'parent_message',
-        studentId: student._id,
-        parentName,
-      });
-      delivered = Boolean(sms?.sent);
-      if (!delivered) smsFailure = 'The gateway accepted the request but did not confirm delivery';
-    } catch (error) {
-      smsFailure = String(error?.message || 'SMS alert failed').slice(0, 300);
-      console.error(
-        `[PAY-PORTAL] Parent message SMS alert failed for ${parentMessage.messageId}:`,
-        error.message
-      );
-    }
-  } else {
-    smsFailure = 'No administrator phone number and no school phone number on file';
-  }
-
-  // The outcome is written back rather than computed at read time, because "why did
-  // this parent get no call" is a question the bursar asks weeks later, when the
-  // admin list and the school's phone field may both have changed.
   parentMessage.smsAlerted = delivered;
   parentMessage.smsAlertFailure = smsFailure;
   await parentMessage.save();
@@ -1190,7 +1234,7 @@ export const notifySchool = async (token, data) => {
       chars: text.length,
       hasAudio: deliveredAudio,
       audioBytes: audioMeta?.bytes ?? null,
-      audioUploadFailure,
+      audioUploadFailure: audioFailure,
       notifiedAdmins: adminsNotified,
       smsAlerted: delivered,
       smsFailure,

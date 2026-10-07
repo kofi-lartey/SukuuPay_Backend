@@ -126,25 +126,33 @@ export const uploadAudioBuffer = async (buffer, options = {}) => {
 
   const dataUri = `data:${mimeType};base64,${buffer.toString("base64")}`;
 
+  // Defaults here are the safe ones: `video` is where Cloudinary files audio,
+  // and `audio_codec: "none"` stops Cloudinary generating an audio-only
+  // transcoded derivative that nothing in the product serves. Callers may
+  // override either — the parent-message path passes `format: "m4a"` and
+  // `audio_codec: "aac"` to force re-containerization into something every
+  // browser and every player can read.
+  const uploadOptions = {
+    folder,
+    resource_type: options.resourceType || "video",
+    public_id: `${prefix}-${Date.now()}-${Math.round(Math.random() * 1e9)}`,
+    audio_codec: options.audioCodec || "none",
+    ...(options.format ? { format: options.format } : {}),
+    ...(options.timeout ? { timeout: options.timeout } : {}),
+  };
+
   const result = await uploadWithTimeout(
     new Promise((resolve, reject) => {
       cloudinary.v2.uploader.upload(
         dataUri,
-        {
-          folder,
-          resource_type: "video",
-          public_id: `${prefix}-${Date.now()}-${Math.round(Math.random() * 1e9)}`,
-          // `audio_codec: "none"` stops Cloudinary generating an audio-only
-          // transcoded derivative that nothing in the product serves. We store the
-          // original and stream it.
-          audio_codec: "none",
-        },
+        uploadOptions,
         (error, res) => {
           if (error) reject(error);
           else resolve(res);
         }
       );
-    })
+    }),
+    options.timeout
   );
 
   return {

@@ -171,6 +171,7 @@ export const requestPaymentPlanController = async (req, res) => {
     return res.status(error.status || 500).json({
       success: false,
       message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
     });
   }
 };
@@ -220,6 +221,7 @@ export const notifySchoolController = async (req, res) => {
     return res.status(error.status || 500).json({
       success: false,
       message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
     });
   }
 };
