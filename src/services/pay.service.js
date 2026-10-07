@@ -12,6 +12,8 @@ import { sendSms } from "../utils/smsService.js";
 import { uploadAudioBuffer } from "../utils/cloudinary.js";
 import { CLOUDINARY_UPLOAD_FOLDER } from "../config/env.js";
 import { AUDIT_ACTIONS, NOTIFICATION_TYPES } from "../config/constants.js";
+import { consumeRateLimit, peekRateLimit, RateLimitError } from "../utils/rateLimiter.js";
+import { PAY_PORTAL_LIMITS } from "../middleware/rateLimit.js";
 import {
   generateInstallmentSchedule,
   generateAcceptanceToken,
@@ -1020,6 +1022,33 @@ export const notifySchool = async (token, data) => {
     }
   }
 
+  // ── 1b. The rate limit. ──
+  //
+  // This used to be a route middleware running ahead of everything else, and that is
+  // exactly why a parent whose audio uploads kept failing burned their whole daily
+  // allowance on messages that were never recorded — and then got a 429 that read
+  // "you have already sent several messages" about a link with zero of them.
+  //
+  // It now peeks before the write and consumes only after it, so a failed attempt
+  // costs nothing while the budget still bounds how many real messages a token can
+  // send. Keyed on the token's suffix, matching `tokenIdentity` in rateLimit.js, so
+  // this is the same bucket the route limiter would have used.
+  const rateLimitKey = `tok:${String(token).slice(-4)}`;
+  const rateLimit = {
+    max: PAY_PORTAL_LIMITS.notifySchool.max,
+    windowMs: PAY_PORTAL_LIMITS.notifySchool.windowMs,
+    message: PAY_PORTAL_LIMITS.notifySchool.message,
+  };
+  const existing = peekRateLimit(rateLimitKey);
+  if (existing && existing.count >= rateLimit.max) {
+    throw new ApiError(
+      rateLimit.message,
+      429,
+      'RATE_LIMITED',
+      { retryAfter: Math.max(1, Math.ceil((existing.resetAt - Date.now()) / 1000)) }
+    );
+  }
+
   const parentMessage = await ParentMessage.create({
     schoolId: student.schoolId,
     studentId: student._id,
@@ -1035,6 +1064,17 @@ export const notifySchool = async (token, data) => {
     status: 'new',
     ip: data.ip || null,
   });
+
+  // Consume only once the row exists. A message that was never recorded must never
+  // count against the parent's budget.
+  try {
+    consumeRateLimit(rateLimitKey, rateLimit.max, rateLimit.windowMs);
+  } catch (rateLimitError) {
+    console.error(
+      `[PAY-PORTAL] Rate limit exceeded after write for ${parentMessage.messageId}:`,
+      rateLimitError.message
+    );
+  }
 
   // ── 2. The in-app alert. Guarded: a failure here must not fail the request. ──
   //

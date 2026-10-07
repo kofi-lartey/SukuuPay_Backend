@@ -25,7 +25,6 @@ import {
   payInitiateLimit,
   payVerifyLimit,
   payRequestPlanLimit,
-  payNotifySchoolLimit,
 } from "../middleware/rateLimit.js";
 import {
   payTokenParamSchema,
@@ -118,8 +117,6 @@ paymentRoute.post(
 // POST /pay/:token/notify-school - Parent sends a message, a voice note, or both
 //
 // Order is load-bearing:
-//   payNotifySchoolLimit          — a 5 MB upload costs far more to receive than a
-//                                   300-byte one, and this route is unauthenticated
 //   uploadParentAudioRoute        — `.single("audio")`, a no-op for a JSON body
 //   exposeParentAudioToBody       — puts a marker in `req.body` so the schema below can
 //                                   see that a file arrived (multer leaves it on
@@ -127,9 +124,17 @@ paymentRoute.post(
 //                                   is rejected with 422 and the recorder cannot be
 //                                   used on its own
 //   validate                      — reads the marker, not the file
+//
+// **The rate limit is not mounted here.** It used to be, ahead of everything else,
+// and that is precisely why a parent whose audio uploads kept failing could burn
+// their whole daily allowance on messages that never reached the inbox: every
+// attempt — successful or not — counted. The limit now lives in
+// `pay.service.js:notifySchool`, consumed only after the `ParentMessage` row is
+// written, so a message that was never recorded never costs budget. The parent
+// sees "you have already sent several messages" only when several messages
+// actually exist.
 paymentRoute.post(
   "/pay/:token/notify-school",
-  payNotifySchoolLimit,
   uploadParentAudioRoute,
   exposeParentAudioToBody,
   validate(payTokenParamSchema, "params"),

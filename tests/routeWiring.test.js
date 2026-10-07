@@ -90,9 +90,16 @@ describe('every registered route handler is callable', () => {
 
   test('the pay portal message route is wired end to end', () => {
     // The route a parent uses to write in, named explicitly because it is the one that
-    // broke. Five layers between the path and the controller, each of which could have
-    // been undefined: the limiter, the multer wrapper, the body marker, two validators
-    // and the controller itself.
+    // broke. Four layers between the path and the controller, each of which could have
+    // been undefined: the multer wrapper, the body marker, two validators and the
+    // controller itself.
+    //
+    // **The rate limiter is no longer one of them.** It used to sit ahead of the
+    // upload, so a parent whose audio uploads kept failing burned their whole daily
+    // allowance on messages that were never recorded — and then got a 429 that read
+    // "you have already sent several messages" about a link with zero of them. The
+    // limit now lives in `pay.service.js:notifySchool`, consumed only after the row is
+    // written, so a failed attempt costs nothing.
     //
     // Counted rather than matched by name. Every layer here is an anonymous arrow, so
     // `layer.name` is empty for all of them — asserting on a name would be asserting on
@@ -101,8 +108,8 @@ describe('every registered route handler is callable', () => {
 
     assert.equal(
       notify.length,
-      6,
-      `expected limiter + upload + marker + 2 validators + controller, found ${notify.length}`
+      5,
+      `expected upload + marker + 2 validators + controller, found ${notify.length}`
     );
     assert.ok(
       notify.every((l) => typeof l.handler === 'function'),
