@@ -137,6 +137,22 @@ const parentMessageSchema = new mongoose.Schema(
     /** Denormalised so the inbox can filter and sort without a $lookup per row. */
     hasAudio: { type: Boolean, default: false, index: true },
 
+    /**
+     * Why a recording that the parent attached did not make it onto the row.
+     *
+     * Set when `uploadAudioBuffer` throws and the parent also wrote text, so the
+     * message is still saved. Null means either no audio was sent or it uploaded
+     * cleanly — the two are indistinguishable from this field alone, which is
+     * deliberate: a bursar should not have to wonder whether a silent row means
+     * "no recording" or "recording lost".
+     */
+    audioUploadFailure: {
+      type: String,
+      default: null,
+      trim: true,
+      maxlength: 300,
+    },
+
     status: {
       type: String,
       enum: PARENT_MESSAGE_STATUS_VALUES,

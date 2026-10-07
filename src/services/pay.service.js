@@ -943,7 +943,8 @@ const notifyPlanRequest = async (school, student, plan, { parentName, parentPhon
  *   audio?: { buffer: Buffer, mimetype: string, bytes?: number } }} data
  * @returns {Promise<{ messageId: string, delivered: boolean,
  *   notificationLogged: boolean, adminsNotified: number,
- *   audioUrl: string|null, schoolPhone: string|null, hasAudio: boolean }>}
+ *   audioUrl: string|null, schoolPhone: string|null, hasAudio: boolean,
+ *   audioUploadFailure: string|null }>}
  */
 export const notifySchool = async (token, data) => {
   const student = await requireStudentByToken(token);
@@ -980,7 +981,20 @@ export const notifySchool = async (token, data) => {
   // Audio is uploaded before the row is created rather than after, because a row
   // pointing at a Cloudinary asset that was never uploaded is a dangling reference a
   // bursar clicks and gets a 404 on. If the upload throws, nothing is written.
+  //
+  // **A failed upload does not fail the request when the parent also wrote text.**
+  // The old behaviour threw `AUDIO_UPLOAD_FAILED` (502) unconditionally, which meant
+  // a parent who recorded a voice note and typed a sentence at the same time got
+  // "We could not save your voice note" — and their *written* message was discarded
+  // with it. The recording is a bonus, not the message: the text is the record, and
+  // it belongs in the inbox regardless of what the media layer is doing. Cloudinary
+  // credentials missing on a deployment, a transient 5xx, a per-account quota —
+  // none of those are reasons to lose a parent's words.
+  //
+  // The voice note alone is a different story: with no text there is nothing left
+  // to save, and telling the parent to retry is the only honest answer.
   let audioMeta = null;
+  let audioFailure = null;
   if (hasAudio) {
     try {
       const uploaded = await uploadAudioBuffer(audio.buffer, {
@@ -995,14 +1009,14 @@ export const notifySchool = async (token, data) => {
         durationSeconds: uploaded.duration,
       };
     } catch (error) {
-      // Surfaced to the parent as a plain failure rather than a 500: their recording
-      // did not save, and telling them "please try again" is actionable where
-      // "Something went wrong" is not.
-      throw new ApiError(
-        'We could not save your voice note. Please record it again, or send a written message.',
-        502,
-        'AUDIO_UPLOAD_FAILED'
-      );
+      audioFailure = String(error?.message || 'Audio upload failed').slice(0, 300);
+      if (!text) {
+        throw new ApiError(
+          'We could not save your voice note. Please record it again, or send a written message.',
+          502,
+          'AUDIO_UPLOAD_FAILED'
+        );
+      }
     }
   }
 
@@ -1016,19 +1030,25 @@ export const notifySchool = async (token, data) => {
     parentPhone,
     message: text || null,
     audio: audioMeta || undefined,
-    hasAudio,
+    hasAudio: Boolean(audioMeta),
+    audioUploadFailure: audioFailure,
     status: 'new',
     ip: data.ip || null,
   });
 
   // ── 2. The in-app alert. Guarded: a failure here must not fail the request. ──
-  const subject = hasAudio
+  //
+  // The voice-note flag is the one that survived the upload, not the one the parent
+  // attached: if Cloudinary rejected the recording and the parent also wrote text,
+  // this is a written message with a failed media attachment, not a voice note.
+  const deliveredAudio = Boolean(audioMeta);
+  const subject = deliveredAudio
     ? `Parent voice note — ${student.studentName}`
     : `Parent message — ${student.studentName}`;
 
   // The body is a summary because `Notification.message` is capped at 500 characters;
   // the verbatim text and the callback number live in `meta`, which is unbounded.
-  const summary = hasAudio
+  const summary = deliveredAudio
     ? `${parentName} (${maskContact(parentPhone)}) sent a voice note about ${student.studentName} (${student.studentClass}).${text ? ` They also wrote: ${text}` : ''}`
     : `${parentName} (${maskContact(parentPhone)}) asked about ${student.studentName} (${student.studentClass}): ${text}`;
 
@@ -1039,7 +1059,7 @@ export const notifySchool = async (token, data) => {
       // `Notification.type` enum is checked against and a literal here is exactly how
       // `parent.audio_message` came to be storable nowhere: the type existed, this
       // call site produced it, and the model's copy of the list had never heard of it.
-      type: hasAudio ? NOTIFICATION_TYPES.PARENT_AUDIO_MESSAGE : NOTIFICATION_TYPES.PARENT_MESSAGE,
+      type: deliveredAudio ? NOTIFICATION_TYPES.PARENT_AUDIO_MESSAGE : NOTIFICATION_TYPES.PARENT_MESSAGE,
       title: subject,
       message: summary,
       // The inbox, not the roster. `/dashboard/students` was the old link and it is
@@ -1055,7 +1075,8 @@ export const notifySchool = async (token, data) => {
         parentPhone,
         message: text,
         audioUrl: audioMeta?.url || null,
-        hasAudio,
+        hasAudio: deliveredAudio,
+        audioUploadFailure: audioFailure,
       },
     });
     adminsNotified = result.written;
@@ -1085,7 +1106,7 @@ export const notifySchool = async (token, data) => {
         // Trimmed to roughly one segment: the gateway would otherwise split this into
         // three texts and bill the school for all three, to convey the same
         // "please call this parent back".
-        message: hasAudio
+        message: deliveredAudio
           ? `SukuuPay: ${parentName} (${parentPhone}) sent a voice note re ${student.studentName}. ${text}`.slice(0, 300)
           : `SukuuPay: ${parentName} (${parentPhone}) re ${student.studentName}: ${text}`.slice(0, 300),
         school,
@@ -1127,8 +1148,9 @@ export const notifySchool = async (token, data) => {
       ref: parentMessage.messageId,
       studentRef: student.studentId,
       chars: text.length,
-      hasAudio,
+      hasAudio: deliveredAudio,
       audioBytes: audioMeta?.bytes ?? null,
+      audioUploadFailure,
       notifiedAdmins: adminsNotified,
       smsAlerted: delivered,
       smsFailure,
@@ -1137,7 +1159,7 @@ export const notifySchool = async (token, data) => {
 
   return {
     messageId: parentMessage.messageId,
-    hasAudio,
+    hasAudio: deliveredAudio,
     audioUrl: audioMeta?.url || null,
     // `delivered` means the SMS left the building, not that a human read it. The
     // parent page words it accordingly.
