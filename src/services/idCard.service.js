@@ -5,12 +5,8 @@ import { School } from "../models/schoolModel.js";
 import { IdCardBatch } from "../models/IdCardBatch.js";
 import { Notification } from "../models/Notification.js";
 import { createNotification } from "../services/notification.service.js";
-import { generatePdfFromTemplate } from "../utils/pdfGenerator.js";
-import {
-  generateIdCardSheets,
-  sheetGeometry,
-  DEFAULT_SHEET_LAYOUT,
-} from "../utils/idCardSheet.js";
+import { generateIdCardSheets, sheetGeometry, DEFAULT_SHEET_LAYOUT } from "../utils/idCardSheet.js";
+import { resolveCardData } from "../utils/idCardContract.js";
 import { getCachedPlatformSettings } from "./platformSettings.service.js";
 import { uploadBuffer } from "../utils/cloudinary.js";
 import { CLOUDINARY_UPLOAD_FOLDER } from "../config/env.js";
@@ -56,20 +52,15 @@ const findStudentInScope = async (studentId, schoolId) => {
 };
 
 // ──────────────────── Build card data object for the template ────────────────────
-const buildCardData = (student, school) => ({
-  schoolName: school.name,
-  schoolLogo: school.logo,
-  studentName: student.studentName,
-  studentClass: student.studentClass,
-  studentId: student.studentId,
-  studentImage: student.studentImage,
-  payLink: student.payLink,
-  qrCodeUrl: null, // filled async
-  emergencyContact:
-    student.emergencyContacts?.[0]
-      ? `${student.emergencyContacts[0].contactName} (${student.emergencyContacts[0].phone})`
-      : student.parents?.find((p) => p.isPrimary)?.parentName || "",
-});
+//
+// Delegates to `resolveCardData` from the shared `idCardContract` — the *same*
+// resolver the React preview renders from — so the printed card carries exactly
+// the fields the bursar saw on screen: schoolCode, motto, dateOfBirth,
+// academicYear, guardian name + phone, brand colour, and so on. Hand-rolling the
+// object here is how fields silently vanish from the PDF (the old buildCardData
+// omitted schoolCode, motto, dateOfBirth, guardian name/phone, brand colour and
+// academic year), so the printed file never matched the preview.
+const buildCardData = (student, school, derived = {}) => resolveCardData(student, school, derived);
 
 // ──────────────────── Single student ID card (on-the-fly PDF) ────────────────────
 // Returns a PDF buffer so the controller can stream it directly to the client.
@@ -82,7 +73,7 @@ export const generateSingleStudentIdCard = async (studentId, requester) => {
   const student = await findStudentInScope(studentId, schoolId);
 
   const school = await School.findById(schoolId)
-    .select("name logo stamp")
+    .select("name logo stamp motto schoolCode brandColor academic.currentYear")
     .lean();
   if (!school) throw new ApiError("School not found", 404, "NOT_FOUND");
 
@@ -90,24 +81,18 @@ export const generateSingleStudentIdCard = async (studentId, requester) => {
     ? await generateQrCodeDataUrl(student.payLink)
     : null;
 
-  const cardData = buildCardData(student, school);
-  cardData.qrCodeUrl = qrDataUrl;
+  const cardData = buildCardData(student, school, { qrCodeUrl: qrDataUrl });
 
-  // Generate a single-page PDF.
-  //
-  // `generatePdfFromTemplate(template, data)` — the template name is the FIRST
-  // argument. Both call sites here passed a single object, so `template` received
-  // `{ pages, template }` and `data` received `undefined`. Inside the generator that
-  // made `pages` equal `[undefined]`, and every page rendered an empty bordered
-  // rectangle: the file was a valid PDF, the right number of pages, and completely
-  // blank. Nothing errored, which is why it survived.
-  //
-  // The call sites were fixed rather than the signature. `template` selects the layout
-  // and is named in the exported contract and in the JSDoc; making the generator
-  // tolerate an object in that position would have hidden the bug for the next caller
-  // instead of fixing it.
-  const pdfBuffer = await generatePdfFromTemplate("idCard", {
-    pages: [cardData],
+  // A single card is still a real CR80 card — so it is rendered through the *same*
+  // sheet generator the batch path uses (`generateIdCardSheets`), producing one
+  // true-size front+back pair. The old path drew one card per full A4 page at
+  // 40pt margins, a proof sheet that could never match the preview and did not
+  // print at card scale. Now the single-card PDF the "PDF" button downloads is
+  // pixel-identical in design to the batch file (same `drawCard`, same fonts,
+  // same fields), just one card per sheet.
+  const pdfBuffer = await generateIdCardSheets([cardData], {
+    layout: DEFAULT_SHEET_LAYOUT,
+    side: "front_back",
   });
 
   return {
@@ -223,7 +208,7 @@ export const getIdCardBatchPreview = async (batchId, requester) => {
     .lean();
 
   const school = await School.findById(schoolId)
-    .select("name logo brandColor")
+    .select("name logo brandColor motto schoolCode")
     .lean();
 
   return {
@@ -429,8 +414,8 @@ export const generateIdCardPdf = async (batchId) => {
   batch.status = ID_CARD_BATCH_STATUS.GENERATING;
   await batch.save();
 
-  const school = await School.findById(batch.schoolId)
-    .select("name logo stamp brandColor")
+  const school = await School.findById(schoolId)
+    .select("name logo stamp motto schoolCode brandColor academic.currentYear")
     .lean();
   if (!school) throw new ApiError("School not found", 404, "NOT_FOUND");
 
@@ -439,7 +424,7 @@ export const generateIdCardPdf = async (batchId) => {
     schoolId: batch.schoolId,
     deletedAt: null,
   })
-    .select("studentName studentClass studentId studentImage payLink emergencyContacts parents")
+    .select("studentName studentClass studentId studentImage payLink dateOfBirth academicYear emergencyContacts parents")
     .lean();
 
   // Build card data for each student and generate QR codes.

@@ -1,4 +1,19 @@
 import PDFDocument from "pdfkit";
+import {
+  CARD_GEOMETRY,
+  MM,
+  pt,
+  COLORS,
+  BACKEND_FONTS,
+  TYPO,
+  layoutFor,
+  resolveCardData,
+} from "./idCardContract.js";
+
+/** PDF user units are points. 72 per inch, 25.4mm per inch. */
+export { MM };
+export const mm = (value) => value * MM;
+export { pt };
 
 /**
  * Printable ID-card sheets: several true-size CR80 cards per A4 page.
@@ -32,11 +47,7 @@ import PDFDocument from "pdfkit";
  * in how big a card is — a card that is not standard size is not an ID card.
  */
 
-/** PDF user units are points. 72 per inch, 25.4mm per inch. */
-export const MM = 72 / 25.4;
-export const mm = (value) => value * MM;
-
-/** ISO/IEC 7810 ID-1, the "CR80" everybody means by an ID card. */
+/** ISO/IEC 7810 ID-1, the "CR80" everybody means by an ID card, in PDF points. */
 export const CARD = {
   width: mm(85.6),
   height: mm(53.98),
@@ -162,36 +173,17 @@ const fetchImage = async (url) => {
   }
 };
 
-/** `#rrggbb` → `{ r, g, b }`, falling back to the brand ink. */
-const hexToRgb = (hex, fallback = { r: 30, g: 41, b: 59 }) => {
-  if (typeof hex !== 'string' || !hex.startsWith('#')) return fallback;
-  const clean = hex.replace('#', '');
-  const full = clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean;
-  if (full.length !== 6) return fallback;
-  const value = Number.parseInt(full, 16);
-  if (Number.isNaN(value)) return fallback;
-  return { r: (value >> 16) & 255, g: (value >> 8) & 255, b: value & 255 };
-};
-
 /**
  * Truncates to fit a width, with an ellipsis.
  *
- * Uses `doc.widthOfString(text, { size })` — the pdfkit 0.20 API. `widthOfText` is not a
- * pdfkit method at all, and calling it threw `TypeError` on the very first card, which
- * is why this is worth stating: the same helper exists in `reportPdf.js` and the method
- * name there is the correct one.
+ * Uses `doc.widthOfString(text, { size })` — the pdfkit 0.20 API. `font` is set
+ * first because `widthOfString` measures with the font that is *current*, so
+ * measuring before selecting the face measures the wrong glyphs.
  *
- * `font` is set first because `widthOfString` measures with the font that is *current*,
- * so measuring before selecting the font measures the wrong face and every truncation
- * is computed against the wrong width.
- *
- * @param {string} text
- * @param {number} maxWidth
- * @param {PDFDocument} doc
- * @param {number} size
- * @param {string} font
+ * Font faces come from `BACKEND_FONTS` (the shared contract), so the PDF uses
+ * exactly the face the preview's font-stack resolves to.
  */
-const fitText = (doc, text, maxWidth, size, font = 'Helvetica-Bold') => {
+const fitText = (doc, text, maxWidth, size, font = BACKEND_FONTS.bold) => {
   const value = String(text ?? '').trim();
   if (!value || maxWidth <= 0) return '';
 
@@ -206,192 +198,268 @@ const fitText = (doc, text, maxWidth, size, font = 'Helvetica-Bold') => {
   return `${value.slice(0, cut)}…`;
 };
 
+/** Points at a mm offset from the top-left of the card, into PDF page coords. */
+const cardOrigin = (slot) => ({ x0: slot.x, y0: slot.y + CARD.height, w: CARD.width, h: CARD.height });
+
 /**
- * Draws one card face into a rectangle.
+ * Draws one card face, replicating `IdCardPreview.jsx`'s `IdCardFront` /
+ * `IdCardBack` exactly.
  *
- * Every dimension is derived from `CARD.width`/`CARD.height` rather than hardcoded, so
- * changing the card size changes the layout with it — which is the whole point of having
- * a geometry module instead of a pile of magic numbers.
+ * Every position, colour and font is derived from the shared `cardContract`
+ * (`COLORS`, `TYPO`, `BACKEND_FONTS`, `layoutFor`), which is the same source
+ * the React preview is driven by. The two renderers therefore cannot disagree
+ * on where the photo sits, how big the QR is, which fields appear, or which
+ * font weight a label uses — that is the whole point.
+ *
+ * pdfkit's origin is bottom-left; `layoutFor` returns top-left mm, so each
+ * coordinate is flipped with `cardTop.y - mm(offset)`.
  *
  * @param {'front'|'back'} side
  */
 const drawCard = async (doc, slot, card, side, image) => {
-  const { x, y, width, height } = slot;
-  const brand = hexToRgb(card.brandColor);
+  const origin = cardOrigin(slot);
+  const L = layoutFor(CARD_GEOMETRY.widthMm, CARD_GEOMETRY.heightMm);
+
+  const brandHex = card.brandColor || COLORS.brandFallback;
 
   doc.save();
 
-  // The card body: a filled panel with a hairline border, clipped to the slot so nothing
-  // drawn later can spill into a neighbour's space on a shared sheet.
-  doc.rect(x, y, width, height).fillColor('#ffffff').fill();
-  doc.rect(x, y, width, height).lineWidth(0.5).strokeColor('#cbd5e1').stroke();
+  // Card surface: white body, rounded corners, subtle ring — mirrors CardSurface.
+  const radius = mm(CARD_GEOMETRY.cornerRadiusMm);
+  doc
+    .roundedRect(origin.x0, origin.y0 - CARD.height, CARD.width, CARD.height, radius)
+    .fillColor(COLORS.cardBg)
+    .fill()
+    .roundedRect(origin.x0, origin.y0 - CARD.height, CARD.width, CARD.height, radius)
+    .lineWidth(0.5)
+    .strokeColor(COLORS.border)
+    .stroke();
 
   if (side === 'front') {
-    // A brand-coloured header band. Short, so the photo and the name keep the card.
-    doc.rect(x, y + height - mm(13), width, mm(13)).fillColor(brand).fill();
+    /* ── Front: amber rule, header, photo | info | QR, footer ─────────────── */
 
+    // Header rule — amber-400, full card width, beneath the header band.
+    const ruleY = origin.y0 - mm(L.header.y + L.header.h);
+    doc.rect(origin.x0, ruleY, CARD.width, mm(0.4)).fillColor(COLORS.headerRule).fill();
+
+    const hdrTop = origin.y0 - mm(L.header.y);
+    const lead = pt(TYPO.name) * 0.78;
+    const labelPt = pt(TYPO.label) * 0.78;
+    const bodyPt = pt(TYPO.body) * 0.78;
+    const smallPt = pt(TYPO.small) * 0.78;
+    const footerPt = pt(TYPO.footer) * 0.78;
+
+    // School logo or brand-700 "S" circle.
+    const logoSize = 6;
     const logo = await image(card.schoolLogo);
+    const leadX = origin.x0 + mm(L.pad);
     if (logo) {
       try {
-        doc.image(logo, x + mm(2.5), y + height - mm(11), {
-          width: mm(8),
-          height: mm(8),
-          fit: [mm(8), mm(8)],
-        });
-      } catch {
-        /* a corrupt asset must not fail the sheet */
-      }
+        doc.image(logo, leadX, hdrTop, { width: mm(logoSize), height: mm(logoSize) });
+      } catch { /* corrupt asset must not fail the sheet */ }
+    } else {
+      const cx = leadX + mm(logoSize) / 2;
+      const cy = hdrTop + mm(logoSize) / 2;
+      doc.circle(cx, cy, mm(logoSize) / 2).fillColor(brandHex).fill();
     }
 
+    // School name (uppercase, bold) + optional motto (italic).
+    const nameX = leadX + mm(logoSize) + 2;
+    const nameColW = origin.x0 + CARD.width - nameX - mm(10);
     doc
-      .fillColor('#ffffff')
-      .font('Helvetica-Bold')
-      .fontSize(7.5)
+      .fillColor(COLORS.body)
+      .font(BACKEND_FONTS.bold)
+      .fontSize(lead)
       .text(
-        fitText(doc, card.schoolName || 'School', width - mm(24), 7.5),
-        x + (logo ? mm(12) : mm(3)),
-        y + height - mm(9.5),
-        { width: width - (logo ? mm(15) : mm(6)), align: 'left' }
+        fitText(doc, String(card.schoolName || '').toUpperCase(), nameColW, lead, BACKEND_FONTS.bold),
+        nameX, hdrTop, { width: nameColW, lineGap: -0.4 }
       );
+    let cy = hdrTop + lead + 0.4;
+    if (card.schoolMotto) {
+      doc
+        .fillColor(COLORS.muted)
+        .font(BACKEND_FONTS.regular)
+        .fontSize(labelPt)
+        .text(
+          fitText(doc, card.schoolMotto, nameColW, labelPt, BACKEND_FONTS.regular),
+          nameX, cy, { width: nameColW, lineGap: -0.3 }
+        );
+      cy += labelPt + 0.3;
+    }
 
-    // The photo, fixed frame. A fixed rectangle rather than the image's own aspect so a
-    // row of cards lines up — inconsistent photo sizes are the first thing that makes a
-    // printed sheet look amateur.
-    const photoSize = mm(19);
-    const photoX = x + mm(3);
-    const photoY = y + height - mm(36);
-    doc.rect(photoX, photoY, photoSize, photoSize).fillColor('#f1f5f9').fill();
+    // School-code badge — right of the header.
+    if (card.schoolCode) {
+      const badgeW = mm(9);
+      const badgeX = origin.x0 + CARD.width - badgeW;
+      doc.rect(badgeX, hdrTop, badgeW, mm(3.2)).fillColor(COLORS.surfaceLight).fill();
+      doc
+        .fillColor(COLORS.muted)
+        .font(BACKEND_FONTS.mono)
+        .fontSize(smallPt)
+        .text(String(card.schoolCode), badgeX + mm(1.3), hdrTop + mm(0.3), { width: badgeW - mm(2.6) });
+    }
 
+    // Body: photo | info | QR.
+    const photoY = origin.y0 - mm(L.photo.y);
+    const photoSize = mm(L.photo.size);
+    doc.rect(origin.x0 + mm(L.photo.x), photoY, photoSize, photoSize)
+      .fillColor(COLORS.surfaceLight)
+      .fill();
     const photo = await image(card.studentImage);
     if (photo) {
       try {
-        doc.image(photo, photoX, photoY, {
-          width: photoSize,
-          height: photoSize,
-          fit: [photoSize, photoSize],
-          align: 'center',
-          valign: 'center',
+        doc.image(photo, origin.x0 + mm(L.photo.x), photoY, {
+          width: photoSize, height: photoSize, fit: [photoSize, photoSize], align: 'center', valign: 'center',
         });
-      } catch {
-        /* leave the placeholder */
-      }
+      } catch { /* leave the placeholder */ }
     }
-    doc.rect(photoX, photoY, photoSize, photoSize).lineWidth(0.5).strokeColor('#cbd5e1').stroke();
+    doc.rect(origin.x0 + mm(L.photo.x), photoY, photoSize, photoSize)
+      .lineWidth(0.5).strokeColor(COLORS.border).stroke();
 
-    const textX = photoX + photoSize + mm(3);
-    const textWidth = x + width - mm(3) - textX;
+    const textX = origin.x0 + mm(L.text.x);
+    const textW = mm(L.text.w);
+    let cur = photoY + mm(1);
 
-    doc
-      .fillColor('#0f172a')
-      .font('Helvetica-Bold')
-      .fontSize(9)
-      .text(fitText(doc, card.studentName || '', textWidth, 9), textX, y + height - mm(31), {
-        width: textWidth,
-      });
+    const rowH = (labelPt + lead + 0.4); // label then value
+    const drawLabel = (text, y) => {
+      doc.font(BACKEND_FONTS.regular).fontSize(labelPt).fillColor(COLORS.label)
+        .text(fitText(doc, text, textW, labelPt, BACKEND_FONTS.regular), textX, y);
+    };
+    const drawValueBold = (text, y, f = BACKEND_FONTS.bold, s = lead) => {
+      doc.font(f).fontSize(s).fillColor(COLORS.body)
+        .text(fitText(doc, text, textW, s, f), textX, y, { width: textW, lineGap: -0.3 });
+    };
 
-    doc
-      .fillColor('#475569')
-      .font('Helvetica')
-      .fontSize(6.5)
-      .text(fitText(doc, card.studentClass || '', textWidth, 6.5, 'Helvetica'), textX, y + height - mm(24), {
-        width: textWidth,
-      })
-      .fontSize(5.5)
-      .fillColor('#64748b')
-      .text(fitText(doc, card.studentId || '', textWidth, 5.5, 'Helvetica'), textX, y + height - mm(19), {
-        width: textWidth,
-      });
+    drawLabel('Full student name', cur);
+    cur += labelPt + 0.3;
+    drawValueBold(card.studentName || '—', cur);
+    cur += lead + 1;
 
-    // QR, bottom-left under the photo.
-    const qrSize = mm(13);
+    // Two-column grid: Student ID, Class / stream, Academic cycle, Date of birth.
+    const half = textW / 2 - 1.5;
+    const grid = [
+      ['Student ID', card.studentId || '—'],
+      ['Class / stream', card.studentClass || '—'],
+      ['Academic cycle', card.academicYear || '—'],
+      ['Date of birth', card.dateOfBirth ? new Date(card.dateOfBirth).toLocaleDateString('en-GB') : '—'],
+    ];
+    const gridStart = cur;
+    for (let i = 0; i < grid.length; i += 1) {
+      const col = i % 2 === 0 ? 0 : 1;
+      const row = Math.floor(i / 2);
+      const gx = textX + col * textW / 2;
+      const gy = gridStart + row * (labelPt + lead + 0.5);
+      doc.font(BACKEND_FONTS.regular).fontSize(labelPt).fillColor(COLORS.label)
+        .text(fitText(doc, grid[i][0], half, labelPt, BACKEND_FONTS.regular), gx, gy);
+      doc.font(BACKEND_FONTS.bold).fontSize(lead * 0.85).fillColor(COLORS.body)
+        .text(fitText(doc, grid[i][1], half, lead * 0.85, BACKEND_FONTS.bold), gx, gy + labelPt + 0.3, { width: half });
+    }
+    cur = gridStart + (labelPt + lead + 0.5) * 2 + 0.8;
+
+    const guardianText = card.guardianName
+      ? `Guardian: ${card.guardianName}${card.guardianPhone ? ` · ${card.guardianPhone}` : ''}`
+      : '—';
+    doc.font(BACKEND_FONTS.regular).fontSize(bodyPt).fillColor(COLORS.muted)
+      .text(fitText(doc, guardianText, textW, bodyPt, BACKEND_FONTS.regular), textX, cur);
+
+    // QR — bottom-right of the body, aligned with the photo top.
+    const qrSize = mm(L.qr.size);
     const qr = await image(card.qrCodeUrl);
     if (qr) {
       try {
-        doc.image(qr, photoX, y + mm(3), { width: qrSize, height: qrSize });
-      } catch {
-        /* skip */
-      }
+        const qrX = origin.x0 + mm(L.qr.x);
+        doc.rect(qrX, photoY, qrSize, qrSize).fillColor(COLORS.qrBg).fill();
+        doc.image(qr, qrX, photoY, { width: qrSize, height: qrSize });
+        doc.rect(qrX, photoY, qrSize, qrSize).lineWidth(0.5).strokeColor(COLORS.border).stroke();
+        doc.font(BACKEND_FONTS.regular).fontSize(smallPt).fillColor(COLORS.label)
+          .text('Scan to pay', qrX, photoY + qrSize + 0.4, { width: qrSize, align: 'center' });
+      } catch { /* skip */ }
     }
 
-    doc
-      .fillColor(brand)
-      .font('Helvetica')
-      .fontSize(5)
-      .text('Scan to pay school fees', x + mm(3), y + mm(2.5), {
-        width: width - mm(6),
-        align: 'center',
-      });
+    // Footer: footer rule, "GES compliant…" left, "Powered by" badge right.
+    const footY = origin.y0 - mm(L.footer.y);
+    doc.rect(origin.x0, footY, CARD.width, mm(0.4)).fillColor(COLORS.footerRule).fill();
+    doc.font(BACKEND_FONTS.regular).fontSize(footerPt).fillColor(COLORS.label)
+      .text('GES compliant student card', origin.x0 + mm(L.pad), footY + mm(0.6));
+    const badgeW = mm(10);
+    const badgeX = origin.x0 + CARD.width - badgeW;
+    doc.rect(badgeX, footY + mm(0.4), badgeW, mm(3)).fillColor(COLORS.brandBadge).fill();
+    doc.font(BACKEND_FONTS.bold).fontSize(footerPt).fillColor(COLORS.brandBadgeText)
+      .text('SukuupyPay'.replace(/^Sukuupy/, 'Suku'), badgeX + mm(1.4), footY + mm(0.8), { width: badgeW - mm(2.8) });
   } else {
-    // ── The back ──
+    /* ── Back: magnetic stripe, terms, barcode, contact grid ──────────────── */
     //
-    // Deliberately carries **no student photo and no QR**. A card back is read by staff
-    // and by whoever finds the card; a QR on both faces doubles the ways a lost card can
-    // be scanned, and the photo on the back is the copy that gets skimmed off in a
-    // lost wallet.
-    doc
-      .rect(x, y, width, height)
-      .fillColor('#f8fafc')
-      .fill();
-    doc.rect(x, y, width, height).lineWidth(0.5).strokeColor('#cbd5e1').stroke();
+    // Anchored to the same `layoutFor` frames the front uses so the back is not
+    // a second, independent layout. Stripe = header band, terms+barcode live in
+    // the body field, contact grid sits just above the footer rule.
+    const bodyLeft = origin.x0 + mm(L.body.x);
+    const bodyW = mm(L.body.w);
+    const leadPt = pt(TYPO.label) * 0.78;
+    const bodyPt = pt(TYPO.body) * 0.78;
+    const barcodePt = pt(TYPO.barcode) * 0.78;
 
-    const stamp = await image(card.schoolStamp);
-    if (stamp) {
-      try {
-        doc.image(stamp, x + width - mm(13), y + mm(3), {
-          width: mm(10),
-          height: mm(10),
-          fit: [mm(10), mm(10)],
-        });
-      } catch {
-        /* skip */
-      }
+    // Magnetic stripe band — full card width, top-aligned in the header frame.
+    const magY = origin.y0 - mm(L.header.y);
+    doc.rect(origin.x0, magY + mm(L.header.h) - mm(4.8), CARD.width, mm(4.8)).fillColor(COLORS.magStripe).fill();
+    doc.font(BACKEND_FONTS.regular).fontSize(pt(TYPO.magStripe) * 0.78).fillColor(COLORS.magStripeText)
+      .text('Track 1 encrypted', origin.x0 + mm(3), magY + mm(L.header.h) - mm(4));
+    doc.font(BACKEND_FONTS.mono).fontSize(pt(TYPO.magStripe) * 0.78).fillColor(COLORS.magStripeBrand)
+      .text('SUKUUPAY', origin.x0 + CARD.width - mm(11), magY + mm(L.header.h) - mm(4), { width: mm(8) });
+
+    const bodyTop = origin.y0 - mm(L.body.y + L.body.h);
+    const termsTop = bodyTop + mm(2);
+
+
+    // Institutional terms & conditions.
+    const terms = `This credential is the exclusive legal property of ${card.schoolName || 'the issuing school'}. It is not transferable. Return it promptly if so requested. Authorised for classroom identification only.`;
+    doc.font(BACKEND_FONTS.regular).fontSize(leadPt).fillColor(COLORS.label)
+      .text(fitText(doc, 'Institutional terms & conditions', bodyW, leadPt, BACKEND_FONTS.regular), bodyLeft, termsTop);
+    doc.font(BACKEND_FONTS.regular).fontSize(bodyPt).fillColor(COLORS.muted)
+      .text(fitText(doc, terms, bodyW, bodyPt, BACKEND_FONTS.regular), bodyLeft, termsTop + leadPt + 0.6, { maxRows: 3 });
+
+    // Barcode (bars from student ID char codes) + the ID string beneath.
+    const idStr = String(card.studentId || '000000');
+    const barTop = termsTop + leadPt + bodyPt * 3 + 3;
+    doc.rect(bodyLeft, barTop, bodyW, mm(3)).fillColor(COLORS.cardBg).fill();
+    const barGap = bodyW / (idStr.length * 2 + 1);
+    let bx = bodyLeft + barGap;
+    for (const char of idStr) {
+      const w = barGap * (((char.charCodeAt(0) % 3) + 1) * 0.5);
+      const opacity = (char.charCodeAt(0) % 5) / 7 + 0.45;
+      doc.save();
+      doc.fillOpacity(opacity);
+      doc.rect(bx, barTop, w, mm(3)).fillColor(COLORS.body).fill();
+      doc.restore();
+      bx += w + barGap;
     }
+    doc.rect(bodyLeft, barTop, bodyW, mm(3)).lineWidth(0.25).strokeColor(COLORS.border).stroke();
+    doc.font(BACKEND_FONTS.mono).fontSize(barcodePt).fillColor(COLORS.body)
+      .text(`"${idStr}"`, bodyLeft, barTop + mm(3) + 0.5, { width: bodyW });
 
-    const backX = x + mm(3);
-    const backWidth = width - mm(18);
-
-    doc
-      .fillColor(brand)
-      .font('Helvetica-Bold')
-      .fontSize(7)
-      .text(fitText(doc, card.schoolName || '', backWidth, 7), backX, y + height - mm(9), {
-        width: backWidth,
-      });
-
-    doc
-      .fillColor('#334155')
-      .font('Helvetica')
-      .fontSize(5.5)
-      .text('If found, please return to the school office or call the number below.', backX, y + mm(24), {
-        width: backWidth,
-      })
-      .font('Helvetica-Bold')
-      .fontSize(6.5)
-      .fillColor('#0f172a')
-      .text(fitText(doc, card.schoolAddress || '', backWidth, 6.5), backX, y + mm(18.5), {
-        width: backWidth,
-      })
-      .text(fitText(doc, card.schoolPhone || '', backWidth, 6.5), backX, y + mm(13.5), {
-        width: backWidth,
-      });
-
-    doc
-      .font('Helvetica')
-      .fontSize(5.5)
-      .fillColor('#334155')
-      .text(
-        `Emergency: ${card.emergencyContact || '—'}`.slice(0, 48),
-        backX,
-        y + mm(7)
-      );
-
-    doc
-      .font('Helvetica')
-      .fontSize(4.5)
-      .fillColor('#94a3b8')
-      .text('Property of the school. Not transferable.', backX, y + mm(3), {
-        width: backWidth,
-      });
+    // Guardian / Emergency / Holder / Expires grid (2 columns), above the footer.
+    const gridY = barTop + mm(3) + barcodePt + 1.5;
+    const half = bodyW / 2 - 1.5;
+    const gx = bodyLeft;
+    const drawPair = (labelA, valA, labelB, valB, colorB) => {
+      doc.font(BACKEND_FONTS.regular).fontSize(leadPt).fillColor(COLORS.label)
+        .text(fitText(doc, labelA, half, leadPt, BACKEND_FONTS.regular), gx, gridY);
+      doc.font(BACKEND_FONTS.bold).fontSize(bodyPt).fillColor(COLORS.body)
+        .text(String(valA || '—'), gx, gridY + leadPt + 0.3, { width: half });
+      doc.font(BACKEND_FONTS.regular).fontSize(leadPt).fillColor(COLORS.label)
+        .text(fitText(doc, labelB, half, leadPt, BACKEND_FONTS.regular), gx + bodyW / 2, gridY);
+      doc.font(BACKEND_FONTS.bold).fontSize(bodyPt).fillColor(colorB || COLORS.body)
+        .text(String(valB || '—'), gx + bodyW / 2, gridY + leadPt + 0.3, { width: half });
+    };
+    drawPair('Guardian', card.guardianName, 'Emergency', card.emergencyContact);
+    const row2Y = gridY + leadPt + bodyPt + 1;
+    doc.font(BACKEND_FONTS.regular).fontSize(leadPt).fillColor(COLORS.label)
+      .text('Holder', gx, row2Y);
+    doc.font(BACKEND_FONTS.bold).fontSize(bodyPt).fillColor(COLORS.body)
+      .text(String(card.studentName || '—'), gx, row2Y + leadPt + 0.3, { width: half });
+    doc.font(BACKEND_FONTS.regular).fontSize(leadPt).fillColor(COLORS.label)
+      .text('Expires', gx + bodyW / 2, row2Y);
+    doc.font(BACKEND_FONTS.bold).fontSize(bodyPt).fillColor('#b45309')
+      .text('Not tracked', gx + bodyW / 2, row2Y + leadPt + 0.3, { width: half });
   }
 
   doc.restore();

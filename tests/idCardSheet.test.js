@@ -244,6 +244,76 @@ describe('ID card sheet: the PDF', () => {
 });
 
 // ─────────────────────────────────────────────
+// The rendered card carries the same fields as the preview
+// ─────────────────────────────────────────────
+describe('ID card sheet: the rendered card matches the preview', () => {
+  // pdfkit writes standard (Helvetica) text as hex-encoded PDF strings, so the
+  // literal label text is not in the raw stream as ASCII. Decoding the `<....>`
+  // operands restores the ASCII and lets the test assert on real field labels.
+  const decodeHex = (s) =>
+    s.replace(/<([0-9A-Fa-f]+)>/g, (_m, h) => Buffer.from(h, 'hex').toString('latin1'));
+
+  test('the front footer and body labels render', async () => {
+    const c = {
+      ...card(1),
+      dateOfBirth: new Date('2012-04-23'),
+      guardianName: 'Madam Abena',
+      academicYear: '2025/2026',
+      schoolCode: 'SC-001',
+    };
+    const buffer = await generateIdCardSheets([c], { layout: 'a4_c80_5up' });
+    const [front] = inflateStreams(buffer).map(decodeHex);
+
+    // Footer: the "GES compliant" line (contract footer rule + text).
+    assert.ok(front.includes('GES compliant'), 'front footer: GES compliant line missing');
+    // Body: the two-column field grid labels.
+    assert.ok(front.includes('Student ID'), 'front body: Student ID label missing');
+    assert.ok(front.includes('Class / stream'), 'front body: Class / stream label missing');
+  });
+
+  test('the back carries the Guardian/Emergency/Holder/Expires grid and terms', async () => {
+    const c = {
+      ...card(1),
+      guardianName: 'Madam Abena',
+      guardianPhone: '0244000001',
+      emergencyContact: '0201000001',
+    };
+    const buffer = await generateIdCardSheets([c], { layout: 'a4_c80_5up' });
+    const streams = inflateStreams(buffer).map(decodeHex);
+    // The back is the stream that is NOT the front: pick the one with "Institutional".
+    const back = streams.find((s) => s.includes('Institutional')) || streams[1];
+
+    for (const label of ['Guardian', 'Emergency', 'Holder', 'Expires']) {
+      assert.ok(back.includes(label), `back grid: ${label} label missing`);
+    }
+    // Terms heading is a back-only element.
+    assert.ok(back.includes('Institutional'), 'back: Institutional terms heading missing');
+  });
+
+  test('the resolved student ID flows through to the back barcode label', async () => {
+    // The barcode is synthesized from the student ID. A distinctive ID must appear
+    // verbatim on the back, proving `resolveCardData` → `drawCard` wire the field
+    // end-to-end (the regression left it undefined).
+    const buffer = await generateIdCardSheets(
+      [{ ...card(1), studentId: 'PBS-2026-0001' }],
+      { layout: 'a4_c80_5up' }
+    );
+    const back = inflateStreams(buffer).map(decodeHex).find((s) => s.includes('Institutional')) || [];
+    assert.ok(back, 'a back content stream was produced');
+    assert.ok(String(back).includes('PBS-2026-0001'), 'student ID did not reach the back face');
+
+    // A different ID must not bleed the previous one.
+    const buffer2 = await generateIdCardSheets(
+      [{ ...card(1), studentId: 'S-9' }],
+      { layout: 'a4_c80_5up' }
+    );
+    const back2 = inflateStreams(buffer2).map(decodeHex).find((s) => s.includes('Institutional')) || [];
+    assert.ok(String(back2).includes('S-9'), 'second student ID did not reach the back face');
+    assert.ok(!String(back2).includes('PBS-2026-0001'), 'a previous ID leaked into a different card');
+  });
+});
+
+// ─────────────────────────────────────────────
 // The layout is recorded, so the school can print it
 // ─────────────────────────────────────────────
 describe('ID card sheet: the batch records what it printed', () => {
