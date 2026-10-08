@@ -8,6 +8,7 @@ import {
   TYPO,
   layoutFor,
   resolveCardData,
+  BRAND_BADGE_TEXT,
 } from "./idCardContract.js";
 
 /** PDF user units are points. 72 per inch, 25.4mm per inch. */
@@ -154,22 +155,36 @@ const createImageCache = () => {
   };
 };
 
-/** Supports `data:` URIs and HTTP(S). Returns `null` rather than throwing. */
+/** Supports `data:` URIs and HTTP(S). Returns `null` rather than throwing.
+ *
+ * Remote images (a school logo or student photo hosted on Cloudinary/S3) are
+ * fetched with a hard timeout. A slow or unreachable asset must never stall a
+ * print request: on timeout the card simply renders without the image, which is
+ * what a school accepts. Without this cap a single hung DNS/TLS round-trip made
+ * the whole PDF appear to hang "forever" (the old behaviour the timeout bug was
+ * raised against). */
+const IMAGE_FETCH_TIMEOUT_MS = 5000;
 const fetchImage = async (url) => {
   if (url.startsWith('data:')) {
     const matches = url.match(/^data:([a-zA-Z]+\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
     return matches ? Buffer.from(matches[2], 'base64') : null;
   }
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), IMAGE_FETCH_TIMEOUT_MS);
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, { signal: controller.signal });
     if (!response.ok) return null;
     return Buffer.from(await response.arrayBuffer());
   } catch (error) {
-    // Logged, not thrown. One unreachable logo must not fail a 200-card job; the card
-    // simply renders without it, which is what a school would accept.
-    console.error('[ID-CARD-SHEET] image fetch failed:', url, error.message);
+    if (error.name === 'AbortError') {
+      console.error('[ID-CARD-SHEET] image fetch timed out after', IMAGE_FETCH_TIMEOUT_MS, 'ms:', url);
+    } else {
+      console.error('[ID-CARD-SHEET] image fetch failed:', url, error.message);
+    }
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 };
 
@@ -236,75 +251,61 @@ const drawCard = async (doc, slot, card, side, image) => {
     .stroke();
 
   if (side === 'front') {
-    /* ── Front: amber rule, header, photo | info | QR, footer ─────────────── */
+    /* ── Front: centered header, photo | info list, QR corner, stamp, footer
+     *      Mirrors the on-screen `IdCardFront` — the arrangement from the original
+     *      `idCard.template.html`: centered issuing header, a 32mm photo on the
+     *      left with a short info list to its right, the QR in the bottom-right
+     *      corner, a faint school stamp, and a centred footer. ──────────────── */
 
-    // Header rule — amber-400, full card width, beneath the header band.
-    const ruleY = origin.y0 - mm(L.header.y + L.header.h);
-    doc.rect(origin.x0, ruleY, CARD.width, mm(0.4)).fillColor(COLORS.headerRule).fill();
-
-    const hdrTop = origin.y0 - mm(L.header.y);
     const lead = pt(TYPO.name) * 0.78;
     const labelPt = pt(TYPO.label) * 0.78;
     const bodyPt = pt(TYPO.body) * 0.78;
     const smallPt = pt(TYPO.small) * 0.78;
     const footerPt = pt(TYPO.footer) * 0.78;
 
-    // School logo or brand-700 "S" circle.
+    // Amber rule beneath the header band.
+    const ruleY = origin.y0 - mm(L.header.y + L.header.h);
+    doc.rect(origin.x0, ruleY, CARD.width, mm(0.4)).fillColor(COLORS.headerRule).fill();
+
+    // Centered issuing-institution header: logo (or brand circle), school name, motto.
+    const hdrTop = origin.y0 - mm(L.header.y);
+    const headerMid = origin.x0 + mm(L.header.x + L.header.w / 2);
     const logoSize = 6;
     const logo = await image(card.schoolLogo);
-    const leadX = origin.x0 + mm(L.pad);
     if (logo) {
       try {
-        doc.image(logo, leadX, hdrTop, { width: mm(logoSize), height: mm(logoSize) });
+        doc.image(logo, headerMid - mm(logoSize) / 2, hdrTop, { width: mm(logoSize), height: mm(logoSize) });
       } catch { /* corrupt asset must not fail the sheet */ }
     } else {
-      const cx = leadX + mm(logoSize) / 2;
+      const cx = headerMid;
       const cy = hdrTop + mm(logoSize) / 2;
       doc.circle(cx, cy, mm(logoSize) / 2).fillColor(brandHex).fill();
+      doc.font(BACKEND_FONTS.bold).fontSize(pt(TYPO.name) * 0.5)
+        .fillColor(COLORS.brandBadgeText)
+        .text(BRAND_BADGE_TEXT[0], cx, cy, { align: 'center', valign: 'center' });
     }
 
-    // School name (uppercase, bold) + optional motto (italic).
-    const nameX = leadX + mm(logoSize) + 2;
-    const nameColW = origin.x0 + CARD.width - nameX - mm(10);
-    doc
-      .fillColor(COLORS.body)
-      .font(BACKEND_FONTS.bold)
-      .fontSize(lead)
+    const nameColW = mm(L.header.w);
+    doc.fillColor(COLORS.body).font(BACKEND_FONTS.bold).fontSize(lead)
       .text(
         fitText(doc, String(card.schoolName || '').toUpperCase(), nameColW, lead, BACKEND_FONTS.bold),
-        nameX, hdrTop, { width: nameColW, lineGap: -0.4 }
+        origin.x0 + mm(L.header.x), hdrTop + mm(logoSize) + 0.3,
+        { width: nameColW, align: 'center' }
       );
-    let cy = hdrTop + lead + 0.4;
     if (card.schoolMotto) {
-      doc
-        .fillColor(COLORS.muted)
-        .font(BACKEND_FONTS.regular)
-        .fontSize(labelPt)
+      doc.fillColor(COLORS.muted).font(BACKEND_FONTS.regular).fontSize(labelPt)
         .text(
           fitText(doc, card.schoolMotto, nameColW, labelPt, BACKEND_FONTS.regular),
-          nameX, cy, { width: nameColW, lineGap: -0.3 }
+          origin.x0 + mm(L.header.x), hdrTop + mm(logoSize) + lead + 0.6,
+          { width: nameColW, align: 'center' }
         );
-      cy += labelPt + 0.3;
     }
 
-    // School-code badge — right of the header.
-    if (card.schoolCode) {
-      const badgeW = mm(9);
-      const badgeX = origin.x0 + CARD.width - badgeW;
-      doc.rect(badgeX, hdrTop, badgeW, mm(3.2)).fillColor(COLORS.surfaceLight).fill();
-      doc
-        .fillColor(COLORS.muted)
-        .font(BACKEND_FONTS.mono)
-        .fontSize(smallPt)
-        .text(String(card.schoolCode), badgeX + mm(1.3), hdrTop + mm(0.3), { width: badgeW - mm(2.6) });
-    }
-
-    // Body: photo | info | QR.
+    // Body: 32mm photo (left) + info list (right) + QR (bottom-right corner).
     const photoY = origin.y0 - mm(L.photo.y);
     const photoSize = mm(L.photo.size);
     doc.rect(origin.x0 + mm(L.photo.x), photoY, photoSize, photoSize)
-      .fillColor(COLORS.surfaceLight)
-      .fill();
+      .fillColor(COLORS.surfaceLight).fill();
     const photo = await image(card.studentImage);
     if (photo) {
       try {
@@ -316,78 +317,63 @@ const drawCard = async (doc, slot, card, side, image) => {
     doc.rect(origin.x0 + mm(L.photo.x), photoY, photoSize, photoSize)
       .lineWidth(0.5).strokeColor(COLORS.border).stroke();
 
+    // Info list, top-aligned with the photo in the column to its right.
     const textX = origin.x0 + mm(L.text.x);
     const textW = mm(L.text.w);
     let cur = photoY + mm(1);
 
-    const rowH = (labelPt + lead + 0.4); // label then value
-    const drawLabel = (text, y) => {
-      doc.font(BACKEND_FONTS.regular).fontSize(labelPt).fillColor(COLORS.label)
-        .text(fitText(doc, text, textW, labelPt, BACKEND_FONTS.regular), textX, y);
-    };
-    const drawValueBold = (text, y, f = BACKEND_FONTS.bold, s = lead) => {
-      doc.font(f).fontSize(s).fillColor(COLORS.body)
-        .text(fitText(doc, text, textW, s, f), textX, y, { width: textW, lineGap: -0.3 });
-    };
-
-    drawLabel('Full student name', cur);
-    cur += labelPt + 0.3;
-    drawValueBold(card.studentName || '—', cur);
-    cur += lead + 1;
-
-    // Two-column grid: Student ID, Class / stream, Academic cycle, Date of birth.
-    const half = textW / 2 - 1.5;
-    const grid = [
+    const infoRows = [
       ['Student ID', card.studentId || '—'],
+      ['Full name', card.studentName || '—'],
       ['Class / stream', card.studentClass || '—'],
-      ['Academic cycle', card.academicYear || '—'],
-      ['Date of birth', card.dateOfBirth ? new Date(card.dateOfBirth).toLocaleDateString('en-GB') : '—'],
+      ['Emergency', card.emergencyContact || '—'],
     ];
-    const gridStart = cur;
-    for (let i = 0; i < grid.length; i += 1) {
-      const col = i % 2 === 0 ? 0 : 1;
-      const row = Math.floor(i / 2);
-      const gx = textX + col * textW / 2;
-      const gy = gridStart + row * (labelPt + lead + 0.5);
+    for (const [label, value] of infoRows) {
       doc.font(BACKEND_FONTS.regular).fontSize(labelPt).fillColor(COLORS.label)
-        .text(fitText(doc, grid[i][0], half, labelPt, BACKEND_FONTS.regular), gx, gy);
-      doc.font(BACKEND_FONTS.bold).fontSize(lead * 0.85).fillColor(COLORS.body)
-        .text(fitText(doc, grid[i][1], half, lead * 0.85, BACKEND_FONTS.bold), gx, gy + labelPt + 0.3, { width: half });
+        .text(fitText(doc, label, textW, labelPt, BACKEND_FONTS.regular), textX, cur);
+      cur += labelPt + 0.3;
+      doc.font(BACKEND_FONTS.bold).fontSize(bodyPt).fillColor(COLORS.body)
+        .text(fitText(doc, value, textW, bodyPt, BACKEND_FONTS.bold), textX, cur, { width: textW, lineGap: -0.3 });
+      cur += bodyPt + 1;
     }
-    cur = gridStart + (labelPt + lead + 0.5) * 2 + 0.8;
 
-    const guardianText = card.guardianName
-      ? `Guardian: ${card.guardianName}${card.guardianPhone ? ` · ${card.guardianPhone}` : ''}`
-      : '—';
-    doc.font(BACKEND_FONTS.regular).fontSize(bodyPt).fillColor(COLORS.muted)
-      .text(fitText(doc, guardianText, textW, bodyPt, BACKEND_FONTS.regular), textX, cur);
-
-    // QR — bottom-right of the body, aligned with the photo top.
+    // QR — bottom-right corner of the body, "Scan to pay" beneath it.
     const qrSize = mm(L.qr.size);
     const qr = await image(card.qrCodeUrl);
     if (qr) {
       try {
         const qrX = origin.x0 + mm(L.qr.x);
-        doc.rect(qrX, photoY, qrSize, qrSize).fillColor(COLORS.qrBg).fill();
-        doc.image(qr, qrX, photoY, { width: qrSize, height: qrSize });
-        doc.rect(qrX, photoY, qrSize, qrSize).lineWidth(0.5).strokeColor(COLORS.border).stroke();
+        const qrY = origin.y0 - mm(L.qr.y);
+        doc.rect(qrX, qrY, qrSize, qrSize).fillColor(COLORS.qrBg).fill();
+        doc.image(qr, qrX, qrY, { width: qrSize, height: qrSize });
+        doc.rect(qrX, qrY, qrSize, qrSize).lineWidth(0.5).strokeColor(COLORS.border).stroke();
         doc.font(BACKEND_FONTS.regular).fontSize(smallPt).fillColor(COLORS.label)
-          .text('Scan to pay', qrX, photoY + qrSize + 0.4, { width: qrSize, align: 'center' });
+          .text('Scan to pay', qrX, qrY + qrSize + 0.4, { width: qrSize, align: 'center' });
       } catch { /* skip */ }
     }
 
-    // Footer: footer rule, "GES compliant…" left, "Powered by" badge right.
+    // School stamp — bottom-left, faint.
+    const stamp = await image(card.schoolStamp);
+    if (stamp) {
+      try {
+        const stampW = mm(18);
+        doc.image(stamp, origin.x0 + mm(L.pad), origin.y0 - mm(L.footer.y) - mm(1), {
+          width: stampW, opacity: 0.15,
+        });
+      } catch { /* skip */ }
+    }
+
+    // Footer — centred.
     const footY = origin.y0 - mm(L.footer.y);
     doc.rect(origin.x0, footY, CARD.width, mm(0.4)).fillColor(COLORS.footerRule).fill();
     doc.font(BACKEND_FONTS.regular).fontSize(footerPt).fillColor(COLORS.label)
-      .text('GES compliant student card', origin.x0 + mm(L.pad), footY + mm(0.6));
-    const badgeW = mm(10);
-    const badgeX = origin.x0 + CARD.width - badgeW;
-    doc.rect(badgeX, footY + mm(0.4), badgeW, mm(3)).fillColor(COLORS.brandBadge).fill();
-    doc.font(BACKEND_FONTS.bold).fontSize(footerPt).fillColor(COLORS.brandBadgeText)
-      .text('SukuupyPay'.replace(/^Sukuupy/, 'Suku'), badgeX + mm(1.4), footY + mm(0.8), { width: badgeW - mm(2.8) });
+      .text(
+        'GES compliant student card',
+        origin.x0 + mm(L.pad), footY + mm(0.6),
+        { width: mm(L.footer.w), align: 'center' }
+      );
   } else {
-    /* ── Back: magnetic stripe, terms, barcode, contact grid ──────────────── */
+    /* ── Back: magnetic stripe, terms, student ID number, contact grid ───────── */
     //
     // Anchored to the same `layoutFor` frames the front uses so the back is not
     // a second, independent layout. Stripe = header band, terms+barcode live in
@@ -396,7 +382,6 @@ const drawCard = async (doc, slot, card, side, image) => {
     const bodyW = mm(L.body.w);
     const leadPt = pt(TYPO.label) * 0.78;
     const bodyPt = pt(TYPO.body) * 0.78;
-    const barcodePt = pt(TYPO.barcode) * 0.78;
 
     // Magnetic stripe band — full card width, top-aligned in the header frame.
     const magY = origin.y0 - mm(L.header.y);
@@ -417,27 +402,18 @@ const drawCard = async (doc, slot, card, side, image) => {
     doc.font(BACKEND_FONTS.regular).fontSize(bodyPt).fillColor(COLORS.muted)
       .text(fitText(doc, terms, bodyW, bodyPt, BACKEND_FONTS.regular), bodyLeft, termsTop + leadPt + 0.6, { maxRows: 3 });
 
-    // Barcode (bars from student ID char codes) + the ID string beneath.
+    // Student ID number — rendered where a barcode would go, so the back carries
+    // a human-readable identifier the staff can type back, not a fake barcode that
+    // only looks scannable.
     const idStr = String(card.studentId || '000000');
-    const barTop = termsTop + leadPt + bodyPt * 3 + 3;
-    doc.rect(bodyLeft, barTop, bodyW, mm(3)).fillColor(COLORS.cardBg).fill();
-    const barGap = bodyW / (idStr.length * 2 + 1);
-    let bx = bodyLeft + barGap;
-    for (const char of idStr) {
-      const w = barGap * (((char.charCodeAt(0) % 3) + 1) * 0.5);
-      const opacity = (char.charCodeAt(0) % 5) / 7 + 0.45;
-      doc.save();
-      doc.fillOpacity(opacity);
-      doc.rect(bx, barTop, w, mm(3)).fillColor(COLORS.body).fill();
-      doc.restore();
-      bx += w + barGap;
-    }
-    doc.rect(bodyLeft, barTop, bodyW, mm(3)).lineWidth(0.25).strokeColor(COLORS.border).stroke();
-    doc.font(BACKEND_FONTS.mono).fontSize(barcodePt).fillColor(COLORS.body)
-      .text(`"${idStr}"`, bodyLeft, barTop + mm(3) + 0.5, { width: bodyW });
+    const idTop = termsTop + leadPt + bodyPt * 3 + 3;
+    doc.font(BACKEND_FONTS.regular).fontSize(leadPt).fillColor(COLORS.label)
+      .text('Student ID', bodyLeft, idTop);
+    doc.font(BACKEND_FONTS.mono).fontSize(pt(TYPO.name) * 0.78).fillColor(COLORS.body)
+      .text(fitText(doc, idStr, bodyW, pt(TYPO.name) * 0.78, BACKEND_FONTS.bold), bodyLeft, idTop + leadPt + 0.4, { width: bodyW });
 
-    // Guardian / Emergency / Holder / Expires grid (2 columns), above the footer.
-    const gridY = barTop + mm(3) + barcodePt + 1.5;
+    // Guardian / Emergency / Holder / Expires grid (2 columns), below the ID.
+    const gridY = idTop + leadPt + pt(TYPO.name) * 0.78 + 2.5;
     const half = bodyW / 2 - 1.5;
     const gx = bodyLeft;
     const drawPair = (labelA, valA, labelB, valB, colorB) => {
@@ -450,7 +426,10 @@ const drawCard = async (doc, slot, card, side, image) => {
       doc.font(BACKEND_FONTS.bold).fontSize(bodyPt).fillColor(colorB || COLORS.body)
         .text(String(valB || '—'), gx + bodyW / 2, gridY + leadPt + 0.3, { width: half });
     };
-    drawPair('Guardian', card.guardianName, 'Emergency', card.emergencyContact);
+    const guardianText = card.guardianName
+      ? `${card.guardianName}${card.guardianPhone ? ` · ${card.guardianPhone}` : ''}`
+      : '—';
+    drawPair('Guardian', guardianText, 'Emergency', card.emergencyContact);
     const row2Y = gridY + leadPt + bodyPt + 1;
     doc.font(BACKEND_FONTS.regular).fontSize(leadPt).fillColor(COLORS.label)
       .text('Holder', gx, row2Y);

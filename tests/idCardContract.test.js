@@ -94,7 +94,8 @@ describe('ID card contract: backend and frontend are in lockstep', () => {
     // keys buildCardData is expected to forward.
     const contractKeys = new Set(Object.keys(backend.resolveCardData({ parents: [] }, {})));
     const expected = new Set([
-      'schoolName', 'schoolLogo', 'schoolMotto', 'schoolCode', 'brandColor',
+    'schoolName', 'schoolLogo', 'schoolStamp', 'schoolMotto', 'schoolCode',
+    'brandColor',
       'studentImage', 'studentName', 'studentId', 'dateOfBirth', 'studentClass',
       'academicYear', 'guardianName', 'guardianPhone', 'emergencyContact', 'qrCodeUrl',
     ]);

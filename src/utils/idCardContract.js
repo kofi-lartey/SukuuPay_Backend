@@ -102,9 +102,9 @@ export const layoutFor = (w = CARD_GEOMETRY.widthMm, h = CARD_GEOMETRY.heightMm)
   const footerH = 5.2;
   const bodyH = innerH - headerH - footerH;
 
-  const photo = { size: 13, x: pad, y: pad + headerH + bodyH - 14.5 };
+  const photo = { size: 32, x: pad, y: pad + headerH };
   const qrSize = 12;
-  const qr = { size: qrSize, x: pad + innerW - qrSize, y: photo.y };
+  const qr = { size: qrSize, x: pad + innerW - qrSize, y: pad + headerH + bodyH - qrSize };
 
   const textX = photo.x + photo.size + 3;
   const textW = qr.x - textX - 2;
@@ -124,9 +124,10 @@ export const resolveCardData = (student = {}, school = {}, derived = {}) => {
   const emergency = (student?.emergencyContacts || [])[0];
 
   return {
-    schoolName: school?.name || '',
-    schoolLogo: school?.logo || null,
-    schoolMotto: school?.motto || '',
+     schoolName: school?.name || '',
+     schoolLogo: school?.logo || null,
+     schoolStamp: school?.stamp || null,
+     schoolMotto: school?.motto || '',
     schoolCode: school?.schoolCode || '',
     brandColor: school?.brandColor || COLORS.brandFallback,
     studentImage: student?.studentImage || null,

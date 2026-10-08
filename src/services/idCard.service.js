@@ -414,8 +414,8 @@ export const generateIdCardPdf = async (batchId) => {
   batch.status = ID_CARD_BATCH_STATUS.GENERATING;
   await batch.save();
 
-  const school = await School.findById(schoolId)
-    .select("name logo stamp motto schoolCode brandColor academic.currentYear")
+  const school = await School.findById(batch.schoolId)
+    .select("name slug logo stamp motto schoolCode brandColor academic.currentYear")
     .lean();
   if (!school) throw new ApiError("School not found", 404, "NOT_FOUND");
 
