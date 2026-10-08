@@ -357,6 +357,7 @@ const PAST_DUE_SUBSCRIPTION_STATUSES = ["expired"];
  */
 export const GATEWAY_RAIL_BY_MODE = {
   manual: "school_own",
+  paystack: "sukuupay",
   hubtel: "sukuupay",
   arke: "sukuupay",
   mnotify: "sukuupay",
@@ -365,13 +366,13 @@ export const GATEWAY_RAIL_BY_MODE = {
 /**
  * `Payment.provider` values, mapped onto the same two rails.
  *
- * `mtn` appears on `Payment.provider` (paymentModel.js:81) but not on
+ * `mtn` appears on `Payment.provider` (paymentModel.js) but not on
  * `School.payment.gatewayMode`, because MTN is reached through one of the platform's
- * own integrations rather than as a school-selectable gateway. It therefore maps to
- * `sukuupay`, and the divergence is noted here rather than left to a reader to
- * discover when a payment counts and its school's mode says otherwise.
+ * own integrations rather than as a school-selectable gateway. Paystack is the
+ * platform's default card rail and maps to `sukuupay` as well.
  */
 export const PAYMENT_PROVIDER_RAIL = {
+  paystack: "sukuupay",
   hubtel: "sukuupay",
   arke: "sukuupay",
   mnotify: "sukuupay",

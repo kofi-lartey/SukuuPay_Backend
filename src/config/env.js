@@ -342,8 +342,22 @@ export const MTN_CALLBACK_HOST = process.env.MTN_CALLBACK_HOST || '';
 // actually prevents a duplicate credit. Set it before going to production.
 export const MTN_WEBHOOK_SECRET = process.env.MTN_WEBHOOK_SECRET;
 
-// Primary gateway preference: 'mtn' or 'hubtel'
-export const PRIMARY_PAYMENT_GATEWAY = process.env.PRIMARY_PAYMENT_GATEWAY || 'mtn';
+// ── Paystack ──
+// Paystack is the primary card / bank-direct provider. The platform-level
+// keys are used for the default collection flow; schools may override with
+// their own keys stored on School.payment.paystackSecretKey.
+export const PAYSTACK_PUBLIC_KEY = process.env.PAYSTACK_PUBLIC_KEY;
+export const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
+
+// HMAC secret for verifying Paystack webhook signatures (SHA-512).
+// When unset, the Paystack webhook endpoint warns-and-allows in development
+// and rejects in production.
+export const PAYSTACK_WEBHOOK_SECRET = process.env.PAYSTACK_WEBHOOK_SECRET;
+
+// Primary gateway preference: 'paystack' | 'mtn' | 'hubtel'
+// Paystack is the default for card payments; MTN covers MoMo; Hubtel is
+// retained for legacy per-school configurations.
+export const PRIMARY_PAYMENT_GATEWAY = process.env.PRIMARY_PAYMENT_GATEWAY || 'paystack';
 
 // A webhook that cannot be authenticated must not silently mutate money or
 // delivery state. When a secret is missing the endpoints refuse the request in

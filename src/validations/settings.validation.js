@@ -70,3 +70,28 @@ export const billingQuerySchema = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   perPage: Joi.number().integer().min(1).max(100).default(20),
 });
+
+export const idCardSettingsUpdateSchema = Joi.object({
+  sheetLayout: Joi.string()
+    .valid("6up_a4_landscape", "9up_a4_landscape")
+    .optional(),
+  sides: Joi.string()
+    .valid("front_back", "front")
+    .optional(),
+  showQr: Joi.boolean().optional(),
+  showPhoto: Joi.boolean().optional(),
+  showStamp: Joi.boolean().optional(),
+  includeCutGuides: Joi.boolean().optional(),
+}).min(1);
+
+export const idCardSettingsSchema = Joi.object({
+  schoolId: objectId.required().messages({
+    "string.pattern.base": "Invalid school ID format",
+  }),
+  sheetLayout: Joi.string().valid("6up_a4_landscape", "9up_a4_landscape"),
+  sides: Joi.string().valid("front_back", "front"),
+  showQr: Joi.boolean(),
+  showPhoto: Joi.boolean(),
+  showStamp: Joi.boolean(),
+  includeCutGuides: Joi.boolean(),
+});

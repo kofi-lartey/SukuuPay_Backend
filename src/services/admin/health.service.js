@@ -13,13 +13,12 @@ import {
   API_BUILD_DATE,
   API_VERSION,
   NODE_ENV,
-  PRIMARY_PAYMENT_GATEWAY,
   SMS_DEFAULT_PROVIDER,
 } from "../../config/env.js";
 import { cloudinary } from "../../utils/cloudinary.js";
 import { getArkeselConfigStatus, isArkeselSendConfigured } from "../../utils/arkeselApi.js";
 import { availableSmsProviders } from "../../utils/smsService.js";
-import { isMtnConfigured } from "../../utils/mtnApi.js";
+import { isPaystackConfigured } from "../../utils/paystackApi.js";
 import keepAliveJob from "../../utils/cron.js";
 import installmentReminderJob from "../../jobs/installmentReminder.job.js";
 import healthCheckJob from "../../jobs/healthCheck.job.js";
@@ -410,6 +409,7 @@ const checkHubtel = async () => {
         hasClientId: { $ne: [{ $ifNull: ["$payment.hubtelClientId", ""] }, ""] },
         hasClientSecret: { $ne: [{ $ifNull: ["$payment.hubtelClientSecret", ""] }, ""] },
         hasApiKey: { $ne: [{ $ifNull: ["$payment.hubtelApiKey", ""] }, ""] },
+        hasPaystackKey: { $ne: [{ $ifNull: ["$payment.paystackSecretKey", ""] }, ""] },
       },
     },
     {
@@ -424,43 +424,56 @@ const checkHubtel = async () => {
         inHubtelMode: {
           $sum: { $cond: [{ $eq: ["$payment.gatewayMode", "hubtel"] }, 1, 0] },
         },
+        inPaystackMode: {
+          $sum: {
+            $cond: [
+              { or: [{ $eq: ["$payment.gatewayMode", "paystack"] }, { $not: "$payment.gatewayMode" }] },
+              1,
+              0,
+            ],
+          },
+        },
+        paystackReady: { $sum: { $cond: ["$hasPaystackKey", 1, 0] } },
       },
     },
   ]);
 
   const complete = row?.complete || 0;
   const inHubtelMode = row?.inHubtelMode || 0;
+  const inPaystackMode = row?.inPaystackMode || 0;
+  const paystackSchools = row?.paystackReady || 0;
   const totalSchools = row?.totalSchools || 0;
-  const mtnReady = isMtnConfigured();
 
   /*
-   * `degraded` when schools are in Hubtel mode and cannot use it — those parents
-   * have no working checkout. `ok` when there is nothing to be degraded about:
-   * either no school uses Hubtel, or every one that does has a complete
-   * credential set. It is never `down`; MTN is the platform-wide fallback and
-   * `resolveGateway` already prefers whichever is actually configured
-   * (`paymentGateway.js:39-44`).
+   * With Paystack as the sole active gateway, the platform health hinges on
+   * Paystack readiness, not Hubtel. Schools still carrying a `gatewayMode` of
+   * `hubtel` (or `arke`/`mnotify`) are retained in the data but disabled:
+   * `resolveGateway` will not route to them, so they appear as "disabled" rather
+   * than "broken". The Hubtel credential count is still surfaced for operators
+   * migrating schools off the old rail.
    */
+  const paystackPlatformReady = isPaystackConfigured({});
   const brokenHubtel = Math.max(0, inHubtelMode - complete);
 
   return {
-    status: brokenHubtel > 0 ? "degraded" : "ok",
-    detail:
-      brokenHubtel > 0
-        ? `${brokenHubtel} of ${inHubtelMode} schools on Hubtel mode lack a complete credential set`
-        : complete > 0
-          ? `${complete} of ${inHubtelMode} Hubtel-mode schools are fully configured`
-          : "No school is configured for Hubtel",
-    credentialsModel: "per-school",
+    status: paystackPlatformReady ? "ok" : "degraded",
+    detail: paystackPlatformReady
+      ? `${inPaystackMode} of ${totalSchools} schools on Paystack (active); ${inHubtelMode} schools still on Hubtel (disabled)`
+      : "Paystack is the only active gateway but no platform-level PAYSTACK_SECRET_KEY is configured",
+    credentialsModel: "platform-and-per-school",
+    activeGateways: ["paystack"],
+    disabledGateways: ["hubtel", "arke", "mnotify", "mtn"],
+    paystackPlatformConfigured: paystackPlatformReady,
+    schoolsInPaystackMode: inPaystackMode,
+    schoolsWithPaystackKey: paystackSchools,
     schoolsInHubtelMode: inHubtelMode,
     schoolsFullyConfigured: complete,
     schoolsMissingCredentials: brokenHubtel,
     totalSchools,
-    mtnAvailable: mtnReady,
-    primaryGateway: PRIMARY_PAYMENT_GATEWAY,
+    primaryGateway: "paystack",
     networkProbe: false,
     networkProbeReason:
-      "No Hubtel API client exists in this codebase and credentials are per school (school.payment.*), so there is no platform credential to authenticate a probe with. An unauthenticated request would answer 401 and be misread as Hubtel being down.",
+      "Paystack is the sole active gateway and its readiness is determined by PAYSTACK_SECRET_KEY presence, not a network call. Hubtel, Arke, Mnotify and MTN are disabled.",
   };
 };
 

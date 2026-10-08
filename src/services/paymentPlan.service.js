@@ -19,7 +19,11 @@ import {
   requestToPay as mtnRequestToPay,
   MtnTransportError,
 } from "../utils/mtnApi.js";
-import { resolveGateway } from "../utils/paymentGateway.js";
+import { resolveGateway, getPaystackSecretKey } from "../utils/paymentGateway.js";
+import {
+  initializeTransaction as paystackInitializeTransaction,
+  PaystackTransportError,
+} from "../utils/paystackApi.js";
 import { WEBHOOK_BASE_URL } from "../config/env.js";
 
 class ApiError extends Error {
@@ -711,7 +715,8 @@ export const prepayPlan = async (planId, data) => {
 
   // The gateway is resolved before the Payment record is created, so a
   // misconfigured deployment never leaves an orphaned pending payment behind.
-  // MTN is the primary gateway for v1; Hubtel remains the fallback.
+  // Paystack is the sole active gateway; MTN, Hubtel, Arke and Mnotify remain
+  // in the codebase but are disabled at the resolver level.
   const gateway = resolveGateway(school);
 
   const payment = await Payment.create({
@@ -722,7 +727,7 @@ export const prepayPlan = async (planId, data) => {
     amount,
     currency: "GHS",
     status: "pending",
-    paymentMethod: "momo",
+    paymentMethod: "card",
     provider: gateway,
     momoPhoneNumber: data.phoneNumber || primaryParent?.phone || null,
     momoNetwork: data.momoNetwork || "UNKNOWN",
@@ -753,11 +758,99 @@ export const prepayPlan = async (planId, data) => {
     },
   });
 
+  // MTN, Hubtel, Arke and Mnotify branches are retained as dead code — they
+  // cannot be reached while `resolveGateway` only returns 'paystack', and they
+  // exist so re-enabling a gateway needs only the resolver change, not a
+  // rewrite of the dispatch table.
+  if (gateway === "paystack") {
+    return prepayViaPaystack(payment, plan, student);
+  }
+
   if (gateway === "mtn") {
     return prepayViaMtn(payment, plan, student, primaryParent, amount, targetInstallment);
   }
 
   return prepayViaHubtel(payment, plan, primaryParent, amount);
+};
+
+/**
+ * Prepares a Paystack card payment for an installment.
+ *
+ * The parent is redirected to Paystack's hosted checkout; the webhook settles
+ * the payment when they complete it.
+ */
+const prepayViaPaystack = async (payment, plan, student) => {
+  const school = await School.findById(plan.schoolId).lean();
+  const secretKey = getPaystackSecretKey(school);
+
+  if (!secretKey) {
+    payment.status = "failed";
+    payment.failureReason = "No Paystack secret key configured for this school";
+    await payment.save();
+    throw new ApiError("Paystack is not configured for this school", 500, "PAYSTACK_NOT_CONFIGURED");
+  }
+
+  const callbackUrl = `${PAY_LINK_BASE_URL}/pay/${student.uniquePayLinkToken}`;
+
+  const primaryParent = getPrimaryParent(student);
+
+  try {
+    const result = await paystackInitializeTransaction({
+      secretKey,
+      email: primaryParent?.email || "",
+      amount: payment.amount,
+      reference: payment.paymentId,
+      callbackUrl,
+      metadata: {
+        studentId: student.studentId,
+        studentName: student.studentName,
+        planId: plan._id.toString(),
+        paymentId: payment.paymentId,
+      },
+    });
+
+    payment.status = "processing";
+    payment.paystackReference = payment.paymentId;
+    payment.paystackAccessCode = result.accessCode;
+    payment.paystackStatus = "pending";
+    await payment.save();
+
+    await auditService.log({
+      action: "payment.initiate",
+      entity: "Payment",
+      entityId: payment._id,
+      userId: plan.createdBy,
+      details: {
+        paymentId: payment.paymentId,
+        amount: payment.amount,
+        studentId: student.studentId,
+        provider: "paystack",
+        reference: result.reference,
+        planId: plan._id,
+      },
+    });
+
+    return {
+      payment: payment.toJSON(),
+      provider: "paystack",
+      requiresPayerApproval: true,
+      paystack: {
+        authorizationUrl: result.authorizationUrl,
+        accessCode: result.accessCode,
+        reference: result.reference,
+        publicKey: result.publicKey,
+      },
+    };
+  } catch (error) {
+    payment.status = "failed";
+    payment.failureReason = error.message?.slice(0, 500) || "Paystack initialization failed";
+    await payment.save();
+
+    if (error instanceof PaystackTransportError) {
+      throw new ApiError(error.message, error.status, error.code);
+    }
+    throw error;
+  }
 };
 
 /**

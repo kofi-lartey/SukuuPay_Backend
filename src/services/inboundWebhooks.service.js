@@ -1,8 +1,9 @@
 import { SmsMessage } from '../models/smsMessageModel.js';
 import { School } from '../models/schoolModel.js';
-import { handleHubtelWebhook, handleMtnResult } from './payment.service.js';
+import { handleHubtelWebhook, handleMtnResult, handlePaystackWebhook } from './payment.service.js';
 import { log as auditLog } from '../utils/auditService.js';
 import { verifyHubtelSignature, verifyArkeselAuth } from '../utils/signatures.js';
+import { verifyPaystackSignature as verifyPaystackSig } from '../utils/paystackApi.js';
 import { phoneSearchCandidates } from '../utils/phoneNumbers.js';
 import ApiError from '../utils/ApiError.js';
 import {
@@ -11,6 +12,7 @@ import {
   ARKESEL_API_KEY,
   WEBHOOK_AUTH_ENFORCED,
   MTN_WEBHOOK_SECRET,
+  PAYSTACK_WEBHOOK_SECRET,
 } from '../config/env.js';
 
 // ─────────────────────────────────────────────
@@ -193,6 +195,71 @@ export const handleMtnPaymentWebhook = async (payload, context = {}) => {
         channel: 'payment',
         endpoint: 'webhooks/mtn/payment',
         status: payload?.status || payload?.data?.status || null,
+        ...context,
+      },
+    });
+  }
+
+  return result;
+};
+
+// ──────────────────── Paystack: payment confirmation ────────────────────
+
+/**
+ * Authenticates a Paystack callback.
+ *
+ * Paystack signs the webhook body with HMAC-SHA512 using the webhook secret,
+ * and sends it in the `X-Paystack-Signature` header. Like the other
+ * webhooks, authentication must succeed before any settlement path runs.
+ *
+ * When no `PAYSTACK_WEBHOOK_SECRET` is configured the endpoint warns-and-allows
+ * in development but rejects in production — this endpoint settles payments.
+ */
+export const authenticatePaystack = ({ signature, rawBody } = {}) => {
+  const { valid, reason } = verifyPaystackSig({
+    signature,
+    secret: PAYSTACK_WEBHOOK_SECRET,
+    rawBody,
+  });
+
+  if (valid) return { valid: true, enforced: true, method: 'hmac-sha512' };
+
+  if (reason === 'no_shared_secret_configured' && !isEnforced()) {
+    console.warn(
+      '[WEBHOOK-PAYSTACK] PAYSTACK_WEBHOOK_SECRET is not set; accepting an unsigned callback. Set it before going to production.'
+    );
+    return { valid: true, enforced: false, method: 'none' };
+  }
+
+  throw new ApiError(
+    reason === 'no_shared_secret_configured'
+      ? 'Paystack webhook secret is not configured'
+      : 'Invalid or missing Paystack webhook signature',
+    401,
+    'INVALID_WEBHOOK_SIGNATURE'
+  );
+};
+
+/**
+ * Settles a payment from a Paystack webhook.
+ *
+ * Delegates to `handlePaystackWebhook` so the settlement logic is shared
+ * (the same handler is reachable from future polling paths).
+ */
+export const handlePaystackPaymentWebhook = async (payload, context = {}) => {
+  const result = await handlePaystackWebhook(payload);
+
+  if (!result.duplicate) {
+    await auditLog({
+      action: 'webhook.received',
+      entity: 'Payment',
+      entityId: result.payment?._id,
+      schoolId: result.payment?.schoolId,
+      meta: {
+        provider: 'paystack',
+        channel: 'payment',
+        endpoint: 'webhooks/paystack/payment',
+        status: payload?.data?.status || payload?.status || null,
         ...context,
       },
     });

@@ -2,7 +2,7 @@ import cron from "cron";
 import mongoose from "mongoose";
 import { log } from "../utils/auditService.js";
 import { getArkeselConfigStatus, isArkeselSendConfigured } from "../utils/arkeselApi.js";
-import { isMtnConfigured } from "../utils/mtnApi.js";
+import { isPaystackConfigured } from "../utils/paystackApi.js";
 import { isPlaceholder } from "../utils/placeholder.js";
 import { School } from "../models/schoolModel.js";
 import { getCachedPlatformSettings } from "../services/platformSettings.service.js";
@@ -120,64 +120,41 @@ const probeMongo = async () => {
 };
 
 /**
- * Hubtel — **configuration reachability only, and there is nothing to reach.**
+ * Payment gateway health — **configuration presence only.**
  *
- * Restated here because this job is where someone will look to find a Hubtel ping
- * and should find this paragraph instead of a bare boolean.
- *
- * There is no Hubtel API client in this codebase and no platform-level Hubtel
- * credential: credentials are per school on `school.payment.*`, all `select: false`
- * (`schoolModel.js:133-146`), and `utils/paymentGateway.js` only exports
- * per-School helpers. So this probe cannot make an authenticated call and does not
- * pretend to. It counts how many schools carry a complete credential set — a real
- * operational fact — and reports `networkProbe: false`.
- *
- * What it reports instead of Hubtel is **MTN**, which *is* a platform-level
- * integration with a real client (`utils/mtnApi.js`). Since `resolveGateway`
- * already falls back to whichever is configured, MTN's readiness is what actually
- * determines whether a parent can pay, and that is the question worth asking every
- * five minutes.
+ * Paystack is the sole active gateway. There is no per-gateway API client that
+ * pings a payment provider endpoint on a schedule; readiness is determined by
+ * whether `PAYSTACK_SECRET_KEY` (platform-level) is present and whether school-
+ * level keys exist. Hubtel, Arke, Mnotify and MTN are disabled: their code paths
+ * remain in the system but `resolveGateway` will never route to them.
  */
 const probePayments = async () => {
-  const hubtel = await School.aggregate([
-    { $match: { deletedAt: null, "payment.gatewayMode": "hubtel" } },
-    {
-      $project: {
-        complete: {
-          $and: [
-            { $ne: [{ $ifNull: ["$payment.hubtelClientId", ""] }, ""] },
-            { $ne: [{ $ifNull: ["$payment.hubtelClientSecret", ""] }, ""] },
-            { $ne: [{ $ifNull: ["$payment.hubtelApiKey", ""] }, ""] },
-          ],
-        },
-      },
-    },
-    { $group: { _id: null, total: { $sum: 1 }, configured: { $sum: { $cond: ["$complete", 1, 0] } } } },
+  const [row] = await School.aggregate([
+    { $match: { deletedAt: null } },
+    { $project: { hasPaystackKey: { $ne: [{ $ifNull: ["$payment.paystackSecretKey", ""] }, ""] } } },
+    { $group: { _id: null, totalSchools: { $sum: 1 }, paystackSchools: { $sum: { $cond: ["$hasPaystackKey", 1, 0] } } } },
   ]);
 
-  const hubtelRow = hubtel[0];
-  const mtnConfigured = isMtnConfigured();
+  const paystackPlatformReady = isPaystackConfigured({});
+  const paystackSchools = row?.paystackSchools || 0;
+  const totalSchools = row?.totalSchools || 0;
 
-  /*
-   * `ok` when at least one route can actually take a payment.
-   *
-   * Both "no school uses Hubtel" and "every Hubtel school is configured" are `ok`:
-   * neither is a condition an operator needs to act on, and reporting a platform
-   * with no Hubtel schools as degraded would train them to ignore the field.
-   */
-  const anyRouteWorks = mtnConfigured || (hubtelRow?.configured || 0) > 0;
+  const anyRouteWorks = paystackPlatformReady || paystackSchools > 0;
 
   return {
     status: anyRouteWorks ? "ok" : "down",
     detail: anyRouteWorks
-      ? "At least one payment gateway is usable"
-      : "No payment gateway is usable — MTN is unconfigured and no Hubtel school has a complete credential set",
-    mtnConfigured,
-    hubtelSchools: hubtelRow?.total || 0,
-    hubtelConfigured: hubtelRow?.configured || 0,
-    hubtelNetworkProbe: false,
-    hubtelNote:
-      "Per-school credentials only; no platform Hubtel credential exists, so no authenticated probe is possible.",
+      ? "Paystack is the active gateway and is configured"
+      : "No payment gateway is usable — Paystack is the only active gateway but no PAYSTACK_SECRET_KEY is set at the platform level and no school has a key",
+    paystackConfigured: anyRouteWorks,
+    paystackPlatformConfigured: paystackPlatformReady,
+    paystackSchools,
+    totalSchools,
+    activeGateways: ["paystack"],
+    disabledGateways: ["hubtel", "arke", "mnotify", "mtn"],
+    networkProbe: false,
+    networkProbeReason:
+      "Paystack readiness is determined by PAYSTACK_SECRET_KEY presence, not a network probe. Other gateways are disabled.",
   };
 };
 

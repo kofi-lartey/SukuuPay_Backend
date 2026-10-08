@@ -177,14 +177,10 @@ describe('SMS gateway', () => {
 // Hoisted to module scope because `describe` takes a synchronous callback, so an
 // `await` inside its body is a syntax error.
 //
-// The invariant being protected is the ORDER of preference that
-// utils/paymentGateway.js encodes:
-//   preferMtn && mtnReady  -> mtn
-//   hubtelReady            -> hubtel   (the fallback)
-//   mtnReady               -> mtn
-//   neither                -> throw
-const { isMtnConfigured } = await import('../src/utils/mtnApi.js');
-const mtnReady = isMtnConfigured();
+// The invariant being protected is that `resolveGateway` only routes to Paystack
+// (the sole active gateway). Other gateways (MTN, Hubbel) remain importable but
+// disabled, so a school with no Paystack credentials gets a 400 throw — not a
+// silent downgrade.
 const hubtelSchool = {
   payment: { hubtelClientId: 'a', hubtelClientSecret: 'b', hubtelApiKey: 'c' },
 };
@@ -213,28 +209,36 @@ describe('MTN gateway', () => {
     assert.equal(mapMtnStatus(null), null);
   });
 
-  test('a school with Hubtel creds always resolves to a working gateway', async () => {
-    const { resolveGateway } = await import('../src/utils/paymentGateway.js');
-    const resolved = resolveGateway(hubtelSchool);
-    // Exactly the MTN-primary-with-Hubtel-fallback behaviour, asserted against
-    // whichever branch this environment happens to be in.
-    assert.equal(resolved, mtnReady ? 'mtn' : 'hubtel');
+  test('a school with Hubtel creds resolves to Paystack when available', async () => {
+    const { resolveGateway, paystackIsConfigured } = await import('../src/utils/paymentGateway.js');
+    // Paystack is the sole active gateway. A school carrying only Hubbel creds
+    // resolves to Paystack if the platform key is set, or throws if it is not.
+    if (paystackIsConfigured({})) {
+      assert.equal(resolveGateway(hubtelSchool), 'paystack');
+    } else {
+      assert.throws(() => resolveGateway(hubtelSchool), (e) => {
+        assert.equal(e.code, 'PAYMENT_CONFIG_MISSING');
+        return true;
+      });
+    }
   });
 
   test('the no-credentials error is reachable, not dead code', async () => {
-    // Only assertable when MTN is genuinely unconfigured; with real MTN
-    // credentials every school can fall back to the platform gateway and the
-    // throw is unreachable by design.
-    const { resolveGateway } = await import('../src/utils/paymentGateway.js');
-    if (mtnReady) {
-      assert.equal(resolveGateway(noCredsSchool), 'mtn',
-        'with MTN configured, a school without Hubtel creds still gets a gateway');
+    const { resolveGateway, paystackIsConfigured } = await import('../src/utils/paymentGateway.js');
+    // With Paystack configured, even a school with zero credentials resolves.
+    if (paystackIsConfigured({})) {
+      assert.equal(resolveGateway(noCredsSchool), 'paystack',
+        'with Paystack configured, any school resolves to paystack');
       return;
     }
+    // Without any platform-level gateway, the throw must be reachable.
     assert.throws(() => resolveGateway(noCredsSchool), (e) => {
       assert.equal(e.code, 'PAYMENT_CONFIG_MISSING');
       assert.equal(e.status, 400);
       return true;
+    });
+  });
+
   test('hubtel is selectable but has no send integration', async () => {
     // The provider enum accepts all three; only arke can actually transmit.
     // Selecting hubtel must fail loudly rather than silently no-op.
@@ -281,8 +285,6 @@ describe('MTN gateway', () => {
     assert.equal(typeof s.dlrCallbackConfigured, 'boolean');
     assert.equal(s.dlrCallbackConfigured, false);
     assert.equal(s.dlrCallbackUrl, null);
-  });
-});
   });
 });
 

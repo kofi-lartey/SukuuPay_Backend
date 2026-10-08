@@ -1,63 +1,54 @@
 /**
- * Backend twin of `frontend/.../idcards/cardContract.js`.
- *
- * The frontend and the backend cannot share a file path across the two roots
- * (the repo has no shared package), so this module duplicates the contract.
- * The rule is: **every layout constant lives in exactly one of these two
- * files, and the other imports its twin here.** The test
- * `tests/idCardContract.test.js` imports both and asserts the geometry and
- * palette are deep-equal — if you change one, change the other or it fails.
+ * Shared contract for student ID cards — the single source of truth that keeps
+ * the on-screen preview and the printed PDF in agreement.
  */
 
-/* ── Geometry ───────────────────────────────────────────── */
-
-/** ISO/IEC 7810 ID-1 (CR80) finished geometry, in millimetres. */
 export const CARD_GEOMETRY = {
   widthMm: 85.6,
   heightMm: 53.98,
-  cornerRadiusMm: 3.18,
+  cornerRadiusMm: 3,
   bleedMm: 3.175,
-  safeMarginMm: 3.0,
+  safeMarginMm: 4,
   printDpi: 300,
 };
-
 
 export const MM = 72 / 25.4;
 export const pt = (mm) => mm * MM;
 
-const PAD_PCT = 0.04;
+export const PAD_PCT = 0.04;
 
-/** Exact brand word in the "Powered by" badge — centralised so the two renderers
- *  can never disagree on the spelling (mirrors cardContract.js). */
-export const BRAND_BADGE_TEXT = '\x53\x75\x6b\x75\x75\x50\x61\x79'; // "SukuuPay"
-
-/* ── Palette ────────────────────────────────────────────── */
+export const BRAND_BADGE_TEXT = 'SukuPay';
 
 export const COLORS = {
-  body: '#0B1220',
-  muted: '#64748b',
-  label: '#94a3b8',
-  border: '#cbd5e1',
-  cardBg: '#ffffff',
-  headerRule: '#fbbf24',
-  footerRule: '#f1f5f9',
-  magStripe: '#1e293b',
-  magStripeText: '#94a3b8',
-  magStripeBrand: '#cbd5e1',
-  brandBadge: '#ecfdf3',
-  brandBadgeText: '#0c4529',
-  brandFallback: '#1E3A8A',
-  surfaceLight: '#f1f5f9',
-  qrBg: '#f8fafc',
+  body: '#0F172A',
+  ink: '#0F172A',
+  muted: '#64748B',
+  label: '#94A3B8',
+  border: '#E2E8F0',
+  cardBg: '#FFFFFF',
+  headerRule: '#E2E8F0',
+  footerRule: '#E2E8F0',
+  magStripe: '#1E293B',
+   magStripeText: '#64748B',
+  magStripeBrand: '#E2E8F0',
+  brandBadge: '#ECFDF3',
+  brandBadgeText: '#0F172A',
+  brandFallback: '#0A5C36',
+  surfaceLight: '#F1F5F9',
+  qrBg: '#F8FAFC',
+  amber600: '#B45309',
+  slate500: '#64748B',
+  slate400: '#94A3B8',
+  slate200: '#E2E8F0',
+  slate100: '#F1F5F9',
 };
-
-/* ── Fonts ──────────────────────────────────────────────── */
 
 export const BACKEND_FONTS = {
   regular: 'Helvetica',
   bold: 'Helvetica-Bold',
   boldOblique: 'Helvetica-BoldOblique',
-  mono: 'Courier',
+  oblique: 'Helvetica-Oblique',
+  mono: 'Courier-Bold',
 };
 
 export const FRONTEND_FONT_STACK = {
@@ -67,67 +58,167 @@ export const FRONTEND_FONT_STACK = {
 };
 
 export const TYPO = {
-  name: 3.0,
-  field: 2.5,
-  label: 1.7,
-  body: 2.2,
-  footer: 1.6,
-  scan: 1.5,
-  magStripe: 1.6,
-  barcode: 1.6,
-  small: 1.4,
+  name: 8,
+  field: 6.5,
+  label: 4,
+  body: 5.5,
+  footer: 3.5,
+  scan: 3.5,
+  magStripe: 4.5,
+  barcode: 4.5,
+  small: 3,
+  schoolName: 8,
+  motto: 5.5,
+  studentId: 6,
+  fieldLabel: 4,
+  fieldValue: 6.5,
+  full_name: 6.5,
+  emergencyContact: 6.5,
+  qrCaption: 3.5,
+  magStripeLeft: 4.5,
+  magStripeRight: 5,
+  termsLabel: 4,
+  termsBody: 4,
+  studentIdBack: 6,
+  studentIdBackLabel: 4.5,
+  backLabel: 4,
+  backValue: 5,
 };
 
 export const MM_PER_PX = 25.4 / 96;
 export const PX_PER_MM = 96 / 25.4;
 export const LAYOUT_SCALE = 480;
 
-export const FONT_PX = {
-  name: Math.round(TYPO.name * PX_PER_MM),
-  field: Math.round(TYPO.field * PX_PER_MM),
-  label: Math.round(TYPO.label * PX_PER_MM),
-  body: Math.round(TYPO.body * PX_PER_MM),
-  footer: Math.round(TYPO.footer * PX_PER_MM),
-  scan: Math.round(TYPO.scan * PX_PER_MM),
-  magStripe: Math.round(TYPO.magStripe * PX_PER_MM),
-  barcode: Math.round(TYPO.barcode * PX_PER_MM),
-  small: Math.round(TYPO.small * PX_PER_MM),
-};
+export const mm = (value) => value * MM;
 
-export const layoutFor = (w = CARD_GEOMETRY.widthMm, h = CARD_GEOMETRY.heightMm) => {
-  const pad = w * PAD_PCT;
-  const innerW = w - pad * 2;
-  const innerH = h - pad * 2;
-  const headerH = 5.6;
-  const footerH = 5.2;
-  const bodyH = innerH - headerH - footerH;
-
-  const photo = { size: 32, x: pad, y: pad + headerH };
-  const qrSize = 12;
-  const qr = { size: qrSize, x: pad + innerW - qrSize, y: pad + headerH + bodyH - qrSize };
-
-  const textX = photo.x + photo.size + 3;
-  const textW = qr.x - textX - 2;
+export const layoutFor = (W = CARD_GEOMETRY.widthMm * MM, H = CARD_GEOMETRY.heightMm * MM) => {
+  const safeX = W * PAD_PCT;
+  const safeY = H * PAD_PCT;
+  const innerW = W - safeX * 2;
+  const innerH = H - safeY * 2;
 
   return {
-    w, h, pad, innerW, innerH,
-    header: { x: pad, y: pad, h: headerH, w: innerW },
-    body: { x: pad, y: pad + headerH, h: bodyH, w: innerW },
-    footer: { x: pad, y: pad + innerH - footerH, h: footerH, w: innerW },
-    photo, qr,
-    text: { x: textX, y: photo.y, w: textW, h: qrSize },
+    w: W,
+    h: H,
+    safeX,
+    safeY,
+    innerW,
+    innerH,
+    header: {
+      y: safeY,
+      height: H * 0.18,
+      logoX: safeX,
+      logoY: safeY + H * 0.005,
+      logoW: W * 0.08,
+      logoH: W * 0.08,
+      schoolNameX: W * 0.15,
+      schoolNameY: safeY + H * 0.005,
+      schoolNameW: W * 0.8,
+      mottoY: safeY + H * 0.07,
+      dividerY: H * 0.18,
+      dividerH: 0.5,
+    },
+    photo: { x: W * 0.04, y: H * 0.24, size: W * 0.2 },
+    grid: {
+      originX: W * 0.28,
+      originY: H * 0.24,
+      colWidth: W * 0.22,
+      colGap: W * 0.04,
+      rowGap: H * 0.06,
+      cellHeight: H * 0.16,
+    },
+    qr: { x: W * 0.8, y: H * 0.36, size: W * 0.14, captionY: H * 0.54 },
+    stamp: { x: W * 0.04, y: H * 0.58, size: W * 0.06, opacity: 0.15 },
+    back: {
+      magStripe: { y: 0, height: H * 0.15, leftX: W * 0.04, rightX: W * 0.54 },
+      terms: {
+        labelY: H * 0.18,
+        bodyY: H * 0.23,
+        width: W * 0.88,
+        maxRows: 3,
+        lineGap: H * 0.01,
+      },
+      studentIdRow: {
+        y: H * 0.41,
+        labelFont: 'Courier',
+        labelSize: TYPO.studentIdBackLabel,
+        valueFontSize: TYPO.studentIdBack,
+      },
+      infoGrid: {
+        x: W * 0.04,
+        y: H * 0.5,
+        width: W * 0.88,
+        height: H * 0.24,
+        colCount: 2,
+        rowCount: 2,
+        colGap: W * 0.02,
+        rowGap: H * 0.02,
+        labelWidth: mm(15),
+        cellHeight: H * 0.12,
+        radius: 3,
+        borderWidth: 0.3,
+      },
+      footer: {
+        y: H * 0.9,
+        dividerH: 0.5,
+        leftX: W * 0.04,
+        rightX: W * 0.5,
+        width: W * 0.92,
+      },
+    },
   };
 };
 
-export const resolveCardData = (student = {}, school = {}, derived = {}) => {
-  const guardian = (student?.parents || []).find((p) => p.isPrimary) || (student?.parents || [])[0] || null;
+export const FONT_PX = {
+  body: 9,
+  schoolName: Math.round(TYPO.schoolName * PX_PER_MM),
+  motto: Math.round(TYPO.motto * PX_PER_MM),
+  studentId: Math.round(TYPO.studentId * PX_PER_MM),
+  fieldLabel: Math.round(TYPO.fieldLabel * PX_PER_MM),
+  fieldValue: Math.round(TYPO.fieldValue * PX_PER_MM),
+  qrCaption: Math.round(TYPO.qrCaption * PX_PER_MM),
+  magStripeLeft: Math.round(TYPO.magStripeLeft * PX_PER_MM),
+  magStripeRight: Math.round(TYPO.magStripeRight * PX_PER_MM),
+  termsLabel: Math.round(TYPO.termsLabel * PX_PER_MM),
+  termsBody: Math.round(TYPO.termsBody * PX_PER_MM),
+  studentIdBack: Math.round(TYPO.studentIdBack * PX_PER_MM),
+  studentIdBackLabel: Math.round(TYPO.studentIdBackLabel * PX_PER_MM),
+  backLabel: Math.round(TYPO.backLabel * PX_PER_MM),
+  backValue: Math.round(TYPO.backValue * PX_PER_MM),
+  footer: Math.round(TYPO.footer * PX_PER_MM),
+};
+
+export const DEFAULT_ID_CARD_SETTINGS = {
+  sheetLayout: '6up_a4_landscape',
+  sides: 'front_back',
+  showQr: true,
+  showPhoto: true,
+  showStamp: true,
+  includeCutGuides: false,
+};
+
+export const DEFAULT_CARD_FIELDS = {
+  showPhoto: true,
+  showQr: true,
+  showStamp: true,
+  showEmergency: true,
+  showGuardian: true,
+  showClass: true,
+  showStudentId: true,
+};
+
+export const resolveCardData = (student = {}, school = {}, derived = {}, options = {}) => {
+  const guardian =
+    (student?.parents || []).find((p) => p.isPrimary) ||
+    (student?.parents || [])[0] ||
+    null;
   const emergency = (student?.emergencyContacts || [])[0];
 
-  return {
-     schoolName: school?.name || '',
-     schoolLogo: school?.logo || null,
-     schoolStamp: school?.stamp || null,
-     schoolMotto: school?.motto || '',
+  const base = {
+    schoolName: school?.name || '',
+    schoolLogo: school?.logo || null,
+    schoolStamp: school?.stamp || null,
+    schoolMotto: school?.motto || '',
     schoolCode: school?.schoolCode || '',
     brandColor: school?.brandColor || COLORS.brandFallback,
     studentImage: student?.studentImage || null,
@@ -139,24 +230,43 @@ export const resolveCardData = (student = {}, school = {}, derived = {}) => {
     guardianName: guardian?.parentName || '',
     guardianPhone: guardian?.phone || '',
     emergencyContact: emergency
-      ? `${emergency.contactName} (${emergency.phone})`
+      ? `${emergency.contactName || ''} (${emergency.phone || ''})`.trim()
       : '',
     qrCodeUrl: derived.qrCodeUrl || null,
   };
+
+  if (options.fields) {
+    const { fields } = options;
+    if (!fields.showPhoto) base.studentImage = null;
+    if (!fields.showQr) base.qrCodeUrl = null;
+    if (!fields.showStamp) base.schoolStamp = null;
+    if (!fields.showGuardian) {
+      base.guardianName = '';
+      base.guardianPhone = '';
+    }
+    if (!fields.showEmergency) base.emergencyContact = '';
+    if (!fields.showClass) base.studentClass = '';
+    if (!fields.showStudentId) base.studentId = '';
+  }
+
+  return base;
 };
 
 export default {
   CARD_GEOMETRY,
   MM,
   pt,
+  PAD_PCT,
+  BRAND_BADGE_TEXT,
   COLORS,
   BACKEND_FONTS,
   FRONTEND_FONT_STACK,
   TYPO,
-  LAYOUT_SCALE,
-  FONT_PX,
   MM_PER_PX,
   PX_PER_MM,
-  layoutFor,
+  LAYOUT_SCALE,
+  FONT_PX,
+  DEFAULT_ID_CARD_SETTINGS,
+  DEFAULT_CARD_FIELDS,
   resolveCardData,
 };

@@ -4,7 +4,45 @@ import {
   updateAcademicYear,
   updateNotificationPrefs,
   getSchoolBilling,
+  getIdCardSettings,
+  updateIdCardSettings,
 } from "../services/settings.service.js";
+
+// ── GET /id-cards/settings/:schoolId — get ID card settings ──
+export const getIdCardSettingsController = async (req, res) => {
+  try {
+    const settings = await getIdCardSettings(req.params.schoolId, req.user);
+
+    return res.status(200).json({
+      success: true,
+      message: "ID card settings retrieved successfully",
+      data: settings,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// ── PUT /id-cards/settings/:schoolId — save ID card settings ──
+export const updateIdCardSettingsController = async (req, res) => {
+  try {
+    const settings = await updateIdCardSettings(req.params.schoolId, req.body, req.user);
+
+    return res.status(200).json({
+      success: true,
+      message: "ID card settings updated successfully",
+      data: settings,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
 
 // ── GET /settings/:schoolId — get all school settings ──
 export const getSchoolSettingsController = async (req, res) => {

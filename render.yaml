@@ -130,6 +130,21 @@ services:
       - key: MTN_WEBHOOK_SECRET
         sync: false
 
+      # ── Paystack (primary card / bank-direct payment gateway) ──
+      # Paystack handles international cards, Ghana cards (GH-Link), and bank
+      # direct debit. The public key is sent to the browser so the parent can
+      # complete the hosted checkout; the secret key stays server-side for
+      # initialization and verification.
+      - key: PRIMARY_PAYMENT_GATEWAY
+        value: paystack
+      - key: PAYSTACK_PUBLIC_KEY
+        sync: false
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+      # HMAC-SHA512 secret for verifying Paystack webhook signatures.
+      - key: PAYSTACK_WEBHOOK_SECRET
+        sync: false
+
       # ── Arkesel (primary SMS gateway) ──
       - key: SMS_DEFAULT_PROVIDER
         value: arke

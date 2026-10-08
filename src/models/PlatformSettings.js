@@ -237,6 +237,23 @@ const platformSettingsSchema = new mongoose.Schema(
     },
 
     /**
+     * Which payment gateways are active at the platform level.
+     *
+     * `activeGateways` is the source of truth for the gate-level switch that
+     * `resolveGateway` reads: only entries with `active: true` are ever selected,
+     * and the remaining providers stay in the school enum so existing school
+     * configs are not invalidated by a code change. Paystack is the sole active
+     * gateway; Hubtel, Arke, Mnotify and MTN are retained but disabled.
+     */
+    payment: {
+      activeGateways: {
+        type: [String],
+        enum: ["paystack", "hubtel", "arke", "mnotify", "mtn", "manual"],
+        default: ["paystack"],
+      },
+    },
+
+    /**
      * Who last wrote this.
      *
      * A reference, not a copy, because a platform setting is exactly the kind of
@@ -274,6 +291,7 @@ export const DEFAULT_PLATFORM_SETTINGS = {
   },
   support: { phone: "", email: "" },
   maintenance: { mode: "off", message: "" },
+  payment: { activeGateways: ["paystack"] },
 };
 
 /**
@@ -293,6 +311,7 @@ export const NESTED_PLATFORM_SETTINGS_BRANCHES = [
   "idCards",
   "support",
   "maintenance",
+  "payment",
 ];
 
 export const PlatformSettings = mongoose.model(

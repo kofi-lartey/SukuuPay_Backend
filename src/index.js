@@ -12,6 +12,7 @@ import { webhookRoute } from './routes/webhooks.routes.js';
 import errorHandler from './middleware/errorHandler.js';
 import { recordRequestError } from './utils/errorBuffer.js';
 import { ensureSuperAdmin } from './boot/ensureSuperAdmin.js';
+import { migrateGateways } from './boot/migrateGateways.js';
 
 const app = express();
 
@@ -110,6 +111,10 @@ mongoose.connect(MONGODB_URI)
     // silent failure here has no recovery but a redeploy, and a loud one at least
     // says why.
     await ensureSuperAdmin();
+    // One-shot migration: move any school still on a disabled gateway mode
+    // (hubbel, arke, mnotify) to the sole active gateway, paystack.
+    // Idempotent — re-runs are a no-op.
+    await migrateGateways();
   })
   .catch((error) => {
     console.error('Database connection failed:', error);

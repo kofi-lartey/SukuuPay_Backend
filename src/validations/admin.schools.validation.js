@@ -68,7 +68,7 @@ export const updatePlatformFeeSchema = Joi.object({
  * rather than merely pointless.
  */
 export const updateGatewayModeSchema = Joi.object({
-  gatewayMode: Joi.string().valid('hubtel', 'arke', 'mnotify', 'manual').required(),
+  gatewayMode: Joi.string().valid('paystack', 'hubtel', 'arke', 'mnotify', 'manual').required(),
 });
 
 /**
@@ -196,7 +196,7 @@ export const createSchoolAsPlatformSchema = Joi.object({
       bankName: Joi.string().trim().allow('').max(120),
       branch: Joi.string().trim().allow('').max(120),
     }).min(1),
-    gatewayMode: Joi.string().valid('hubtel', 'arke', 'mnotify', 'manual'),
+    gatewayMode: Joi.string().valid('paystack', 'hubtel', 'arke', 'mnotify', 'manual'),
     platformMarkupPercent: Joi.number().min(0).max(100),
     networksEnabled: Joi.object({
       mtn: Joi.boolean(),

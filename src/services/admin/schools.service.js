@@ -114,7 +114,7 @@ const IN_FLIGHT_PAYMENT_STATUSES = ["pending", "processing"];
  * unknown value with a 400 rather than letting Mongoose raise a `ValidationError`
  * (which has no `status`, so it would surface as a 500).
  */
-const GATEWAY_MODES = ["hubtel", "arke", "mnotify", "manual"];
+const GATEWAY_MODES = ['paystack', 'hubtel', 'arke', 'mnotify', 'manual'];
 
 /** The platform-written subset of a subscription. Narrower than the schema's enum. */
 const PAID_SUBSCRIPTION_STATUSES = ["active", "expired"];

@@ -2,8 +2,12 @@ import { Router } from "express";
 import {
   createIdCardBatchController,
   getStudentIdCardController,
-  getIdCardBatchPreviewController,
+  getIdCardBatchPreviewDataController,
   getIdCardBatchPdfController,
+  getIdCardBatchStatusController,
+  mergeIdCardBatchesController,
+  listIdCardBatchesController,
+  getLatestBatchController,
   getQrLinksExportController,
 } from "../controllers/idCard.controller.js";
 import { authenticate, authorize } from "../middleware/authenticate.js";
@@ -13,7 +17,9 @@ import {
   batchIdParamSchema,
   schoolIdParamSchema,
   createBatchSchema,
+  mergeBatchSchema,
   qrLinksQuerySchema,
+  batchesQuerySchema,
 } from "../validations/idCard.validation.js";
 
 export const idCardRoute = Router();
@@ -29,6 +35,15 @@ idCardRoute.post(
   createIdCardBatchController
 );
 
+// POST /id-cards/batch/merge — merge multiple batches into a new batch
+idCardRoute.post(
+  "/batch/merge",
+  authenticate,
+  requireSchoolAdmin,
+  validate(mergeBatchSchema),
+  mergeIdCardBatchesController
+);
+
 // GET /id-cards/:studentId — single student ID card PDF
 idCardRoute.get(
   "/:studentId",
@@ -39,11 +54,6 @@ idCardRoute.get(
 );
 
 // GET /id-cards/batch/:batchId/pdf — download the generated batch PDF
-//
-// Registered before `/batch/:batchId` for the same reason the preview route is
-// not: both are three segments, but this one is four, so it cannot collide with
-// `/id-cards/:studentId` (two) regardless of order. It is placed adjacent to its
-// sibling so the pair reads as the batch's two endpoints.
 idCardRoute.get(
   "/batch/:batchId/pdf",
   authenticate,
@@ -52,13 +62,40 @@ idCardRoute.get(
   getIdCardBatchPdfController
 );
 
-// GET /id-cards/batch/:batchId — batch print preview (HTML)
+// GET /id-cards/batch/:batchId/preview-data — full card data for React print preview
 idCardRoute.get(
-  "/batch/:batchId",
+  "/batch/:batchId/preview-data",
   authenticate,
   requireSchoolAdmin,
   validate(batchIdParamSchema, "params"),
-  getIdCardBatchPreviewController
+  getIdCardBatchPreviewDataController
+);
+
+// GET /id-cards/batch/:batchId/status — batch status for polling
+idCardRoute.get(
+  "/batch/:batchId/status",
+  authenticate,
+  requireSchoolAdmin,
+  validate(batchIdParamSchema, "params"),
+  getIdCardBatchStatusController
+);
+
+// GET /id-cards/batches/latest — get the latest ready batch for preview
+idCardRoute.get(
+  "/batches/latest",
+  authenticate,
+  requireSchoolAdmin,
+  getLatestBatchController
+);
+
+// GET /id-cards/batches/:schoolId — list batches for a school (admin)
+idCardRoute.get(
+  "/batches/:schoolId",
+  authenticate,
+  requireSchoolAdmin,
+  validate(schoolIdParamSchema, "params"),
+  validate(batchesQuerySchema, "query"),
+  listIdCardBatchesController
 );
 
 // GET /id-cards/qr-links/:schoolId — export all student QR pay-links as CSV

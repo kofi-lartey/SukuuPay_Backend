@@ -39,7 +39,7 @@ const idCardBatchSchema = new mongoose.Schema(
       default: "pending",
       index: true,
     },
-generationError: {
+    generationError: {
       type: String,
       default: "",
     },
@@ -47,12 +47,6 @@ generationError: {
     /**
      * How the PDF was laid out, so the download page can tell the school what it is
      * about to print.
-     *
-     * A school handed a PDF with no instructions guesses: prints single-sided and ends
-     * up with 200 fronts and no backs, or scales to fit and gets cards that are not
-     * CR80 and do not fit a badge holder. Naming the layout on the batch makes the
-     * download page able to say "5 per sheet, double-sided, flip on the short edge"
-     * without guessing what the generator defaulted to on the day it ran.
      */
     sheetLayout: {
       type: String,
@@ -63,16 +57,14 @@ generationError: {
     /** Cards on one sheet. Derived from `sheetLayout`, stored for the same reason. */
     cardsPerSheet: {
       type: Number,
-      default: 5,
+      default: 6,
       min: 1,
     },
 
     /**
      * Front/back pairs in the file.
      *
-     * `ceil(cards / cardsPerSheet)`, doubled when both sides are printed. `Math.max(1,
-     * …)` rather than a bare `ceil`, so an empty batch records one sheet instead of
-     * zero — "0 pages" reads as a failed job rather than an empty one.
+     * `ceil(cards / cardsPerSheet)`, doubled when both sides are printed.
      */
     sheetCount: {
       type: Number,
@@ -83,6 +75,32 @@ generationError: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
+    },
+
+    /**
+     * The template that was used for this batch, if any.
+     * Null means the school's default settings were used.
+     * Stored so reprints use the same layout even if the template changes.
+     */
+    templateId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "IdCardTemplate",
+      default: null,
+      index: true,
+    },
+
+    /**
+     * The full settings snapshot used to generate this batch.
+     * Stored at creation time so reprints are stable even if the template or
+     * school settings change later.
+     */
+    settingsSnapshot: {
+      sheetLayout: { type: String, default: DEFAULT_SHEET_LAYOUT },
+      sides: { type: String, enum: ["front_back", "front"], default: "front_back" },
+      includeCutGuides: { type: Boolean, default: false },
+      showPhoto: { type: Boolean, default: true },
+      showQr: { type: Boolean, default: true },
+      showStamp: { type: Boolean, default: true },
     },
   },
   { timestamps: true }

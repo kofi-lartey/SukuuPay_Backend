@@ -150,8 +150,8 @@ const paymentSchema = new mongoose.Schema(
     },
     provider: {
       type: String,
-      enum: ["hubtel", "arke", "mnotify", "manual", "mtn"],
-      default: "hubtel",
+      enum: ["paystack", "hubtel", "arke", "mnotify", "manual", "mtn"],
+      default: "paystack",
       index: true,
     },
 
@@ -197,6 +197,26 @@ const paymentSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+
+    // ── Paystack specific fields ──
+    paystackReference: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    paystackAccessCode: {
+      type: String,
+      default: null,
+    },
+    paystackTransactionId: {
+      type: String,
+      default: null,
+    },
+    paystackStatus: {
+      type: String,
+      default: null,
+    },
+
     momoPhoneNumber: {
       type: String,
       default: null,

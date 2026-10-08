@@ -496,10 +496,20 @@ describe('parent portal: initiate validation', () => {
     }
   });
 
-  test('requires some phone number, in either spelling', () => {
-    const { error } = validate(initiatePaymentSchema, { amount: 5000 });
-    assert.ok(error);
-    assert.match(error.message, /mobile money number is required/i);
+  test('requires a phone number only for MoMo, not card payments', () => {
+    // Card payments (Paystack) do not need a phone number.
+    const { error: cardError } = validate(initiatePaymentSchema, {
+      amount: 5000,
+      paymentMethod: 'card',
+    });
+    assert.ok(!cardError, 'card payments should not require a phone number');
+
+    // MoMo payments still need a phone number.
+    const { error: momoError } = validate(initiatePaymentSchema, {
+      amount: 5000,
+      paymentMethod: 'momo',
+    });
+    assert.ok(momoError, 'MoMo payments should require a phone number');
   });
 
   test('refuses a network outside the three operators', () => {

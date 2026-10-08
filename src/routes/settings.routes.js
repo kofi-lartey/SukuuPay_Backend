@@ -5,6 +5,8 @@ import {
   updateAcademicYearController,
   updateNotificationPrefsController,
   getSchoolBillingController,
+  getIdCardSettingsController,
+  updateIdCardSettingsController,
 } from "../controllers/settings.controller.js";
 import { authenticate, authorize } from "../middleware/authenticate.js";
 import { validate } from "../middleware/validate.js";
@@ -14,6 +16,7 @@ import {
   updateAcademicYearSchema,
   updateNotificationPrefsSchema,
   billingQuerySchema,
+  idCardSettingsUpdateSchema,
 } from "../validations/settings.validation.js";
 import { rateLimit } from "../middleware/rateLimit.js";
 
@@ -78,4 +81,25 @@ settingsRoute.get(
   validate(schoolIdParamSchema, "params"),
   validate(billingQuerySchema, "query"),
   getSchoolBillingController
+);
+
+// GET /settings/:schoolId/id-cards — get ID card settings
+settingsRoute.get(
+  "/:schoolId/id-cards",
+  authenticate,
+  requireSchoolAdmin,
+  settingsRateLimit,
+  validate(schoolIdParamSchema, "params"),
+  getIdCardSettingsController
+);
+
+// PUT /settings/:schoolId/id-cards — update ID card settings
+settingsRoute.put(
+  "/:schoolId/id-cards",
+  authenticate,
+  requireSchoolAdmin,
+  settingsRateLimit,
+  validate(schoolIdParamSchema, "params"),
+  validate(idCardSettingsUpdateSchema),
+  updateIdCardSettingsController
 );

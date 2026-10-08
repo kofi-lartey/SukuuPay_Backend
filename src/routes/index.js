@@ -10,6 +10,7 @@ import { analyticsRoute } from './analytics.routes.js';
 import { reportsRoute } from './reports.routes.js';
 import { auditLogRoute } from './auditLog.routes.js';
 import { idCardRoute } from './idCard.routes.js';
+import { idCardTemplateRoute } from './idCardTemplate.routes.js';
 import { uploadRoute } from './upload.routes.js';
 import { notificationRoute } from './notification.routes.js';
 import { parentMessageRoute } from './parentMessage.routes.js';
@@ -57,6 +58,7 @@ router.use('/', analyticsRoute);
 router.use('/', reportsRoute);
 router.use('/audit-logs', auditLogRoute);
 router.use('/id-cards', idCardRoute);
+router.use('/id-card-templates', idCardTemplateRoute);
 router.use('/upload', uploadRoute);
 router.use('/notifications', notificationRoute);
 // Parent → school messaging. Mounted at the root rather than under `/notifications`

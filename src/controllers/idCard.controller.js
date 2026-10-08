@@ -1,11 +1,16 @@
 import {
   createIdCardBatch,
-  getIdCardBatchPreview,
   getIdCardBatchPdf,
   getQrLinksExport,
   generateSingleStudentIdCard,
+  getIdCardBatchPreviewData,
+  getIdCardBatchStatus,
+  mergeIdCardBatches,
+  listIdCardBatches,
+  getLatestBatch,
 } from "../services/idCard.service.js";
 import { streamCsv } from "../utils/csvWriter.js";
+import { sheetGeometry } from "../utils/idCardSheet.js";
 
 // ── GET /id-cards/batch/:batchId/pdf — download a generated batch PDF ──────
 export const getIdCardBatchPdfController = async (req, res) => {
@@ -78,30 +83,102 @@ export const getStudentIdCardController = async (req, res) => {
   }
 };
 
-// ── GET /id-cards/batch/:batchId — batch print preview (HTML or pending status) ──
-export const getIdCardBatchPreviewController = async (req, res) => {
+// ── GET /id-cards/batch/:batchId/preview-data — full card data for React print preview ──
+export const getIdCardBatchPreviewDataController = async (req, res) => {
   try {
-    const result = await getIdCardBatchPreview(req.params.batchId, req.user);
+    const result = await getIdCardBatchPreviewData(req.params.batchId, req.user);
 
-    // Batch still generating → tell the client to retry.
-    if (result.status === "pending") {
-      return res.status(202).json({
+    return res.status(200).json({
+      success: true,
+      message: "Batch preview data retrieved",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// ── GET /id-cards/batch/:batchId/status — batch status for polling ──
+export const getIdCardBatchStatusController = async (req, res) => {
+  try {
+    const result = await getIdCardBatchStatus(req.params.batchId, req.user);
+
+    return res.status(200).json({
+      success: true,
+      message: "Batch status retrieved",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// ── POST /id-cards/batch/merge — merge multiple batches into a new one ──
+export const mergeIdCardBatchesController = async (req, res) => {
+  try {
+    const result = await mergeIdCardBatches(req.body, req.user);
+
+    return res.status(202).json({
+      success: true,
+      message: "Merged batch creation started",
+      data: {
+        batchId: result.batchId,
+        status: result.status,
+      },
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// ── GET /id-cards/batches — list recent batches for the school ──
+export const listIdCardBatchesController = async (req, res) => {
+  try {
+    const schoolId = req.params.schoolId || req.user?.schoolId;
+    const result = await listIdCardBatches(schoolId, req.query, req.user);
+
+    return res.status(200).json({
+      success: true,
+      message: "Batches retrieved",
+      data: result.batches,
+      meta: result.meta,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// ── GET /id-cards/batches/latest — get the latest ready batch for preview ──
+export const getLatestBatchController = async (req, res) => {
+  try {
+    const schoolId = req.query.schoolId || req.user?.schoolId;
+    const result = await getLatestBatch(schoolId, req.user);
+
+    if (!result) {
+      return res.status(200).json({
         success: true,
-        message: "Batch is still being generated",
-        data: { status: "pending", retryAfter: result.retryAfter || 15 },
+        message: "No ready batches found",
+        data: null,
       });
     }
 
-    if (result.status === "failed") {
-      return res.status(500).json({
-        success: false,
-        message: "ID card batch generation failed",
-        data: { status: "failed", error: result.error },
-      });
-    }
-
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
-    return res.send(result.html);
+    return res.status(200).json({
+      success: true,
+      message: "Latest batch retrieved",
+      data: result,
+    });
   } catch (error) {
     return res.status(error.status || 500).json({
       success: false,

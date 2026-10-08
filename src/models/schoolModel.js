@@ -146,6 +146,15 @@ const schoolModel = new mongoose.Schema(
         select: false,
         default: null,
       },
+      paystackSecretKey: {
+        type: String,
+        select: false,
+        default: null,
+      },
+      paystackPublicKey: {
+        type: String,
+        default: null,
+      },
       momoMerchantId: {
         type: String,
         default: null,
@@ -158,8 +167,8 @@ const schoolModel = new mongoose.Schema(
       },
       gatewayMode: {
         type: String,
-        enum: ["hubtel", "arke", "mnotify", "manual"],
-        default: "hubtel",
+        enum: ["paystack", "hubtel", "arke", "mnotify", "manual"],
+        default: "paystack",
       },
       platformMarkupPercent: {
         type: Number,
@@ -253,11 +262,36 @@ const schoolModel = new mongoose.Schema(
      * default **false** because those two cost real money per conversation and per
      * call; a tenant must be opted in, never in by omission.
      */
-    featureFlags: {
+     featureFlags: {
       installments: { type: Boolean, default: true },
       idCards: { type: Boolean, default: true },
       whatsapp: { type: Boolean, default: false },
       apiAccess: { type: Boolean, default: false },
+    },
+
+    /**
+     * Per-school ID card configuration.
+     * Stored here so a school can pick its layout, sides, and field visibility
+     * without every batch document carrying these values. Batches snapshot the
+     * resolved settings at creation time so reprints remain stable.
+     */
+    settings: {
+      idCards: {
+        sheetLayout: {
+          type: String,
+          enum: ["6up_a4_landscape", "9up_a4_landscape"],
+          default: "6up_a4_landscape",
+        },
+        sides: {
+          type: String,
+          enum: ["front_back", "front"],
+          default: "front_back",
+        },
+        showQr: { type: Boolean, default: true },
+        showPhoto: { type: Boolean, default: true },
+        showStamp: { type: Boolean, default: true },
+        includeCutGuides: { type: Boolean, default: false },
+      },
     },
 
     /**
@@ -422,6 +456,7 @@ schoolModel.set("toJSON", {
     if (ret.payment) {
       delete ret.payment.hubtelApiKey;
       delete ret.payment.hubtelClientSecret;
+      delete ret.payment.paystackSecretKey;
     }
     if (ret.sms) {
       delete ret.sms.apiKey;

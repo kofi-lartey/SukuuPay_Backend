@@ -3,7 +3,7 @@ import Joi from "joi";
 // ──────────────────── Enums ────────────────────
 const PAYMENT_STATUS_ENUM = ["pending", "processing", "completed", "failed", "cancelled", "refunded"];
 const PAYMENT_METHOD_ENUM = ["momo", "card", "bank_transfer", "cash"];
-const PAYMENT_PROVIDER_ENUM = ["hubtel", "arke", "mnotify", "manual"];
+const PAYMENT_PROVIDER_ENUM = ["paystack", "hubtel", "arke", "mnotify", "manual"];
 
 /**
  * The payment model's `momoNetwork` enum.
@@ -131,6 +131,9 @@ export const initiatePaymentSchema = Joi.object({
       "number.min": "The minimum payment is GH₵ 1.00",
       "any.required": "Amount is required",
     }),
+  // 'momo' routes to MTN and needs a MoMo number; 'card' routes to Paystack
+  // and enters card details on the provider's hosted checkout.
+  paymentMethod: Joi.string().valid("momo", "card").default("momo"),
   // Either spelling, but not neither — checked after the fields are known.
   phoneNumber: Joi.string().trim().pattern(/^(0|233|\+233)[2-57][0-9]{8}$/).optional()
     .messages({ "string.pattern.base": "Invalid Ghana phone number format" }),
@@ -148,11 +151,15 @@ export const initiatePaymentSchema = Joi.object({
     amount: Joi.number().integer().min(0).required(),
   })).optional(),
   metadata: Joi.object().optional(),
+  // When the gateway is Paystack (card), no MoMo phone number is needed — the
+  // parent enters their card details on Paystack's hosted checkout instead.
+  // For MoMo (the default method), a Ghana phone number is required.
 }).custom((value, helpers) => {
-  if (!value.phoneNumber && !value.phone) {
-    return helpers.message({
-      custom: "A mobile money number is required — the prompt has to arrive somewhere",
-    });
+  if (value.paymentMethod === "momo") {
+    const hasPhone = value.phone || value.phoneNumber;
+    if (!hasPhone) {
+      return helpers.error("any.invalid", { message: "Mobile money number is required" });
+    }
   }
   return value;
 });
@@ -160,6 +167,7 @@ export const initiatePaymentSchema = Joi.object({
 export const verifyPaymentSchema = Joi.object({
   hubtelTransactionId: Joi.string().trim().max(100).optional(),
   hubtelOrderId: Joi.string().trim().max(100).optional(),
+  paystackReference: Joi.string().trim().max(100).optional(),
 });
 
 export const hubtelWebhookSchema = Joi.object({

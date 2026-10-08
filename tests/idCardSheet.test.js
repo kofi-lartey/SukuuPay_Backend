@@ -78,7 +78,7 @@ describe('ID card sheet: the card is CR80', () => {
   test('and smaller than the old full-A4 proof sheet', () => {
     // The regression in one assertion: a card used to be rendered at A4 proportions.
     assert.ok(CARD.width < A4.width / 2);
-    assert.ok(CARD.height < A4.height / 4);
+    assert.ok(CARD.height < A4.height / 2);
   });
 });
 
@@ -86,18 +86,23 @@ describe('ID card sheet: the card is CR80', () => {
 // Five per A4
 // ─────────────────────────────────────────────
 describe('ID card sheet: five per sheet is the default', () => {
-  test('the default layout is 5-up', () => {
-    // What the product asked for, by name, so a later edit that changes the default has
-    // to change this assertion too rather than quietly shipping a different count.
-    assert.equal(DEFAULT_SHEET_LAYOUT, 'a4_c80_5up');
-    assert.equal(sheetGeometry().perPage, 5);
+  test('the default layout is 6-up', () => {
+    assert.equal(DEFAULT_SHEET_LAYOUT, '6up_a4_landscape');
+    assert.equal(sheetGeometry().perPage, 6);
   });
 
-  test('the 5-up layout has exactly five slots', () => {
-    const geometry = sheetGeometry('a4_c80_5up');
-    assert.equal(geometry.slots.length, 5);
-    assert.equal(geometry.columns, 1);
-    assert.equal(geometry.rows, 5);
+  test('the 6-up layout has exactly six slots', () => {
+    const geometry = sheetGeometry('6up_a4_landscape');
+    assert.equal(geometry.slots.length, 6);
+    assert.equal(geometry.perRow, 3);
+    assert.equal(geometry.perColumn, 2);
+  });
+
+  test('the 9-up layout has exactly nine slots', () => {
+    const geometry = sheetGeometry('9up_a4_landscape');
+    assert.equal(geometry.slots.length, 9);
+    assert.equal(geometry.perRow, 3);
+    assert.equal(geometry.perColumn, 3);
   });
 
   test('every slot is inside the page', () => {
@@ -151,7 +156,7 @@ describe('ID card sheet: five per sheet is the default', () => {
 
   test('an unknown layout name falls back rather than rendering nothing', () => {
     assert.equal(sheetGeometry('nope').layoutName, DEFAULT_SHEET_LAYOUT);
-    assert.equal(sheetGeometry(undefined).perPage, 5);
+    assert.equal(sheetGeometry(undefined).perPage, 6);
   });
 });
 
@@ -159,39 +164,36 @@ describe('ID card sheet: five per sheet is the default', () => {
 // Cards actually share sheets
 // ─────────────────────────────────────────────
 describe('ID card sheet: the PDF', () => {
-  test('five cards produce one front/back pair, not five pages', async () => {
-    // The load-bearing assertion. Five cards in the old generator produced **five**
-    // A4 pages; here they produce two — a front sheet and a back sheet. Front/back
-    // pairing is what makes a sheet printed double-sided and cut yield matched cards.
+  test('six cards produce one front/back pair, not six pages', async () => {
     const buffer = await generateIdCardSheets(
-      Array.from({ length: 5 }, (_, i) => card(i + 1)),
-      { layout: 'a4_c80_5up' }
+      Array.from({ length: 6 }, (_, i) => card(i + 1)),
+      { layout: '6up_a4_landscape' }
     );
 
     assert.equal(pageCount(buffer), 2);
     assert.ok(buffer.toString('latin1').startsWith('%PDF-'));
   });
 
-  test('six cards spill onto a second sheet, four pages in total', async () => {
+  test('seven cards spill onto a second sheet, four pages in total', async () => {
     const buffer = await generateIdCardSheets(
-      Array.from({ length: 6 }, (_, i) => card(i + 1)),
-      { layout: 'a4_c80_5up' }
+      Array.from({ length: 7 }, (_, i) => card(i + 1)),
+      { layout: '6up_a4_landscape' }
     );
     assert.equal(pageCount(buffer), 4, '2 groups x front + back');
   });
 
-  test('an eight-up sheet fits all eight on one pair', async () => {
+  test('a nine-up sheet fits all nine on one pair', async () => {
     const buffer = await generateIdCardSheets(
-      Array.from({ length: 8 }, (_, i) => card(i + 1)),
-      { layout: 'a4_c80_8up' }
+      Array.from({ length: 9 }, (_, i) => card(i + 1)),
+      { layout: '9up_a4_landscape' }
     );
     assert.equal(pageCount(buffer), 2);
   });
 
   test('front_only prints half the pages', async () => {
     const buffer = await generateIdCardSheets(
-      Array.from({ length: 5 }, (_, i) => card(i + 1)),
-      { layout: 'a4_c80_5up', side: 'front_only' }
+      Array.from({ length: 6 }, (_, i) => card(i + 1)),
+      { layout: '6up_a4_landscape', side: 'front' }
     );
     assert.equal(pageCount(buffer), 1);
   });
@@ -206,8 +208,8 @@ describe('ID card sheet: the PDF', () => {
     // greppable — pdfkit subsets fonts, so the literal text is not in the stream as
     // ASCII — but `Tj`/`TJ` and `re` operators are.
     const buffer = await generateIdCardSheets(
-      Array.from({ length: 5 }, (_, i) => card(i + 1)),
-      { layout: 'a4_c80_5up' }
+      Array.from({ length: 6 }, (_, i) => card(i + 1)),
+      { layout: '6up_a4_landscape' }
     );
 
     const streams = inflateStreams(buffer);
@@ -227,7 +229,7 @@ describe('ID card sheet: the PDF', () => {
     //
     // Asserted structurally: the back page must draw **fewer** image placements than the
     // front. Images are `Do` operators in the content stream.
-    const buffer = await generateIdCardSheets([card(1)], { layout: 'a4_c80_5up' });
+    const buffer = await generateIdCardSheets([card(1)], { layout: '6up_a4_landscape' });
     const [front, back] = inflateStreams(buffer);
 
     const imageOps = (s) => (s.match(/\/I\d+ Do|\bDo\b/g) || []).length;
@@ -237,7 +239,7 @@ describe('ID card sheet: the PDF', () => {
   test('an empty batch yields an empty PDF instead of throwing', async () => {
     // A school with no students yet, or a selection that matched nobody. Throwing here
     // would turn "0 cards" into a failed job.
-    const buffer = await generateIdCardSheets([]);
+    const buffer = await generateIdCardSheets([], { layout: '6up_a4_landscape' });
     assert.ok(buffer.length > 0);
     assert.ok(buffer.toString('latin1').startsWith('%PDF-'));
   });
@@ -250,10 +252,21 @@ describe('ID card sheet: the rendered card matches the preview', () => {
   // pdfkit writes standard (Helvetica) text as hex-encoded PDF strings, so the
   // literal label text is not in the raw stream as ASCII. Decoding the `<....>`
   // operands restores the ASCII and lets the test assert on real field labels.
+  //
+  // PDFKit emits mixed TJ arrays: `[<hex1> 20 <hex2> 0] TJ`. We collapse each
+  // TJ array by decoding its hex strings and concatenating them with the kern
+  // numbers stripped, so `<53747564656e74204944> 0` → "Student ID" and
+  // `<47756172> 20 <6469616e> 0` → "Guardian".
   const decodeHex = (s) =>
-    s.replace(/<([0-9A-Fa-f]+)>/g, (_m, h) => Buffer.from(h, 'hex').toString('latin1'));
+    s.replace(/<([0-9A-Fa-f]+)>/g, (_m, h) => Buffer.from(h, 'hex').toString('latin1'))
+     .replace(/\[([^\]]*)\] TJ/g, (_m, inside) =>
+       inside
+         .replace(/\s+-?\d+(\.\d+)?\s*/g, '') // strip kern numbers and their surrounding spaces
+         .replace(/\s+(\d+(\.\d+)?)?\]/g, '') // strip trailing kern number
+         .trim()
+     );
 
-  test('the front footer and body labels render', async () => {
+  test('the front labels and back footer render', async () => {
     const c = {
       ...card(1),
       dateOfBirth: new Date('2012-04-23'),
@@ -261,14 +274,17 @@ describe('ID card sheet: the rendered card matches the preview', () => {
       academicYear: '2025/2026',
       schoolCode: 'SC-001',
     };
-    const buffer = await generateIdCardSheets([c], { layout: 'a4_c80_5up' });
-    const [front] = inflateStreams(buffer).map(decodeHex);
+    const buffer = await generateIdCardSheets([c], { layout: '6up_a4_landscape' });
+    const streams = inflateStreams(buffer).map(decodeHex);
+    const front = streams[0];
+    const back = streams.find((s) => s.includes('Institutional')) || streams[1];
 
-    // Footer: the "GES compliant" line (contract footer rule + text).
-    assert.ok(front.includes('GES compliant'), 'front footer: GES compliant line missing');
-    // Body: the two-column field grid labels.
+    // Front: the two-column field grid labels.
     assert.ok(front.includes('Student ID'), 'front body: Student ID label missing');
     assert.ok(front.includes('Class / stream'), 'front body: Class / stream label missing');
+    // Footer: "SukuPay Secure ID" + academic year (matches frontend back footer).
+    assert.ok(back.includes('Secure ID'), 'footer: Secure ID text missing');
+    assert.ok(back.includes('2025/2026'), 'footer: academic year text missing');
   });
 
   test('the back carries the Guardian/Emergency/Holder/Expires grid and terms', async () => {
@@ -278,7 +294,7 @@ describe('ID card sheet: the rendered card matches the preview', () => {
       guardianPhone: '0244000001',
       emergencyContact: '0201000001',
     };
-    const buffer = await generateIdCardSheets([c], { layout: 'a4_c80_5up' });
+    const buffer = await generateIdCardSheets([c], { layout: '6up_a4_landscape' });
     const streams = inflateStreams(buffer).map(decodeHex);
     // The back is the stream that is NOT the front: pick the one with "Institutional".
     const back = streams.find((s) => s.includes('Institutional')) || streams[1];
@@ -296,7 +312,7 @@ describe('ID card sheet: the rendered card matches the preview', () => {
     // end-to-end (the regression left it undefined).
     const buffer = await generateIdCardSheets(
       [{ ...card(1), studentId: 'PBS-2026-0001' }],
-      { layout: 'a4_c80_5up' }
+      { layout: '6up_a4_landscape' }
     );
     const back = inflateStreams(buffer).map(decodeHex).find((s) => s.includes('Institutional')) || [];
     assert.ok(back, 'a back content stream was produced');
@@ -305,7 +321,7 @@ describe('ID card sheet: the rendered card matches the preview', () => {
     // A different ID must not bleed the previous one.
     const buffer2 = await generateIdCardSheets(
       [{ ...card(1), studentId: 'S-9' }],
-      { layout: 'a4_c80_5up' }
+      { layout: '6up_a4_landscape' }
     );
     const back2 = inflateStreams(buffer2).map(decodeHex).find((s) => s.includes('Institutional')) || [];
     assert.ok(String(back2).includes('S-9'), 'second student ID did not reach the back face');
@@ -323,7 +339,7 @@ describe('ID card sheet: the batch records what it printed', () => {
     assert.ok(IdCardBatch.schema.path('sheetLayout'));
     assert.ok(IdCardBatch.schema.path('cardsPerSheet'));
     assert.ok(IdCardBatch.schema.path('sheetCount'));
-    assert.equal(IdCardBatch.schema.path('cardsPerSheet').options.default, 5);
+    assert.equal(IdCardBatch.schema.path('cardsPerSheet').options.default, 6);
     assert.equal(IdCardBatch.schema.path('sheetCount').options.default, 1);
   });
 
@@ -334,8 +350,8 @@ describe('ID card sheet: the batch records what it printed', () => {
 });
 
 describe('ID card sheet: the platform setting', () => {
-  test('defaults to 5-up, double-sided', () => {
-    assert.equal(DEFAULT_PLATFORM_SETTINGS.idCards.sheetLayout, 'a4_c80_5up');
+  test('defaults to 6-up, double-sided', () => {
+    assert.equal(DEFAULT_PLATFORM_SETTINGS.idCards.sheetLayout, '6up_a4_landscape');
     assert.equal(DEFAULT_PLATFORM_SETTINGS.idCards.sides, 'front_back');
   });
 

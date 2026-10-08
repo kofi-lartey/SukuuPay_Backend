@@ -3,11 +3,14 @@ import QRCode from "qrcode";
 import { Student } from "../models/studentModel.js";
 import { School } from "../models/schoolModel.js";
 import { IdCardBatch } from "../models/IdCardBatch.js";
-import { Notification } from "../models/Notification.js";
-import { createNotification } from "../services/notification.service.js";
-import { generateIdCardSheets, sheetGeometry, DEFAULT_SHEET_LAYOUT } from "../utils/idCardSheet.js";
-import { resolveCardData } from "../utils/idCardContract.js";
-import { getCachedPlatformSettings } from "./platformSettings.service.js";
+import { IdCardTemplate } from "../models/IdCardTemplate.js";
+import { createNotification } from "./notification.service.js";
+import {
+  generateIdCardSheets,
+  sheetGeometry,
+  DEFAULT_SHEET_LAYOUT,
+} from "../utils/idCardSheet.js";
+import { resolveCardData, DEFAULT_CARD_FIELDS } from "../utils/idCardContract.js";
 import { uploadBuffer } from "../utils/cloudinary.js";
 import { CLOUDINARY_UPLOAD_FOLDER } from "../config/env.js";
 import { AUDIT_ACTIONS, ID_CARD_BATCH_STATUS } from "../config/constants.js";
@@ -21,7 +24,6 @@ const resolveSchoolId = (user, explicitSchoolId) => {
   return user && user.schoolId ? new mongoose.Types.ObjectId(user.schoolId) : null;
 };
 
-// ──────────────────── Generate a QR code data URL ────────────────────
 export const generateQrCodeDataUrl = async (text) => {
   try {
     return await QRCode.toDataURL(text, {
@@ -36,7 +38,6 @@ export const generateQrCodeDataUrl = async (text) => {
   }
 };
 
-// ──────────────────── Resolve a student with scope check ────────────────────
 const findStudentInScope = async (studentId, schoolId) => {
   const student = await Student.findOne({
     _id: studentId,
@@ -47,23 +48,14 @@ const findStudentInScope = async (studentId, schoolId) => {
   if (!student) {
     throw new ApiError("Student not found", 404, "STUDENT_NOT_FOUND");
   }
-
   return student;
 };
 
-// ──────────────────── Build card data object for the template ────────────────────
-//
-// Delegates to `resolveCardData` from the shared `idCardContract` — the *same*
-// resolver the React preview renders from — so the printed card carries exactly
-// the fields the bursar saw on screen: schoolCode, motto, dateOfBirth,
-// academicYear, guardian name + phone, brand colour, and so on. Hand-rolling the
-// object here is how fields silently vanish from the PDF (the old buildCardData
-// omitted schoolCode, motto, dateOfBirth, guardian name/phone, brand colour and
-// academic year), so the printed file never matched the preview.
-const buildCardData = (student, school, derived = {}) => resolveCardData(student, school, derived);
+const buildCardData = (student, school, derived = {}, fields = DEFAULT_CARD_FIELDS) =>
+  resolveCardData(student, school, derived, { fields });
 
-// ──────────────────── Single student ID card (on-the-fly PDF) ────────────────────
-// Returns a PDF buffer so the controller can stream it directly to the client.
+// ─────────────────────────── Single card ───────────────────────────
+
 export const generateSingleStudentIdCard = async (studentId, requester) => {
   const schoolId = resolveSchoolId(requester);
   if (!schoolId) {
@@ -83,13 +75,6 @@ export const generateSingleStudentIdCard = async (studentId, requester) => {
 
   const cardData = buildCardData(student, school, { qrCodeUrl: qrDataUrl });
 
-  // A single card is still a real CR80 card — so it is rendered through the *same*
-  // sheet generator the batch path uses (`generateIdCardSheets`), producing one
-  // true-size front+back pair. The old path drew one card per full A4 page at
-  // 40pt margins, a proof sheet that could never match the preview and did not
-  // print at card scale. Now the single-card PDF the "PDF" button downloads is
-  // pixel-identical in design to the batch file (same `drawCard`, same fonts,
-  // same fields), just one card per sheet.
   const pdfBuffer = await generateIdCardSheets([cardData], {
     layout: DEFAULT_SHEET_LAYOUT,
     side: "front_back",
@@ -103,16 +88,22 @@ export const generateSingleStudentIdCard = async (studentId, requester) => {
   };
 };
 
-// ──────────────────── Batch generation ────────────────────
+// ─────────────────────────── Batch create ───────────────────────────
+
 export const createIdCardBatch = async (data, requester) => {
   const schoolId = resolveSchoolId(requester);
   if (!schoolId) {
     throw new ApiError("No school in scope", 403, "NO_SCHOOL_SCOPE");
   }
 
-  const { studentIds, includeQr = true, includePhoto = true } = data;
+  const {
+    studentIds,
+    includeQr = true,
+    includePhoto = true,
+    useSchoolSettings = true,
+    templateId = null,
+  } = data;
 
-  // Validate that all studentIds belong to this school.
   const validStudents = await Student.find({
     _id: { $in: studentIds },
     schoolId,
@@ -134,17 +125,74 @@ export const createIdCardBatch = async (data, requester) => {
     );
   }
 
-  // Create the batch record with status "pending".
+  let settingsSnapshot;
+  let resolvedTemplateId = null;
+
+  if (templateId) {
+    const template = await IdCardTemplate.findOne({
+      _id: templateId,
+      schoolId,
+      deletedAt: null,
+    }).lean();
+
+    if (!template) {
+      throw new ApiError("Template not found", 404, "NOT_FOUND");
+    }
+
+    resolvedTemplateId = template._id;
+    settingsSnapshot = {
+      sheetLayout: template.layout.sheetLayout || DEFAULT_SHEET_LAYOUT,
+      sides: template.layout.sides || "front_back",
+      includeCutGuides: template.layout.includeCutGuides || false,
+      showPhoto: template.fields.showPhoto !== undefined ? template.fields.showPhoto : true,
+      showQr: template.fields.showQr !== undefined ? template.fields.showQr : true,
+      showStamp: template.fields.showStamp !== undefined ? template.fields.showStamp : true,
+      termsOverride: template.text.termsOverride || null,
+      footerLeft: template.text.footerLeft || "SUKUUPAY",
+      footerRight: template.text.footerRight || null,
+    };
+  } else if (useSchoolSettings) {
+    const school = await School.findById(schoolId)
+      .select("settings.idCards")
+      .lean();
+
+    settingsSnapshot = {
+      sheetLayout: school?.settings?.idCards?.sheetLayout || DEFAULT_SHEET_LAYOUT,
+      sides: school?.settings?.idCards?.sides || "front_back",
+      includeCutGuides: school?.settings?.idCards?.includeCutGuides || false,
+      showPhoto: school?.settings?.idCards?.showPhoto !== false,
+      showQr: school?.settings?.idCards?.showQr !== false,
+      showStamp: school?.settings?.idCards?.showStamp !== false,
+      termsOverride: null,
+      footerLeft: "SUKUUPAY",
+      footerRight: null,
+    };
+  } else {
+    settingsSnapshot = {
+      sheetLayout: DEFAULT_SHEET_LAYOUT,
+      sides: "front_back",
+      includeCutGuides: false,
+      showPhoto: true,
+      showQr: true,
+      showStamp: true,
+      termsOverride: null,
+      footerLeft: "SUKUUPAY",
+      footerRight: null,
+    };
+  }
+
   const batch = await IdCardBatch.create({
     schoolId,
     studentIds: validStudents.map((s) => s._id),
     totalCards: validStudents.length,
     status: ID_CARD_BATCH_STATUS.PENDING,
     requestedBy: requester._id,
+    templateId: resolvedTemplateId,
+    settingsSnapshot,
   });
 
   await auditLog({
-    action: "settings.update",
+    action: AUDIT_ACTIONS.ID_CARD_BATCH_CREATE || "id_card.batch.create",
     entity: "IdCardBatch",
     entityId: batch._id,
     userId: requester._id,
@@ -153,12 +201,11 @@ export const createIdCardBatch = async (data, requester) => {
       totalCards: batch.totalCards,
       includeQr,
       includePhoto,
+      useSchoolSettings,
+      templateId: resolvedTemplateId,
     },
   });
 
-  // Kick off the background PDF generation.
-  // In production this would enqueue a BullMQ / Agenda job; here we call the
-  // job function directly so the batch is processed without an external queue.
   setImmediate(async () => {
     const { generateIdCards } = await import("../jobs/generateIdCards.job.js");
     generateIdCards(batch._id.toString()).catch((error) => {
@@ -169,36 +216,25 @@ export const createIdCardBatch = async (data, requester) => {
   return { batchId: batch._id, status: batch.status };
 };
 
-// ──────────────────── Get batch print preview (HTML) ────────────────────
+// ─────────────────────────── Batch preview (HTML) ───────────────────────────
+
 export const getIdCardBatchPreview = async (batchId, requester) => {
   const schoolId = resolveSchoolId(requester);
   if (!schoolId) {
     throw new ApiError("No school in scope", 403, "NO_SCHOOL_SCOPE");
   }
 
-  const batch = await IdCardBatch.findOne({
-    _id: batchId,
-    schoolId,
-  }).lean();
-
+  const batch = await IdCardBatch.findOne({ _id: batchId, schoolId }).lean();
   if (!batch) throw new ApiError("Batch not found", 404, "NOT_FOUND");
 
-  // If the batch is still generating, tell the client to retry.
   if (batch.status === ID_CARD_BATCH_STATUS.PENDING) {
-    return {
-      status: ID_CARD_BATCH_STATUS.PENDING,
-      retryAfter: 15,
-    };
+    return { status: ID_CARD_BATCH_STATUS.PENDING, retryAfter: 15 };
   }
 
   if (batch.status === ID_CARD_BATCH_STATUS.FAILED) {
-    return {
-      status: ID_CARD_BATCH_STATUS.FAILED,
-      error: batch.generationError,
-    };
+    return { status: ID_CARD_BATCH_STATUS.FAILED, error: batch.generationError };
   }
 
-  // Load students for preview grid.
   const students = await Student.find({
     _id: { $in: batch.studentIds },
     schoolId,
@@ -217,6 +253,16 @@ export const getIdCardBatchPreview = async (batchId, requester) => {
   };
 };
 
+const escapeHtml = (str) => {
+  if (!str) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+};
+
 const renderPreviewHtml = (school, students, batch) => {
   const cards = students
     .map(
@@ -232,11 +278,6 @@ const renderPreviewHtml = (school, students, batch) => {
             ? `<img class="student-photo" src="${student.studentImage}" alt="Photo" />`
             : '<div class="photo-placeholder">No Photo</div>'
         }
-        ${
-          student.payLink
-            ? `<img class="qr-placeholder" alt="QR code for ${student.studentId}" />`
-            : ""
-        }
       </div>
     </div>`
     )
@@ -246,20 +287,18 @@ const renderPreviewHtml = (school, students, batch) => {
 <html>
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ID Card Batch Preview — ${escapeHtml(school?.name || "School")}</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; background: #f4f6f8; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 20px; }
-    .id-card-preview { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .id-card-preview { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; }
     .card-header { font-size: 16px; font-weight: bold; text-align: center; margin-bottom: 12px; }
     .student-name { font-size: 14px; font-weight: bold; text-align: center; margin: 8px 0; }
-    .student-id, .student-class { font-size: 12px; text-align: center; color: #666; margin: 4px 0; }
+    .student-id, .student-class { font-size: 12px; text-align: center; color: #666; }
     .student-photo { width: 80px; height: 80px; object-fit: cover; display: block; margin: 8px auto; border-radius: 4px; }
     .photo-placeholder { width: 80px; height: 80px; border: 1px dashed #ccc; border-radius: 4px; margin: 8px auto; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #999; }
-    .qr-placeholder { width: 60px; height: 60px; border: 1px dashed #ccc; margin: 10px auto; }
     .print-controls { text-align: center; margin: 20px 0; }
-    button { padding: 10px 24px; background: #0f766e; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
+    button { padding: 10px 24px; background: #0f766e; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
   </style>
 </head>
 <body>
@@ -271,17 +310,8 @@ const renderPreviewHtml = (school, students, batch) => {
 </html>`;
 };
 
-const escapeHtml = (str) => {
-  if (!str) return "";
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-};
+// ─────────────────────────── QR links CSV ───────────────────────────
 
-// ──────────────────── Export QR links CSV ────────────────────
 export const getQrLinksExport = async (schoolId, requester, query) => {
   const scopedSchoolId = resolveSchoolId(requester, schoolId);
   if (!scopedSchoolId) {
@@ -304,11 +334,11 @@ export const getQrLinksExport = async (schoolId, requester, query) => {
     Student.countDocuments({ schoolId: scopedSchoolId, deletedAt: null }),
   ]);
 
-  // Generate QR code images (async) for each student's payLink.
   const rows = await Promise.all(
     students.map(async (student) => {
-      const qrImageUrl =
-        student.payLink ? await generateQrCodeDataUrl(student.payLink) : null;
+      const qrImageUrl = student.payLink
+        ? await generateQrCodeDataUrl(student.payLink)
+        : null;
 
       return {
         studentId: student.studentId || "",
@@ -322,31 +352,15 @@ export const getQrLinksExport = async (schoolId, requester, query) => {
 
   return {
     rows,
-    meta: {
-      page,
-      perPage,
-      total,
-      totalPages: Math.ceil(total / perPage),
-    },
+    meta: { page, perPage, total, totalPages: Math.ceil(total / perPage) },
     filename: `qr-links-${school.slug || scopedSchoolId.toString()}-${new Date()
       .toISOString()
       .slice(0, 10)}.csv`,
   };
 };
 
-// ──────────────────── Generate PDF for a batch (called by the job) ────────────────────
-// ──────────────────── Download a generated batch PDF ────────────────────
-//
-// `generateIdCardPdf` uploads the finished PDF to Cloudinary and stores the URL
-// on the batch, and then nothing served it: the only batch endpoints were the
-// create call and an HTML *preview*. So a batch could be generated, report
-// "ready", notify the requester that their cards were ready — and there was no
-// URL anywhere a user could open. The artefact existed and was unreachable.
-//
-// The file is proxied rather than redirected. A redirect would hand the
-// Cloudinary URL to the browser, and that URL is the only thing standing between
-// a scoped record and a publicly-fetchable PDF of one school's entire student
-// body. Proxying keeps the scope check meaningful.
+// ─────────────────────────── Batch PDF download ───────────────────────────
+
 export const getIdCardBatchPdf = async (batchId, requester) => {
   const schoolId = resolveSchoolId(requester);
   if (!schoolId) {
@@ -360,8 +374,6 @@ export const getIdCardBatchPdf = async (batchId, requester) => {
     batch.status === ID_CARD_BATCH_STATUS.PENDING ||
     batch.status === ID_CARD_BATCH_STATUS.GENERATING
   ) {
-    // Not an error: the client polls on this, exactly as it does for the
-    // preview. Returning "still working" beats a 409 the caller cannot act on.
     return { status: ID_CARD_BATCH_STATUS.PENDING };
   }
 
@@ -383,17 +395,11 @@ export const getIdCardBatchPdf = async (batchId, requester) => {
 
   const response = await fetch(batch.pdfUrl);
   if (!response.ok) {
-    throw new ApiError(
-      "The generated file could not be retrieved",
-      502,
-      "PDF_FETCH_FAILED"
-    );
+    throw new ApiError("The generated file could not be retrieved", 502, "PDF_FETCH_FAILED");
   }
 
   const buffer = Buffer.from(await response.arrayBuffer());
-  const slug = (requester.schoolSlug || "id-cards")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-");
+  const slug = (requester.schoolSlug || "id-cards").toLowerCase().replace(/[^a-z0-9]+/g, "-");
 
   return {
     status: ID_CARD_BATCH_STATUS.READY,
@@ -402,13 +408,13 @@ export const getIdCardBatchPdf = async (batchId, requester) => {
   };
 };
 
-/** Cards per sheet for a layout name. Thin wrapper so callers read as intent. */
+// ─────────────────────────── Batch generation ───────────────────────────
+
 const cardsPerSheet = (layoutName) => sheetGeometry(layoutName).perPage;
 
 export const generateIdCardPdf = async (batchId) => {
   const batch = await IdCardBatch.findById(batchId);
   if (!batch) throw new ApiError("Batch not found", 404, "NOT_FOUND");
-
   if (batch.status !== ID_CARD_BATCH_STATUS.PENDING) return null;
 
   batch.status = ID_CARD_BATCH_STATUS.GENERATING;
@@ -424,45 +430,42 @@ export const generateIdCardPdf = async (batchId) => {
     schoolId: batch.schoolId,
     deletedAt: null,
   })
-    .select("studentName studentClass studentId studentImage payLink dateOfBirth academicYear emergencyContacts parents")
+    .select(
+      "studentName studentClass studentId studentImage payLink dateOfBirth academicYear emergencyContacts parents"
+    )
     .lean();
 
-  // Build card data for each student and generate QR codes.
+  const settingsSnapshot = batch.settingsSnapshot || {};
+  const termsOverride = settingsSnapshot.termsOverride || null;
+  const footerLeft = settingsSnapshot.footerLeft || "SUKUUPAY";
+  const footerRight = settingsSnapshot.footerRight || null;
+
   const cards = await Promise.all(
     students.map(async (student) => {
-      const cardData = buildCardData(student, school);
-      cardData.qrCodeUrl = student.payLink
-        ? await generateQrCodeDataUrl(student.payLink)
-        : null;
+      const cardData = buildCardData(student, school, {
+        qrCodeUrl: student.payLink
+          ? await generateQrCodeDataUrl(student.payLink)
+          : null,
+      });
+      cardData.termsOverride = termsOverride;
+      cardData.footerLeft = footerLeft;
+      cardData.footerRight = footerRight;
       return cardData;
     })
   );
 
   try {
-    // **Printable sheets, not proof sheets.**
-    //
-    // This called `generatePdfFromTemplate("idCard", { pages: cards })`, which renders
-    // **one card per A4 page** at 40pt margins with 16pt type. That is a proof sheet: it
-    // is useful on screen and useless in the hand — 90% of every sheet is empty, and
-    // nothing on it is at ID-card size, so cutting it down produces cards that are not
-    // CR80 and do not fit a badge holder or a lanyard.
-    //
-    // `generateIdCardSheets` draws true-size CR80 cards (85.60 × 53.98 mm), five to an
-    // A4 sheet by default, with the backs on paired pages in matching slot order so a
-    // sheet printed double-sided and cut yields matched cards. The layout is a platform
-    // setting, so it can be moved to the denser 8-up without a redeploy.
-    //
-    // Both produce a PDF of the same shape, so everything downstream — the Cloudinary
-    // upload, the notification, the download link — is unchanged.
-    const settings = await getCachedPlatformSettings();
-    const sheetLayout =
-      settings?.idCards?.sheetLayout || DEFAULT_SHEET_LAYOUT;
-
+    const sheetLayout = settingsSnapshot.sheetLayout || DEFAULT_SHEET_LAYOUT;
+    const sides = settingsSnapshot.sides || "front_back";
     const sheetCount = Math.max(1, Math.ceil(cards.length / cardsPerSheet(sheetLayout)));
 
     const pdfBuffer = await generateIdCardSheets(cards, {
       layout: sheetLayout,
-      side: settings?.idCards?.sides || "front_back",
+      side: sides,
+      showQr: settingsSnapshot.showQr !== undefined ? settingsSnapshot.showQr : true,
+      showPhoto: settingsSnapshot.showPhoto !== undefined ? settingsSnapshot.showPhoto : true,
+      showStamp: settingsSnapshot.showStamp !== undefined ? settingsSnapshot.showStamp : true,
+      includeCutGuides: settingsSnapshot.includeCutGuides || false,
     });
 
     const uploadResult = await uploadBuffer(pdfBuffer, {
@@ -475,15 +478,11 @@ export const generateIdCardPdf = async (batchId) => {
     batch.publicId = uploadResult?.public_id;
     batch.status = ID_CARD_BATCH_STATUS.READY;
     batch.generationError = null;
-    // Recorded so the download page can tell the school what they are about to print
-    // ("5 per sheet, double-sided") rather than leaving them to work it out from a
-    // one-line print instruction on a PDF.
     batch.sheetLayout = sheetLayout;
     batch.sheetCount = sheetCount;
     batch.cardsPerSheet = cardsPerSheet(sheetLayout);
     await batch.save();
 
-    // Notify the requester that the batch is ready.
     await createNotification({
       userId: batch.requestedBy,
       schoolId: batch.schoolId,
@@ -508,4 +507,264 @@ export const generateIdCardPdf = async (batchId) => {
 
     throw error;
   }
+};
+
+// ─────────────────────────── Merge batches ───────────────────────────
+
+export const mergeIdCardBatches = async (data, requester) => {
+  const schoolId = resolveSchoolId(requester);
+  if (!schoolId) {
+    throw new ApiError("No school in scope", 403, "NO_SCHOOL_SCOPE");
+  }
+
+  const { batchIds } = data;
+  if (!Array.isArray(batchIds) || batchIds.length === 0) {
+    throw new ApiError("At least one batch ID is required", 400, "VALIDATION_ERROR");
+  }
+
+  const batches = await IdCardBatch.find({
+    _id: { $in: batchIds },
+    schoolId,
+    deletedAt: null,
+  }).lean();
+
+  if (batches.length === 0) {
+    throw new ApiError("No valid batches found", 404, "NOT_FOUND");
+  }
+
+  const foundIds = batches.map((b) => b._id.toString());
+  const missingIds = batchIds.filter((id) => !foundIds.includes(id.toString()));
+  if (missingIds.length > 0) {
+    throw new ApiError(
+      `${missingIds.length} of the provided batch IDs do not belong to your school`,
+      403,
+      "INVALID_BATCHES"
+    );
+  }
+
+  const seen = new Set();
+  const mergedStudentIds = [];
+  for (const batch of batches) {
+    if (batch.studentIds) {
+      for (const sid of batch.studentIds) {
+        const key = sid.toString();
+        if (!seen.has(key)) {
+          seen.add(key);
+          mergedStudentIds.push(sid);
+        }
+      }
+    }
+  }
+
+  if (mergedStudentIds.length === 0) {
+    throw new ApiError("No students found in the selected batches", 400, "EMPTY_MERGE");
+  }
+
+  let settingsSnapshot = null;
+  for (const batch of batches) {
+    if (batch.settingsSnapshot) {
+      settingsSnapshot = batch.settingsSnapshot;
+      break;
+    }
+  }
+
+  const mergedBatch = await IdCardBatch.create({
+    schoolId,
+    studentIds: mergedStudentIds,
+    totalCards: mergedStudentIds.length,
+    status: ID_CARD_BATCH_STATUS.PENDING,
+    requestedBy: requester._id,
+    templateId: batches[0]?.templateId || null,
+    settingsSnapshot: settingsSnapshot || undefined,
+  });
+
+  await auditLog({
+    action: AUDIT_ACTIONS.ID_CARD_BATCH_CREATE || "id_card.batch.create",
+    entity: "IdCardBatch",
+    entityId: mergedBatch._id,
+    userId: requester._id,
+    schoolId,
+    meta: {
+      mergedFrom: batchIds,
+      totalCards: mergedBatch.totalCards,
+      sourceBatchCount: batches.length,
+    },
+  });
+
+  setImmediate(async () => {
+    const { generateIdCards } = await import("../jobs/generateIdCards.job.js");
+    generateIdCards(mergedBatch._id.toString()).catch((error) => {
+      console.error(`[ID-CARD] Merged batch ${mergedBatch._id} generation failed:`, error.message);
+    });
+  });
+
+  return { batchId: mergedBatch._id, status: mergedBatch.status };
+};
+
+// ─────────────────────────── List & status ───────────────────────────
+
+export const listIdCardBatches = async (schoolId, query, requester) => {
+  const scopedSchoolId = resolveSchoolId(requester, schoolId);
+  if (!scopedSchoolId) {
+    throw new ApiError("No school in scope", 403, "NO_SCHOOL_SCOPE");
+  }
+
+  const page = Math.max(1, Number(query.page) || 1);
+  const perPage = Math.min(50, Math.max(1, Number(query.perPage) || 20));
+  const skip = (page - 1) * perPage;
+
+  const [batches, total] = await Promise.all([
+    IdCardBatch.find({ schoolId: scopedSchoolId })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(perPage)
+      .populate("requestedBy", "name email")
+      .lean(),
+    IdCardBatch.countDocuments({ schoolId: scopedSchoolId }),
+  ]);
+
+  return {
+    batches,
+    meta: { page, perPage, total, totalPages: Math.ceil(total / perPage) },
+  };
+};
+
+export const getIdCardBatchStatus = async (batchId, requester) => {
+  const schoolId = resolveSchoolId(requester);
+  if (!schoolId) {
+    throw new ApiError("No school in scope", 403, "NO_SCHOOL_SCOPE");
+  }
+
+  const batch = await IdCardBatch.findOne({ _id: batchId, schoolId }).lean();
+  if (!batch) throw new ApiError("Batch not found", 404, "NOT_FOUND");
+
+  return {
+    batchId: batch._id,
+    status: batch.status,
+    totalCards: batch.totalCards,
+    cardsPerSheet: batch.cardsPerSheet,
+    sheetLayout: batch.sheetLayout,
+    sheetCount: batch.sheetCount,
+    sides: batch.settingsSnapshot?.sides || "front_back",
+    generationError: batch.generationError,
+    createdAt: batch.createdAt,
+    updatedAt: batch.updatedAt,
+    templateId: batch.templateId,
+  };
+};
+
+export const getIdCardBatchPreviewData = async (batchId, requester) => {
+  const schoolId = resolveSchoolId(requester);
+  if (!schoolId) {
+    throw new ApiError("No school in scope", 403, "NO_SCHOOL_SCOPE");
+  }
+
+  const batch = await IdCardBatch.findOne({ _id: batchId, schoolId }).lean();
+  if (!batch) throw new ApiError("Batch not found", 404, "NOT_FOUND");
+
+  const school = await School.findById(schoolId)
+    .select("name logo stamp motto schoolCode brandColor academic.currentYear")
+    .lean();
+  if (!school) throw new ApiError("School not found", 404, "NOT_FOUND");
+
+  const students = await Student.find({
+    _id: { $in: batch.studentIds },
+    schoolId,
+    deletedAt: null,
+  })
+    .select("studentName studentClass studentId studentImage payLink parents emergencyContacts")
+    .lean();
+
+  const cards = await Promise.all(
+    students.map(async (student) => {
+      const qrCodeUrl = student.payLink
+        ? await generateQrCodeDataUrl(student.payLink)
+        : null;
+      return resolveCardData(student, school, { qrCodeUrl });
+    })
+  );
+
+  const settingsSnapshot = batch.settingsSnapshot || {};
+  const geometry = sheetGeometry(settingsSnapshot.sheetLayout || DEFAULT_SHEET_LAYOUT);
+
+  return {
+    batch: {
+      _id: batch._id,
+      totalCards: batch.totalCards,
+      cardsPerSheet: geometry.perPage,
+      sheetCount: Math.max(1, Math.ceil(batch.totalCards / geometry.perPage)),
+      sides: settingsSnapshot.sides || "front_back",
+      sheetLayout: settingsSnapshot.sheetLayout || DEFAULT_SHEET_LAYOUT,
+      status: batch.status,
+    },
+    school: {
+      name: school.name,
+      logo: school.logo,
+      stamp: school.stamp,
+      motto: school.motto,
+      schoolCode: school.schoolCode,
+      brandColor: school.brandColor,
+      academicYear: school.academic?.currentYear || new Date().getFullYear().toString(),
+    },
+    cards,
+  };
+};
+
+export const getLatestBatch = async (schoolId, requester) => {
+  const scopedSchoolId = resolveSchoolId(requester, schoolId);
+  if (!scopedSchoolId) {
+    throw new ApiError("No school in scope", 403, "NO_SCHOOL_SCOPE");
+  }
+
+  const batch = await IdCardBatch.findOne({
+    schoolId: scopedSchoolId,
+    status: ID_CARD_BATCH_STATUS.READY,
+  })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  if (!batch) return null;
+
+  const school = await School.findById(scopedSchoolId)
+    .select("name logo stamp motto schoolCode brandColor academic.currentYear")
+    .lean();
+
+  const students = await Student.find({
+    _id: { $in: batch.studentIds },
+    schoolId: scopedSchoolId,
+    deletedAt: null,
+  })
+    .select("studentName studentClass studentId studentImage payLink parents emergencyContacts")
+    .lean();
+
+  const cards = await Promise.all(
+    students.map(async (student) => {
+      const qrCodeUrl = student.payLink
+        ? await generateQrCodeDataUrl(student.payLink)
+        : null;
+      return resolveCardData(student, school, { qrCodeUrl });
+    })
+  );
+
+  const geometry = sheetGeometry(batch.sheetLayout || DEFAULT_SHEET_LAYOUT);
+
+  return {
+    batch: {
+      _id: batch._id,
+      totalCards: batch.totalCards,
+      cardsPerSheet: geometry.perPage,
+      sheetLayout: batch.sheetLayout,
+      sides: batch.settingsSnapshot?.sides || "front_back",
+    },
+    school: {
+      name: school.name,
+      logo: school.logo,
+      stamp: school.stamp,
+      motto: school.motto,
+      schoolCode: school.schoolCode,
+      brandColor: school.brandColor,
+      academicYear: school.academic?.currentYear || new Date().getFullYear().toString(),
+    },
+    cards,
+  };
 };

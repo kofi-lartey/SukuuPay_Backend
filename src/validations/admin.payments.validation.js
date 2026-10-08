@@ -39,7 +39,7 @@ const listPaymentsQuerySchema = Joi.object({
    * wrong one here returns an empty list rather than an error, which is the worst
    * possible answer to a filter.
    */
-  gateway: Joi.string().valid('hubtel', 'arke', 'mnotify', 'manual', 'mtn'),
+  gateway: Joi.string().valid('paystack', 'hubtel', 'arke', 'mnotify', 'manual', 'mtn'),
   from: Joi.date().iso(),
   to: Joi.date().iso(),
 }).unknown(false);

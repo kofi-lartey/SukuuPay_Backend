@@ -21,10 +21,17 @@ import {
   isAccountActive as mtnIsAccountActive,
   MtnTransportError,
 } from "../utils/mtnApi.js";
-import { resolveGateway } from "../utils/paymentGateway.js";
+import { resolveGateway, getPaystackSecretKey } from "../utils/paymentGateway.js";
+import {
+  initializeTransaction as paystackInitializeTransaction,
+  verifyTransaction as paystackVerifyTransaction,
+  mapPaystackStatus,
+  isPaystackSuccessful,
+  PaystackTransportError,
+} from "../utils/paystackApi.js";
 import { escapeRegExp } from "../utils/generateStudentId.js";
 import { startOfDayAccra, endOfDayAccra } from "../utils/dateHelpers.js";
-import { WEBHOOK_BASE_URL } from "../config/env.js";
+import { WEBHOOK_BASE_URL, PAY_LINK_BASE_URL } from "../config/env.js";
 
 class ApiError extends Error {
   constructor(message, status = 500, code = "INTERNAL_ERROR") {
@@ -192,7 +199,11 @@ export const initiatePayment = async (token, data) => {
   // Find primary parent for contact info
   const primaryParent = (student.parents || []).find((p) => p.isPrimary) || student.parents?.[0];
 
-  const gateway = resolveGateway(school);
+  // Resolve which gateway handles this payment. When the parent provides a
+  // MoMo phone number, MTN is preferred; when they don't (card payment),
+  // Paystack is used.
+  const method = data.phone || data.phoneNumber ? 'momo' : 'card';
+  const gateway = resolveGateway(school, method);
 
   // Stamp the plan this payment settles, when there is a live one.
   //
@@ -215,7 +226,7 @@ export const initiatePayment = async (token, data) => {
     amount,
     currency: "GHS",
     status: "pending",
-    paymentMethod: "momo",
+    paymentMethod: method,
     provider: gateway,
     momoPhoneNumber: data.phoneNumber || primaryParent?.phone,
     momoNetwork: data.momoNetwork || "UNKNOWN",
@@ -230,11 +241,100 @@ export const initiatePayment = async (token, data) => {
     createdBy: student.createdBy,
   });
 
+  if (gateway === "paystack") {
+    return initiatePaystackPayment(payment, student, school, token);
+  }
+
   if (gateway === "mtn") {
     return initiateMtnPayment(payment, student, school, token);
   }
 
   return initiateHubtelPayment(payment, student, school, token);
+};
+
+// ──────────────────── Paystack: initiate ────────────────────
+/**
+ * Initializes a Paystack transaction (redirect-based checkout).
+ *
+ * The parent is redirected to Paystack's hosted checkout page to complete the
+ * payment. The final status arrives by webhook (POST /api/webhooks/paystack/payment)
+ * or by polling the verify endpoint via `verifyPayment`.
+ */
+const initiatePaystackPayment = async (payment, student, school, token) => {
+  const secretKey = getPaystackSecretKey(school);
+
+  if (!secretKey) {
+    payment.status = "failed";
+    payment.failureReason = "No Paystack secret key configured for this school";
+    await payment.save();
+    throw new ApiError(
+      "Paystack is not configured for this school",
+      500,
+      "PAYSTACK_NOT_CONFIGURED"
+    );
+  }
+
+  const parentEmail = primaryParent?.email || payment.momoPhoneNumber || student.createdBy?.email || "";
+
+  try {
+    const callbackUrl = `${PAY_LINK_BASE_URL}/pay/${token}`;
+    const result = await paystackInitializeTransaction({
+      secretKey,
+      email: parentEmail,
+      amount: payment.amount,
+      reference: payment.paymentId,
+      callbackUrl,
+      metadata: {
+        studentId: student.studentId,
+        studentName: student.studentName,
+        schoolId: school.schoolCode,
+        paymentId: payment.paymentId,
+      },
+    });
+
+    payment.status = "processing";
+    payment.paystackReference = payment.paymentId;
+    payment.paystackAccessCode = result.accessCode;
+    payment.paystackStatus = "pending";
+    await payment.save();
+
+    await auditService.log({
+      action: "payment.initiate",
+      entity: "Payment",
+      entityId: payment._id,
+      userId: student.createdBy,
+      details: {
+        paymentId: payment.paymentId,
+        amount: payment.amount,
+        studentId: student.studentId,
+        provider: "paystack",
+        reference: result.reference,
+      },
+    });
+
+    return {
+      payment: payment.toJSON(),
+      provider: "paystack",
+      requiresPayerApproval: true,
+      paystack: {
+        authorizationUrl: result.authorizationUrl,
+        accessCode: result.accessCode,
+        reference: result.reference,
+        publicKey: result.publicKey,
+      },
+      payLink: buildPayLink(token),
+    };
+  } catch (error) {
+    payment.status = "failed";
+    payment.paymentMethod = "card";
+    payment.failureReason = error.message?.slice(0, 500) || "Paystack initialization failed";
+    await payment.save();
+
+    if (error instanceof PaystackTransportError) {
+      throw new ApiError(error.message, error.status, error.code);
+    }
+    throw error;
+  }
 };
 
 // ──────────────────── MTN: initiate ────────────────────
@@ -374,6 +474,12 @@ export const verifyPayment = async (token, data) => {
   if (data.hubtelTransactionId) filter.hubtelTransactionId = data.hubtelTransactionId;
   if (data.hubtelOrderId) filter.hubtelOrderId = data.hubtelOrderId;
   if (data.mtnReferenceId) filter.mtnReferenceId = data.mtnReferenceId;
+  if (data.paystackReference) {
+    filter.$or = [
+      { paystackReference: data.paystackReference },
+      { paymentId: data.paystackReference },
+    ];
+  }
 
   const payment = await Payment.findOne(filter).sort({ createdAt: -1 });
   if (!payment) {
@@ -393,14 +499,30 @@ export const verifyPayment = async (token, data) => {
         return payment.toJSON();
       }
     } catch (error) {
-      // A provider outage must not surface as a payment failure; the stored
-      // state remains authoritative until the next poll.
       console.error(`[MTN] Status poll failed for ${payment.paymentId}:`, error.message);
     }
     return payment.toJSON();
   }
 
-  // TODO: Hubtel verification API. For now, return the current payment status.
+  // A Paystack payment is settled by polling the provider's verify endpoint.
+  if (payment.provider === "paystack" && payment.paystackReference) {
+    const school = await fetchSchool(student.schoolId);
+    const secretKey = getPaystackSecretKey(school);
+    if (secretKey) {
+      try {
+        const tx = await paystackVerifyTransaction({ secretKey, reference: payment.paystackReference });
+        const mapped = mapPaystackStatus(tx?.status);
+        if (mapped && mapped !== payment.status) {
+          await applyPaystackStatus(payment, tx, mapped);
+          return payment.toJSON();
+        }
+      } catch (error) {
+        console.error(`[PAYSTACK] Verify failed for ${payment.paymentId}:`, error.message);
+      }
+    }
+    return payment.toJSON();
+  }
+
   return payment.toJSON();
 };
 
@@ -1201,6 +1323,53 @@ const applyMtnStatus = async (payment, transaction, mappedStatus) => {
 };
 
 /**
+ * Applies a Paystack transaction status to the payment record, including
+ * settlement when the status is a success. The claim logic mirrors the MTN path.
+ */
+const applyPaystackStatus = async (payment, tx, mappedStatus) => {
+  const isSettlement = mappedStatus === "completed";
+
+  if (isSettlement) {
+    const claim = await claimPaymentSettlement(payment);
+    if (!claim) {
+      return { duplicate: true };
+    }
+  }
+
+  payment.paystackTransactionId = tx?.id || payment.paystackTransactionId;
+  payment.paystackStatus = tx?.status || payment.paystackStatus;
+
+  if (isSettlement) {
+    payment.status = "completed";
+    payment.completedAt = new Date();
+    payment.settlement.reference = payment.paymentId;
+  } else if (mappedStatus === "failed") {
+    payment.status = "failed";
+    payment.failedAt = new Date();
+    payment.failureReason = tx?.failure_reason || "Reported failed by Paystack";
+  } else {
+    payment.status = "processing";
+  }
+
+  await payment.save();
+
+  if (isSettlement) {
+    try {
+      await settlePayment(payment);
+    } catch (error) {
+      await releasePaymentSettlement(payment._id);
+      throw error;
+    }
+  }
+
+  if (isSettlement && payment.paymentPlanId) {
+    await applyCompletedPaymentToPlan(payment);
+  }
+
+  return { duplicate: false, payment };
+};
+
+/**
  * Handles an MTN transaction result, from either the callback or a status poll.
  *
  * Accepts the payload in both the bare transaction shape and the
@@ -1407,6 +1576,112 @@ export const handleHubtelWebhook = async (payload) => {
     entityId: payment._id,
     userId: payment.createdBy,
     details: { status: Status, transactionId: TransactionId, amount: Amount },
+  });
+
+  return { success: true, payment: payment.toJSON() };
+};
+
+// ──────────────────── Paystack: webhook settlement ────────────────────
+/**
+ * Settles a payment from a Paystack webhook.
+ *
+ * Paystack sends a `charge.success` event when a transaction completes. The
+ * payload references the payment by the `reference` metadata we attached at
+ * initialization (which equals `paymentId`).
+ *
+ * Delegates to `settlePayment` for the balance/ledger write so the MTN and
+ * Paystack paths cannot diverge. The settlement claim runs before the balance
+ * updates, so a gateway that delivers the same event twice credits the parent
+ * once.
+ */
+export const handlePaystackWebhook = async (payload) => {
+  const event = payload?.event;
+  const data = payload?.data;
+
+  if (!event || !data) {
+    return { success: true, message: "Webhook event or data missing — acknowledged" };
+  }
+
+  // Paystack events: charge.success, charge.failed, transfer.* ...
+  // Only `charge.success` and `charge.failed` are relevant for payment settlement.
+  if (event !== 'charge.success' && event !== 'charge.failed') {
+    return { success: true, message: `Event ${event} acknowledged — not relevant for payment settlement` };
+  }
+
+  const reference = data.reference;
+  const status = data.status;
+
+  // Find payment by paystackReference or reference (both equal paymentId)
+  const filter = { deletedAt: null };
+  if (reference) {
+    filter.$or = [
+      { paystackReference: reference },
+      { paymentId: reference },
+    ];
+  }
+
+  const payment = await Payment.findOne(filter);
+  if (!payment) {
+    console.warn(`[WEBHOOK-PAYSTACK] Payment not found for reference: ${reference}`);
+    return { success: true, message: "Payment not found in system" };
+  }
+
+  // Map Paystack status to our internal states
+  const mappedStatus = mapPaystackStatus(status);
+
+  // Store the webhook payload
+  payment.webhookPayload = payload;
+  payment.webhookReceivedAt = new Date();
+  payment.paystackTransactionId = data.id || payment.paystackTransactionId;
+  payment.paystackStatus = status || payment.paystackStatus;
+
+  if (isPaystackSuccessful(status)) {
+    // Claim first — a second delivery of the same event finds the claim taken
+    // and stops here, so the student's totalPaid is never incremented twice.
+    const claim = await claimPaymentSettlement(payment);
+    if (!claim) {
+      return { success: true, duplicate: true, message: "Payment already settled", payment: payment.toJSON() };
+    }
+
+    payment.status = "completed";
+    payment.completedAt = new Date();
+    payment.settlement.reference = payment.paymentId;
+    await payment.save();
+
+    try {
+      await settlePayment(payment);
+    } catch (error) {
+      // Release the claim so a retry settles this payment instead of leaving
+      // it stuck as completed-but-uncounted.
+      await releasePaymentSettlement(payment._id);
+      throw error;
+    }
+  } else if (mappedStatus === 'failed') {
+    payment.status = "failed";
+    payment.failedAt = new Date();
+    await payment.save();
+  } else {
+    payment.status = "processing";
+    await payment.save();
+  }
+
+  // Payments that settle a payment-plan installment are applied to the plan
+  if (payment.paymentPlanId && payment.status === "completed") {
+    await applyCompletedPaymentToPlan(payment);
+  }
+
+  await auditService.log({
+    action: "webhook.received",
+    entity: "Payment",
+    entityId: payment._id,
+    userId: payment.createdBy,
+    details: {
+      provider: "paystack",
+      event,
+      reference,
+      status,
+      amount: data.amount,
+    },
   });
 
   return { success: true, payment: payment.toJSON() };

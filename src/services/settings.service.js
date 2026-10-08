@@ -3,8 +3,9 @@ import { School } from "../models/schoolModel.js";
 import { Student } from "../models/studentModel.js";
 import { Payment } from "../models/paymentModel.js";
 import { User } from "../models/userModel.js";
+import { IdCardBatch } from "../models/IdCardBatch.js";
 import ApiError from "../utils/ApiError.js";
-import { AUDIT_ACTIONS } from "../config/constants.js";
+import { AUDIT_ACTIONS, ID_CARD_BATCH_STATUS } from "../config/constants.js";
 import { log as auditLog } from "../utils/auditService.js";
 
 const resolveSchoolId = (user, explicitSchoolId) => {
@@ -57,7 +58,7 @@ export const getSchoolSettings = async (schoolId, requester) => {
       balance: school.sms?.balance || 0,
     },
     payment: {
-      gatewayMode: school.payment?.gatewayMode || "hubtel",
+      gatewayMode: school.payment?.gatewayMode || "paystack",
       platformMarkupPercent: school.payment?.platformMarkupPercent || 0,
       networksEnabled: {
         mtn: school.payment?.networksEnabled?.mtn !== false,
@@ -253,7 +254,7 @@ export const getSchoolBilling = async (schoolId, query, requester) => {
 
   const smsCreditsRemaining = Math.max((school.sms?.balance || 0) - smsSentThisMonth, 0);
 
-  return {
+return {
     subscription: {
       plan: sub.plan || "trial",
       status: sub.status || "trial",
@@ -273,5 +274,88 @@ export const getSchoolBilling = async (schoolId, query, requester) => {
       amount: sub.monthlyFee || 0,
       dueDate: sub.currentPeriodEnd || null,
     },
+  };
+};
+
+// ──────────────────── GET ID card settings ────────────────────
+export const getIdCardSettings = async (schoolId, requester) => {
+  const scopedSchoolId = resolveSchoolId(requester, schoolId);
+  if (!scopedSchoolId) {
+    throw new ApiError("No school in scope", 403, "NO_SCHOOL_SCOPE");
+  }
+
+  const school = await School.findOne({ _id: scopedSchoolId, deletedAt: null })
+    .select("settings.idCards")
+    .lean();
+
+  if (!school) throw new ApiError("School not found", 404, "NOT_FOUND");
+
+  const idCards = school.settings?.idCards || {};
+
+  return {
+    sheetLayout: idCards.sheetLayout || "6up_a4_landscape",
+    sides: idCards.sides || "front_back",
+    showQr: idCards.showQr !== undefined ? idCards.showQr : true,
+    showPhoto: idCards.showPhoto !== undefined ? idCards.showPhoto : true,
+    showStamp: idCards.showStamp !== undefined ? idCards.showStamp : true,
+    includeCutGuides: idCards.includeCutGuides !== undefined ? idCards.includeCutGuides : false,
+  };
+};
+
+// ──────────────────── PUT ID card settings ────────────────────
+export const updateIdCardSettings = async (schoolId, data, requester) => {
+  const scopedSchoolId = resolveSchoolId(requester, schoolId);
+  if (!scopedSchoolId) {
+    throw new ApiError("No school in scope", 403, "NO_SCHOOL_SCOPE");
+  }
+
+  const school = await School.findOne({ _id: scopedSchoolId, deletedAt: null });
+  if (!school) throw new ApiError("School not found", 404, "NOT_FOUND");
+
+  if (!school.settings) {
+    school.settings = {};
+  }
+  if (!school.settings.idCards) {
+    school.settings.idCards = {};
+  }
+
+  const validFields = [
+    "sheetLayout", "sides", "showQr", "showPhoto", "showStamp", "includeCutGuides",
+  ];
+
+  for (const field of validFields) {
+    if (data[field] !== undefined) {
+      school.settings.idCards[field] = data[field];
+    }
+  }
+
+  // Validate enum values.
+  if (school.settings.idCards.sheetLayout &&
+      !["6up_a4_landscape", "9up_a4_landscape"].includes(school.settings.idCards.sheetLayout)) {
+    throw new ApiError("Invalid sheet layout", 400, "VALIDATION_ERROR");
+  }
+  if (school.settings.idCards.sides &&
+      !["front_back", "front"].includes(school.settings.idCards.sides)) {
+    throw new ApiError("Invalid sides value", 400, "VALIDATION_ERROR");
+  }
+
+  await school.save();
+
+  await auditLog({
+    action: AUDIT_ACTIONS.SETTINGS_UPDATE,
+    entity: "School",
+    entityId: school._id,
+    userId: requester._id,
+    schoolId: scopedSchoolId,
+    meta: { idCardSettings: data },
+  });
+
+  return {
+    sheetLayout: school.settings.idCards.sheetLayout || "6up_a4_landscape",
+    sides: school.settings.idCards.sides || "front_back",
+    showQr: school.settings.idCards.showQr !== undefined ? school.settings.idCards.showQr : true,
+    showPhoto: school.settings.idCards.showPhoto !== undefined ? school.settings.idCards.showPhoto : true,
+    showStamp: school.settings.idCards.showStamp !== undefined ? school.settings.idCards.showStamp : true,
+    includeCutGuides: school.settings.idCards.includeCutGuides !== undefined ? school.settings.idCards.includeCutGuides : false,
   };
 };

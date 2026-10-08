@@ -2,8 +2,10 @@ import {
   authenticateHubtel,
   authenticateArkesel,
   authenticateMtn,
+  authenticatePaystack,
   handleHubtelPaymentWebhook,
   handleMtnPaymentWebhook,
+  handlePaystackPaymentWebhook,
   handleSmsDeliveryReport,
 } from '../services/inboundWebhooks.service.js';
 
@@ -144,6 +146,45 @@ export const arkeselSmsWebhookController = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to process Arkesel SMS delivery report',
+    });
+  }
+};
+
+// ── POST /webhooks/paystack/payment — Paystack charge confirmation ──
+export const paystackPaymentWebhookController = async (req, res) => {
+  try {
+    // Paystack signs the body with HMAC-SHA512; the signature is in
+    // X-Paystack-Signature. Authentication must succeed before settlement runs.
+    const auth = authenticatePaystack({
+      signature: req.get('x-paystack-signature'),
+      rawBody: req.rawBody,
+    });
+
+    const result = await handlePaystackPaymentWebhook(req.body, {
+      endpoint: 'webhooks/paystack/payment',
+      signatureVerified: auth.enforced,
+      ip: req.ip,
+    });
+
+    // Always 2xx: Paystack retries a non-2xx, and a retry of a
+    // settlement that already succeeded would be a second chance to
+    // double-credit the parent.
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    if (error.status === 401) {
+      return res.status(401).json({
+        success: false,
+        message: error.message,
+        code: error.code,
+      });
+    }
+
+    console.error('Paystack payment webhook error:', error);
+    // A 5xx here is deliberate: the callback was authenticated but could not
+    // be applied, and Paystack must retry until it is.
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to process Paystack payment webhook',
     });
   }
 };

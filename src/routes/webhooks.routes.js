@@ -4,6 +4,7 @@ import {
   hubtelSmsWebhookController,
   arkeselSmsWebhookController,
   mtnPaymentWebhookController,
+  paystackPaymentWebhookController,
 } from '../controllers/webhooks.controller.js';
 
 export const webhookRoute = Router();
@@ -31,3 +32,6 @@ webhookRoute.post('/webhooks/hubtel/sms', hubtelSmsWebhookController);
 
 // POST /webhooks/arkesel/sms — Arkesel SMS delivery report
 webhookRoute.post('/webhooks/arkesel/sms', arkeselSmsWebhookController);
+
+// POST /webhooks/paystack/payment — Paystack charge confirmation (primary card gateway)
+webhookRoute.post('/webhooks/paystack/payment', paystackPaymentWebhookController);
