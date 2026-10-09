@@ -110,7 +110,6 @@ const loadStudent = async (id, user, { includeDeleted = false } = {}) => {
  */
 const searchClause = (term, fields) => {
   const safe = escapeRegExp(String(term).trim());
-  console.log("[SEARCH] term:", term, "safe:", safe, "fields:", fields);
   if (!safe) return null;
   return fields.map((field) => ({ [field]: { $regex: safe, $options: "i" } }));
 };
@@ -664,9 +663,7 @@ const normalisePlanStatus = (status) => {
 
 // ──────────────────── List ────────────────────
 export const listStudents = async (query, user) => {
-  console.log("[LIST STUDENTS] query:", JSON.stringify(query), "user role:", user?.role, "user schoolId:", user?.schoolId);
   const schoolId = resolveSchoolId(user, query.schoolId);
-  console.log("[LIST STUDENTS] resolved schoolId:", schoolId);
   if (!schoolId) {
     throw new ApiError(
       "A schoolId is required to list students",
