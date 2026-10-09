@@ -171,8 +171,13 @@ const bulkFileFilter = (req, file, cb) => {
     "application/vnd.ms-excel",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "application/vnd.ms-excel.sheet.macroEnabled.12",
+    "text/plain",
+    "application/octet-stream",
   ];
-  if (allowedMimes.includes(file.mimetype)) {
+  const allowedExtensions = [".csv", ".xlsx", ".xls", ".xlsm"];
+  const ext = file.originalname.slice(-5).toLowerCase();
+  const matchesExt = allowedExtensions.some((e) => file.originalname.toLowerCase().endsWith(e));
+  if (allowedMimes.includes(file.mimetype) || matchesExt) {
     cb(null, true);
   } else {
     cb(new Error("Only CSV and Excel files are allowed"), false);

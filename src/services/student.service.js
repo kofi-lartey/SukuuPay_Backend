@@ -307,6 +307,7 @@ export const createStudent = async (data, user) => {
 
 // ──────────────────── Bulk create ────────────────────
 export const bulkCreateStudents = async (file, meta, user) => {
+  console.log("[BULK IMPORT] FUNCTION CALLED", { file: file?.originalname, meta, userId: user?._id, dryRun: meta?.dryRun });
   if (!file) throw new ApiError("No file uploaded", 400, "NO_FILE");
 
   const { rows, format } = await parseImportFile(file.buffer, file.mimetype, file.originalname);

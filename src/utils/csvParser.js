@@ -7,12 +7,16 @@ import * as XLSX from "xlsx";
  */
 export const parseCsv = (buffer) =>
   new Promise((resolve, reject) => {
+    const text = Buffer.isBuffer(buffer) ? buffer.toString("utf8") : String(buffer);
+    // Strip UTF-8 BOM if present (common when exporting from Excel on Windows)
+    const cleanText = text.startsWith("\uFEFF") ? text.slice(1) : text;
     parse(
-      Buffer.isBuffer(buffer) ? buffer.toString("utf8") : String(buffer),
+      cleanText,
       {
         columns: true,
         trim: true,
         skip_empty_lines: true,
+        bom: true,
       },
       (error, records) => (error ? reject(error) : resolve(records))
     );
