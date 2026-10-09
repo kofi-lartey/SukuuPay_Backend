@@ -79,6 +79,22 @@ export const bulkCreateStudentsController = async (req, res) => {
   try {
     const result = await bulkCreateStudents(req.file, req.body, req.user);
 
+    // Dry run: created is always 0, but valid > 0 means success
+    if (result.committed === false) {
+      return res.status(200).json({
+        success: result.valid > 0,
+        message: result.valid > 0
+          ? `${result.valid} students ready to import, ${result.failed} rows need attention`
+          : `No valid students found (${result.failed} rows failed validation)`,
+        data: {
+          created: 0,
+          valid: result.valid,
+          failed: result.failed,
+          errors: result.errors,
+        },
+      });
+    }
+
     if (result.created === 0) {
       return res.status(400).json({
         success: false,
