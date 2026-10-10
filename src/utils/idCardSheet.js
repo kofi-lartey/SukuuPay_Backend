@@ -321,13 +321,13 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
     doc,
     String(card.schoolName || 'School Name').toUpperCase(),
     textW,
-    mm(2.8),
+    mm(2.5),
     BACKEND_FONTS.bold
   );
 
   resetTextCursor(doc, textX, logoY + mm(0.6));
   doc.font(BACKEND_FONTS.bold)
-    .fontSize(mm(2.8))
+    .fontSize(mm(2.5))
     .fillColor('#FFFFFF')
     .text(schoolNameText, textX, logoY + mm(0.6), { lineBreak: false });
 
@@ -336,14 +336,14 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
       doc,
       card.schoolMotto,
       textW,
-      mm(1.9),
+      mm(1.6),
       BACKEND_FONTS.regular
     );
-    resetTextCursor(doc, textX, logoY + mm(4.4));
+    resetTextCursor(doc, textX, logoY + mm(4.0));
     doc.font(BACKEND_FONTS.regular)
-      .fontSize(mm(1.9))
+      .fontSize(mm(1.6))
       .fillColor('#FFFFFF')
-      .text(mottoText, textX, logoY + mm(4.4), { lineBreak: false });
+      .text(mottoText, textX, logoY + mm(4.0), { lineBreak: false });
   }
 
   // ── Gold Accent Divider Line ──
@@ -371,7 +371,7 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
   for (const row of rows) {
     resetTextCursor(doc, leftX, currentY);
     doc.font(BACKEND_FONTS.bold)
-      .fontSize(mm(2.0))
+      .fontSize(mm(1.8))
       .fillColor('#334155')
       .text(row.label, leftX, currentY, {
         width: leftW * 0.38,
@@ -379,7 +379,7 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
       });
 
     doc.font(BACKEND_FONTS.bold)
-      .fontSize(mm(2.0))
+      .fontSize(mm(1.8))
       .fillColor('#94A3B8')
       .text(':', leftX + leftW * 0.38, currentY, {
         width: mm(2),
@@ -387,9 +387,9 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
       });
 
     const valFont = row.mono ? BACKEND_FONTS.mono : BACKEND_FONTS.bold;
-    const valText = fitText(doc, row.value, leftW * 0.58, mm(2.1), valFont);
+    const valText = fitText(doc, row.value, leftW * 0.58, mm(1.9), valFont);
     doc.font(valFont)
-      .fontSize(mm(2.1))
+      .fontSize(mm(1.9))
       .fillColor('#0F172A')
       .text(valText, leftX + leftW * 0.42, currentY, {
         width: leftW * 0.58,
@@ -408,7 +408,7 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
     .stroke();
   resetTextCursor(doc, leftX, sigY + mm(0.8));
   doc.font(BACKEND_FONTS.regular)
-    .fontSize(mm(1.4))
+    .fontSize(mm(1.2))
     .fillColor('#94A3B8')
     .text('AUTHORIZE SIGNATURE', leftX, sigY + mm(0.8), {
       lineBreak: false,
@@ -419,7 +419,7 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
   const rightW = W * 0.40;
   const rightX = x + W - rightW - pad;
 
-  const photoSize = W * 0.21;
+  const photoSize = rightW * 0.52;
   const photoX = rightX + (rightW - photoSize) / 2;
   const photoY = bodyY;
 
@@ -461,12 +461,12 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
     doc,
     card.studentName || 'Student Name',
     rightW,
-    mm(2.2),
+    mm(2.0),
     BACKEND_FONTS.bold
   );
   resetTextCursor(doc, rightX, nameY);
   doc.font(BACKEND_FONTS.bold)
-    .fontSize(mm(2.2))
+    .fontSize(mm(2.0))
     .fillColor(COLORS.ink)
     .text(nameText, rightX, nameY, {
       width: rightW,
@@ -475,7 +475,7 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
     });
 
   // QR — above the footer mark
-  const qrSize = mm(6.2);
+  const qrSize = mm(5.5);
   const qrX = rightX + rightW - qrSize;
   const qrY = y + H - qrSize - mm(10);
 
@@ -497,7 +497,7 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
 
   resetTextCursor(doc, labelX, labelMidY - mm(1.8));
   doc.font(BACKEND_FONTS.bold)
-    .fontSize(mm(1.3))
+    .fontSize(mm(1.2))
     .fillColor('#64748B')
     .text('SCAN VERIFY', labelX, labelMidY - mm(1.8), {
       width: labelW,
@@ -508,7 +508,7 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
 
   resetTextCursor(doc, labelX, labelMidY + mm(0.3));
   doc.font(BACKEND_FONTS.mono)
-    .fontSize(mm(1.3))
+    .fontSize(mm(1.2))
     .fillColor('#94A3B8')
     .text('Secure ID', labelX, labelMidY + mm(0.3), {
       width: labelW,
@@ -553,26 +553,34 @@ const drawCardBack = async (doc, card, x, y, W, H, imageCache, options) => {
       characterSpacing: 0.5,
     });
 
-  // SukuuPay mark right-aligned in the header
-  const markBuffer = getSukuuPayMark();
-  const markSize = headerH * 0.55;
-  const markX = x + W - pad - markSize;
-  const markY = y + (headerH - markSize) / 2;
-
-  let markDrawn = false;
-  if (markBuffer) {
-    try {
-      doc.image(markBuffer, markX, markY, {
-        fit: [markSize, markSize],
-        align: 'center',
-        valign: 'center',
-      });
-      markDrawn = true;
-    } catch (err) {
-      console.warn(`[ID-CARD] SukuuPay header mark draw failed: ${err.message}`);
+  // School logo right-aligned in the header
+  let logoDrawn = false;
+  if (card.schoolLogo) {
+    const logoBuf = await imageCache(card.schoolLogo);
+    if (logoBuf) {
+      const logoSize = headerH * 0.55;
+      const logoX = x + W - pad - logoSize;
+      const logoY = y + (headerH - logoSize) / 2;
+      try {
+        doc.save();
+        doc.roundedRect(logoX, logoY, logoSize, logoSize, mm(1)).fill('#FFFFFF');
+        doc.restore();
+        logoDrawn = drawImageFitClipped(
+          doc,
+          logoBuf,
+          logoX + mm(0.4),
+          logoY + mm(0.4),
+          logoSize - mm(0.8),
+          logoSize - mm(0.8),
+          mm(0.6)
+        );
+      } catch (err) {
+        console.warn(`[ID-CARD] school logo header draw failed: ${err.message}`);
+        logoDrawn = false;
+      }
     }
   }
-  if (!markDrawn) {
+  if (!logoDrawn) {
     resetTextCursor(doc, x + pad, y + (headerH - mm(1.7)) / 2 - mm(0.3));
     doc.font(BACKEND_FONTS.bold)
       .fontSize(mm(1.7))
@@ -809,6 +817,32 @@ const chunk = (array, size) => {
 const studentsPerSheet = (geometry) =>
   Math.max(1, Math.floor(geometry.perPage / 2));
 
+/**
+ * Normalises whatever the caller handed over into resolved cards.
+ *
+ * Cards arrive here **already resolved** — both the single-card path and the
+ * batch path run `resolveCardData` against the school record first. Re-resolving
+ * such a card is destructive: a flat card carries no `school` object, so
+ * `resolveCardData` is handed `{}` and rebrands the card from its fallbacks.
+ * `schoolName` collapses to `''`, `schoolLogo` to `null`, `schoolMotto` to
+ * `''` and `brandColor` to the fallback — which is why a printed card showed a
+ * green header with an "S" initial tile instead of the school's own logo and
+ * name. The student fields survived only because the flat card itself was
+ * passed in as the student argument.
+ *
+ * A raw `{ student, school }` pair is still resolved. The two shapes are told
+ * apart by a nested `student` object, which `resolveCardData` never returns.
+ */
+const resolveCards = (cards) =>
+  cards.map((input) => {
+    if (input && input.student && typeof input.student === 'object') {
+      return resolveCardData(input.student, input.school || {}, {
+        qrCodeUrl: input.qrCodeUrl || input.student.qrCodeUrl,
+      });
+    }
+    return input;
+  });
+
 export const generateIdCardSheets = async (cards, options = {}) => {
   const {
     layout = DEFAULT_SHEET_LAYOUT,
@@ -822,11 +856,7 @@ export const generateIdCardSheets = async (cards, options = {}) => {
   const geometry = sheetGeometry(layout);
   const perSheet = studentsPerSheet(geometry);
 
-  const resolvedCards = cards.map((c) =>
-    resolveCardData(c.student || c, c.school || {}, {
-      qrCodeUrl: c.qrCodeUrl || (c.student && c.student.qrCodeUrl),
-    })
-  );
+  const resolvedCards = resolveCards(cards);
 
   const chunks = chunk(resolvedCards, perSheet);
 
