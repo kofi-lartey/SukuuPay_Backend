@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import PDFDocument from "pdfkit";
 import {
   CARD_GEOMETRY,
@@ -17,6 +20,30 @@ const CR80 = { width: mm(85.6), height: mm(53.98) };
 
 export const A4 = A4_LANDSCAPE;
 export const CARD = CR80;
+
+// ──────────────────── SukuuPay mark ────────────────────
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const SUKUUPAY_MARK_PATH = path.join(HERE, "../../public/images/sukuupay-mark.png");
+
+let sukuuPayMarkBuffer = null;
+const getSukuuPayMark = () => {
+  if (sukuuPayMarkBuffer !== null) return sukuuPayMarkBuffer;
+  if (fs.existsSync(SUKUUPAY_MARK_PATH)) {
+    try {
+      sukuuPayMarkBuffer = fs.readFileSync(SUKUUPAY_MARK_PATH);
+    } catch (err) {
+      console.warn(`[ID-CARD] SukuuPay mark read failed: ${err.message}`);
+      sukuuPayMarkBuffer = false;
+    }
+  } else {
+    console.warn(`[ID-CARD] SukuuPay mark not found at ${SUKUUPAY_MARK_PATH}`);
+    sukuuPayMarkBuffer = false;
+  }
+  return sukuuPayMarkBuffer;
+};
+
+// ──────────────────── Sheet geometry ────────────────────
 
 export const LAYOUTS = {
   '6up_a4_landscape': {
@@ -60,20 +87,21 @@ export const sheetGeometry = (layoutName = DEFAULT_SHEET_LAYOUT) => {
   } = layout;
 
   const slots = [];
-  for (let index = 0; index < perPage; index++) {
-    const col = index % perRow;
-    const row = Math.floor(index / perRow);
-    const x = marginX + col * (cardWidth + gapX);
-    const y = marginY + row * (cardHeight + gapY);
-    slots.push({
-      index,
-      row,
-      column: col,
-      x,
-      y,
-      width: cardWidth,
-      height: cardHeight,
-    });
+  for (let row = 0; row < perColumn; row++) {
+    for (let col = 0; col < perRow; col++) {
+      const index = row * perRow + col;
+      const x = marginX + col * (cardWidth + gapX);
+      const y = marginY + row * (cardHeight + gapY);
+      slots.push({
+        index,
+        row,
+        column: col,
+        x,
+        y,
+        width: cardWidth,
+        height: cardHeight,
+      });
+    }
   }
 
   return {
@@ -93,6 +121,11 @@ export const sheetGeometry = (layoutName = DEFAULT_SHEET_LAYOUT) => {
   };
 };
 
+const slotAt = (geometry, row, column) =>
+  geometry.slots.find((s) => s.row === row && s.column === column) || null;
+
+// ──────────────────── Image cache ────────────────────
+
 const IMAGE_FETCH_TIMEOUT_MS = 5000;
 
 const createImageCache = () => {
@@ -106,15 +139,26 @@ const createImageCache = () => {
   };
 };
 
+/**
+ * Fetches an image buffer.
+ *
+ * Cloudinary's `f_auto` transform serves WebP or AVIF to clients that
+ * advertise support — and PDFKit can decode neither, so the school logo
+ * would silently fall through to the initial-letter tile. Pin the format
+ * to PNG at fetch time so the response is always decodable.
+ */
 const fetchImage = async (url) => {
   if (url.startsWith('data:')) {
     const matches = url.match(/^data:([a-zA-Z]+\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
     return matches ? Buffer.from(matches[2], 'base64') : null;
   }
+
+  const pinnedUrl = url.replace(/\bf_auto\b/g, 'f_png');
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), IMAGE_FETCH_TIMEOUT_MS);
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await fetch(pinnedUrl, { signal: controller.signal });
     if (!response.ok) return null;
     return Buffer.from(await response.arrayBuffer());
   } catch (error) {
@@ -123,6 +167,8 @@ const fetchImage = async (url) => {
     clearTimeout(timer);
   }
 };
+
+// ──────────────────── Helpers ────────────────────
 
 const fitText = (doc, text, maxWidth, size, font = BACKEND_FONTS.bold) => {
   const value = String(text ?? '').trim();
@@ -136,353 +182,565 @@ const fitText = (doc, text, maxWidth, size, font = BACKEND_FONTS.bold) => {
   return `${value.slice(0, cut)}…`;
 };
 
-const drawImageClipped = (doc, imgBuffer, x, y, w, h, radius) => {
+const drawImageFitClipped = (doc, imgBuffer, x, y, w, h, radius) => {
   if (!imgBuffer) return false;
   try {
     doc.save();
     doc.roundedRect(x, y, w, h, radius || 0).clip();
-    doc.image(imgBuffer, x, y, { width: w, height: h, align: 'center', valign: 'center' });
+    doc.image(imgBuffer, x, y, {
+      fit: [w, h],
+      align: 'center',
+      valign: 'center',
+    });
     doc.restore();
     return true;
-  } catch {
+  } catch (err) {
+    try { doc.restore(); } catch { /* noop */ }
     return false;
   }
+};
+
+const resetTextCursor = (doc, x, y) => {
+  doc.x = x;
+  doc.y = y;
+};
+
+/**
+ * Draws the SukuuPay mark + caption on one line, centred at the bottom of
+ * the card. This is now called from both `drawCardFront` and `drawCardBack`.
+ */
+const drawSukuuPayFooterMark = (doc, x, y, W, H) => {
+  const markBuffer = getSukuuPayMark();
+  if (!markBuffer) return;
+
+  const markSize = mm(3.0);
+  const gap = mm(1.2);
+  const captionText = 'SukuuPay Secure ID';
+  const captionSize = mm(1.5);
+
+  doc.font(BACKEND_FONTS.bold).fontSize(captionSize);
+  const captionW = doc.widthOfString(captionText);
+  const rowW = markSize + gap + captionW;
+
+  const rowX = x + (W - rowW) / 2;
+  const rowBottomPad = mm(1.5);
+  const rowY = y + H - rowBottomPad - markSize;
+
+  try {
+    doc.save();
+    doc.image(markBuffer, rowX, rowY, {
+      fit: [markSize, markSize],
+      align: 'center',
+      valign: 'center',
+    });
+    doc.restore();
+  } catch (err) {
+    console.warn(`[ID-CARD] SukuuPay footer mark draw failed: ${err.message}`);
+    return;
+  }
+
+  const captionH = doc.heightOfString(captionText);
+  const captionY = rowY + (markSize - captionH) / 2;
+
+  resetTextCursor(doc, rowX + markSize + gap, captionY);
+  doc.font(BACKEND_FONTS.bold)
+    .fontSize(captionSize)
+    .fillColor('#94A3B8')
+    .text(captionText, rowX + markSize + gap, captionY, {
+      lineBreak: false,
+    });
 };
 
 // ─────────────────────────── FRONT ───────────────────────────
 
 const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
-  // Card container background + border (rounded 4% matching preview)
   doc.save();
-  doc.roundedRect(x, y, W, H, mm(2.5)).fill('#FFFFFF');
-  doc.roundedRect(x, y, W, H, mm(2.5))
+  resetTextCursor(doc, x, y);
+
+  // Card container
+  doc.roundedRect(x, y, W, H, mm(2)).fill('#FFFFFF');
+  doc.roundedRect(x, y, W, H, mm(2))
     .lineWidth(0.5)
     .strokeColor('#CBD5E1')
     .stroke();
-  doc.restore();
 
   const brandHex = card.brandColor || '#0F172A';
+  const pad = W * 0.045;
 
-  // ── Header Band (30% height) ──
-  const headerH = H * 0.30;
+  // ── Header Band (28% height) ──
+  const headerH = H * 0.28;
   doc.save();
-  doc.roundedRect(x, y, W, headerH, mm(2.5)).clip();
+  doc.roundedRect(x, y, W, headerH, mm(2)).clip();
   doc.rect(x, y, W, headerH).fill(brandHex);
   doc.restore();
 
-  // Logo Tile (Left)
-  const logoSize = headerH * 0.65;
-  const logoX = x + W * 0.04;
+  // ── Logo Tile ──
+  const logoSize = headerH * 0.62;
+  const logoX = x + pad;
   const logoY = y + (headerH - logoSize) / 2;
 
   let logoDrawn = false;
   if (card.schoolLogo) {
     const logoBuf = await imageCache(card.schoolLogo);
-    logoDrawn = drawImageClipped(doc, logoBuf, logoX, logoY, logoSize, logoSize, mm(1.5));
+    if (!logoBuf) {
+      console.warn(`[ID-CARD] school logo fetch returned null for ${card.schoolLogo}`);
+    } else {
+      doc.save();
+      doc.roundedRect(logoX, logoY, logoSize, logoSize, mm(1)).fill('#FFFFFF');
+      doc.restore();
+      logoDrawn = drawImageFitClipped(
+        doc,
+        logoBuf,
+        logoX + mm(0.6),
+        logoY + mm(0.6),
+        logoSize - mm(1.2),
+        logoSize - mm(1.2),
+        mm(0.8)
+      );
+      if (!logoDrawn) {
+        console.warn(`[ID-CARD] school logo decode failed for ${card.schoolLogo}`);
+      }
+    }
   }
   if (!logoDrawn) {
-    doc.save();
-    doc.roundedRect(logoX, logoY, logoSize, logoSize, mm(1.5)).fill('#FFFFFF');
-      doc.font(BACKEND_FONTS.bold)
-        .fontSize(mm(3.5))
-        .fillColor(COLORS.ink)
-        .text(
-          String(card.schoolName || 'S').charAt(0).toUpperCase(),
-          logoX + logoSize / 2 - mm(1.5),
-          logoY + logoSize / 2 - mm(1.75),
-          );
-    doc.restore();
+    doc.roundedRect(logoX, logoY, logoSize, logoSize, mm(1)).fill('#FFFFFF');
+    doc.font(BACKEND_FONTS.bold).fontSize(mm(3.5)).fillColor(COLORS.ink);
+    const initial = String(card.schoolName || 'S').charAt(0).toUpperCase();
+    const iw = doc.widthOfString(initial);
+    const ih = doc.heightOfString(initial);
+    resetTextCursor(doc, logoX + (logoSize - iw) / 2, logoY + (logoSize - ih) / 2);
+    doc.text(initial, logoX + (logoSize - iw) / 2, logoY + (logoSize - ih) / 2, {
+      lineBreak: false,
+    });
   }
 
-  // School Name & Motto (Right of logo)
+  // ── School Name & Motto ──
   const textX = logoX + logoSize + W * 0.03;
-  const textW = W - (textX - x) - W * 0.04;
+  const textW = W - (textX - x) - pad;
   const schoolNameText = fitText(
     doc,
     String(card.schoolName || 'School Name').toUpperCase(),
     textW,
-    mm(3.2),
+    mm(2.8),
     BACKEND_FONTS.bold
   );
+
+  resetTextCursor(doc, textX, logoY + mm(0.6));
   doc.font(BACKEND_FONTS.bold)
-    .fontSize(mm(3.2))
+    .fontSize(mm(2.8))
     .fillColor('#FFFFFF')
-    .text(schoolNameText, textX, logoY + mm(1));
+    .text(schoolNameText, textX, logoY + mm(0.6), { lineBreak: false });
 
   if (card.schoolMotto) {
-    const mottoText = fitText(doc, card.schoolMotto, textW, mm(2.2), BACKEND_FONTS.regular);
+    const mottoText = fitText(
+      doc,
+      card.schoolMotto,
+      textW,
+      mm(1.9),
+      BACKEND_FONTS.regular
+    );
+    resetTextCursor(doc, textX, logoY + mm(4.4));
     doc.font(BACKEND_FONTS.regular)
-      .fontSize(mm(2.2))
-      .fillColor(COLORS.surfaceLight)
-      .text(mottoText, textX, logoY + mm(5));
+      .fontSize(mm(1.9))
+      .fillColor('#FFFFFF')
+      .text(mottoText, textX, logoY + mm(4.4), { lineBreak: false });
   }
 
-  // ── Gold Accent Line (2.5px height) ──
-  doc.save();
-  doc.rect(x, y + headerH, W, mm(0.8)).fill(COLORS.amber600);
-  doc.restore();
+  // ── Gold Accent Divider Line ──
+  doc.rect(x, y + headerH, W, mm(0.7)).fill('#F2B705');
 
-  // ── Body Layout (Two Columns) ──
-  const bodyY = y + headerH + mm(3);
-  const leftX = x + W * 0.04;
+  // ── Body Layout ──
+  const bodyY = y + headerH + mm(0.7) + mm(3);
+  const leftX = x + pad;
   const leftW = W * 0.52;
 
-  // Left Column Data Rows (Student ID, Course, Phone, Session)
   const rows = [
     { label: 'Student ID', value: card.studentId || '—', mono: true },
     { label: 'Class / stream', value: card.studentClass || '—', mono: false },
-    { label: 'Phone', value: card.guardianPhone || card.studentPhone || '—', mono: true },
+    {
+      label: 'Phone',
+      value: card.guardianPhone || card.studentPhone || '—',
+      mono: true,
+    },
     { label: 'Session', value: card.academicYear || '—', mono: false },
   ];
 
   let currentY = bodyY;
-  const rowSpacing = H * 0.115;
+  const rowSpacing = H * 0.105;
 
   for (const row of rows) {
+    resetTextCursor(doc, leftX, currentY);
     doc.font(BACKEND_FONTS.bold)
-      .fontSize(mm(2.4))
+      .fontSize(mm(2.0))
       .fillColor('#334155')
-      .text(row.label, leftX, currentY);
+      .text(row.label, leftX, currentY, {
+        width: leftW * 0.38,
+        lineBreak: false,
+      });
 
     doc.font(BACKEND_FONTS.bold)
-      .fontSize(mm(2.4))
+      .fontSize(mm(2.0))
       .fillColor('#94A3B8')
-      .text(':', leftX + leftW * 0.34, currentY);
+      .text(':', leftX + leftW * 0.38, currentY, {
+        width: mm(2),
+        lineBreak: false,
+      });
 
     const valFont = row.mono ? BACKEND_FONTS.mono : BACKEND_FONTS.bold;
-    const valText = fitText(doc, row.value, leftW * 0.62, mm(2.6), valFont);
+    const valText = fitText(doc, row.value, leftW * 0.58, mm(2.1), valFont);
     doc.font(valFont)
-      .fontSize(mm(2.6))
+      .fontSize(mm(2.1))
       .fillColor('#0F172A')
-      .text(valText, leftX + leftW * 0.38, currentY);
+      .text(valText, leftX + leftW * 0.42, currentY, {
+        width: leftW * 0.58,
+        lineBreak: false,
+      });
 
     currentY += rowSpacing;
   }
 
-  // Authorize Signature Line
-  const sigY = y + H - mm(10);
-  doc.save();
-  doc.moveTo(leftX, sigY).lineTo(leftX + leftW * 0.8, sigY).lineWidth(0.5).strokeColor('#CBD5E1').stroke();
-  doc.restore();
+  // ── Signature Line — above the footer mark ──
+  const sigY = y + H - mm(9);
+  doc.moveTo(leftX, sigY)
+    .lineTo(leftX + leftW * 0.75, sigY)
+    .lineWidth(0.4)
+    .strokeColor('#CBD5E1')
+    .stroke();
+  resetTextCursor(doc, leftX, sigY + mm(0.8));
   doc.font(BACKEND_FONTS.regular)
-    .fontSize(mm(1.8))
+    .fontSize(mm(1.4))
     .fillColor('#94A3B8')
-    .text('Authorize Signature', leftX, sigY + mm(1));
+    .text('AUTHORIZE SIGNATURE', leftX, sigY + mm(0.8), {
+      lineBreak: false,
+      characterSpacing: 0.4,
+    });
 
-  // Right Column: Photo, Name, and QR Code
-  const rightW = W * 0.38;
-  const rightX = x + W - rightW - W * 0.04;
-  const photoSize = W * 0.25;
+  // ── Right Column: Photo, Name, QR ──
+  const rightW = W * 0.40;
+  const rightX = x + W - rightW - pad;
+
+  const photoSize = W * 0.21;
   const photoX = rightX + (rightW - photoSize) / 2;
   const photoY = bodyY;
 
-  // Photo Frame
-  doc.save();
-  doc.roundedRect(photoX, photoY, photoSize, photoSize, mm(2)).fill('#F1F5F9');
-  doc.restore();
+  doc.roundedRect(photoX, photoY, photoSize, photoSize, mm(1.5)).fill('#F1F5F9');
 
   let photoDrawn = false;
   if (options.showPhoto !== false && card.studentImage) {
     const photoBuf = await imageCache(card.studentImage);
-    photoDrawn = drawImageClipped(doc, photoBuf, photoX, photoY, photoSize, photoSize, mm(2));
+    photoDrawn = drawImageFitClipped(
+      doc,
+      photoBuf,
+      photoX,
+      photoY,
+      photoSize,
+      photoSize,
+      mm(1.5)
+    );
   }
   if (!photoDrawn) {
+    resetTextCursor(doc, photoX, photoY + photoSize / 2 - mm(1));
     doc.font(BACKEND_FONTS.bold)
-      .fontSize(mm(2))
+      .fontSize(mm(1.7))
       .fillColor('#94A3B8')
-      .text('PHOTO', photoX + photoSize / 2 - mm(2), photoY + photoSize / 2 - mm(1), { align: 'center' });
+      .text('PHOTO', photoX, photoY + photoSize / 2 - mm(1), {
+        width: photoSize,
+        align: 'center',
+        lineBreak: false,
+      });
   }
 
-  doc.save();
-  doc.roundedRect(photoX, photoY, photoSize, photoSize, mm(2))
+  doc.roundedRect(photoX, photoY, photoSize, photoSize, mm(1.5))
     .lineWidth(0.5)
     .strokeColor(COLORS.border)
     .stroke();
-  doc.restore();
 
-  // Student Name
-  const nameY = photoY + photoSize + mm(1.5);
-  const nameText = fitText(doc, card.studentName || 'Student Name', rightW, mm(2.8), BACKEND_FONTS.bold);
+  // Name
+  const nameY = photoY + photoSize + mm(1.2);
+  const nameText = fitText(
+    doc,
+    card.studentName || 'Student Name',
+    rightW,
+    mm(2.2),
+    BACKEND_FONTS.bold
+  );
+  resetTextCursor(doc, rightX, nameY);
   doc.font(BACKEND_FONTS.bold)
-    .fontSize(mm(2.8))
+    .fontSize(mm(2.2))
     .fillColor(COLORS.ink)
-    .text(nameText, rightX, nameY, { align: 'center' });
+    .text(nameText, rightX, nameY, {
+      width: rightW,
+      align: 'center',
+      lineBreak: false,
+    });
 
-  // QR Code Section (Bottom Right)
-  const qrSize = mm(7.5);
-  const qrX = rightX + rightW - qrSize - mm(2);
-  const qrY = y + H - qrSize - mm(7);
+  // QR — above the footer mark
+  const qrSize = mm(6.2);
+  const qrX = rightX + rightW - qrSize;
+  const qrY = y + H - qrSize - mm(10);
 
   if (options.showQr !== false && card.qrCodeUrl) {
     const qrBuf = await imageCache(card.qrCodeUrl);
     if (qrBuf) {
-      doc.save();
-      doc.roundedRect(qrX, qrY, qrSize, qrSize, mm(1)).fill('#FFFFFF');
-      doc.restore();
-      drawImageClipped(doc, qrBuf, qrX, qrY, qrSize, qrSize, mm(1));
-      doc.save();
-      doc.roundedRect(qrX, qrY, qrSize, qrSize, mm(1))
-        .lineWidth(0.5)
+      doc.roundedRect(qrX, qrY, qrSize, qrSize, mm(0.8)).fill('#FFFFFF');
+      drawImageFitClipped(doc, qrBuf, qrX, qrY, qrSize, qrSize, mm(0.8));
+      doc.roundedRect(qrX, qrY, qrSize, qrSize, mm(0.8))
+        .lineWidth(0.4)
         .strokeColor('#CBD5E1')
         .stroke();
-      doc.restore();
     }
   }
 
-  // QR Label ("Scan Verify" / "Secure ID")
+  const labelX = rightX;
+  const labelW = rightW - qrSize - mm(1.5);
+  const labelMidY = qrY + qrSize / 2;
+
+  resetTextCursor(doc, labelX, labelMidY - mm(1.8));
   doc.font(BACKEND_FONTS.bold)
-    .fontSize(mm(1.6))
-    .fillColor('#94A3B8')
-    .text('Scan Verify', rightX, qrY + mm(0.5));
-  doc.font(BACKEND_FONTS.mono)
-    .fontSize(mm(1.6))
+    .fontSize(mm(1.3))
     .fillColor('#64748B')
-    .text('Secure ID', rightX, qrY + mm(3.2));
+    .text('SCAN VERIFY', labelX, labelMidY - mm(1.8), {
+      width: labelW,
+      align: 'right',
+      lineBreak: false,
+      characterSpacing: 0.3,
+    });
 
-  // Stamp Overlay
-  if (options.showStamp !== false && card.schoolStamp) {
-    const stampBuf = await imageCache(card.schoolStamp);
-    if (stampBuf) {
-      const stampSize = mm(10);
-      doc.save();
-      doc.opacity(0.20);
-      doc.image(stampBuf, x + W * 0.42, y + H * 0.55, { width: stampSize, height: stampSize });
-      doc.restore();
-    }
-  }
+  resetTextCursor(doc, labelX, labelMidY + mm(0.3));
+  doc.font(BACKEND_FONTS.mono)
+    .fontSize(mm(1.3))
+    .fillColor('#94A3B8')
+    .text('Secure ID', labelX, labelMidY + mm(0.3), {
+      width: labelW,
+      align: 'right',
+      lineBreak: false,
+    });
+
+  // ── SukuuPay footer mark ──
+  drawSukuuPayFooterMark(doc, x, y, W, H);
+
+  doc.restore();
 };
 
 // ─────────────────────────── BACK ───────────────────────────
 
 const drawCardBack = async (doc, card, x, y, W, H, imageCache, options) => {
   doc.save();
-  doc.roundedRect(x, y, W, H, mm(2.5)).fill('#FFFFFF');
-  doc.roundedRect(x, y, W, H, mm(2.5))
+  resetTextCursor(doc, x, y);
+
+  doc.roundedRect(x, y, W, H, mm(2)).fill('#FFFFFF');
+  doc.roundedRect(x, y, W, H, mm(2))
     .lineWidth(0.5)
     .strokeColor('#CBD5E1')
     .stroke();
-  doc.restore();
 
   const brandHex = card.brandColor || '#0F172A';
   const pad = W * 0.05;
-  const innerW = W - pad * 2;
 
-  // Header Band
-  const headerH = H * 0.14;
+  // ── Header Band ──
+  const headerH = H * 0.13;
   doc.save();
-  doc.roundedRect(x, y, W, headerH, mm(2.5)).clip();
+  doc.roundedRect(x, y, W, headerH, mm(2)).clip();
   doc.rect(x, y, W, headerH).fill(brandHex);
   doc.restore();
 
+  resetTextCursor(doc, x + pad, y + (headerH - mm(1.7)) / 2 - mm(0.3));
   doc.font(BACKEND_FONTS.bold)
-    .fontSize(mm(2.2))
-    .fillColor('rgba(255,255,255,0.75)')
-    .text('Official Credential', x + pad, y + H * 0.045);
-
-  doc.font(BACKEND_FONTS.mono)
-    .fontSize(mm(2.4))
-    .fillColor('rgba(255,255,255,0.9)')
-    .text('SUKUUPAY', x + W - pad, y + H * 0.045, { align: 'right' });
-
-  doc.save();
-  doc.rect(x, y + headerH, W, mm(0.8)).fill('#F2B705');
-  doc.restore();
-
-  // Terms & Conditions
-  doc.font(BACKEND_FONTS.bold)
-    .fontSize(mm(1.9))
-    .fillColor('#94A3B8')
-    .text('Institutional Terms & Conditions', x + pad, y + H * 0.18);
-
-  const termsText = card.termsOverride ||
-    `This credential is the exclusive legal property of ${card.schoolName || 'the issuing school'}. It is not transferable. Return promptly if requested. Valid for academic use only.`;
-
-  doc.font(BACKEND_FONTS.regular)
-    .fontSize(mm(2))
-    .fillColor('#64748B')
-    .text(termsText, x + pad, y + H * 0.22, {
-      width: innerW,
-      height: H * 0.14,
-      lineGap: mm(0.4),
+    .fontSize(mm(1.7))
+    .fillColor('#FFFFFF')
+    .text('OFFICIAL CREDENTIAL', x + pad, y + (headerH - mm(1.7)) / 2 - mm(0.3), {
+      lineBreak: false,
+      characterSpacing: 0.5,
     });
 
-  // Student ID row
-  const idRowY = y + H * 0.38;
-  doc.font(BACKEND_FONTS.mono)
-    .fontSize(mm(2.4))
+  // SukuuPay mark right-aligned in the header
+  const markBuffer = getSukuuPayMark();
+  const markSize = headerH * 0.55;
+  const markX = x + W - pad - markSize;
+  const markY = y + (headerH - markSize) / 2;
+
+  let markDrawn = false;
+  if (markBuffer) {
+    try {
+      doc.image(markBuffer, markX, markY, {
+        fit: [markSize, markSize],
+        align: 'center',
+        valign: 'center',
+      });
+      markDrawn = true;
+    } catch (err) {
+      console.warn(`[ID-CARD] SukuuPay header mark draw failed: ${err.message}`);
+    }
+  }
+  if (!markDrawn) {
+    resetTextCursor(doc, x + pad, y + (headerH - mm(1.7)) / 2 - mm(0.3));
+    doc.font(BACKEND_FONTS.bold)
+      .fontSize(mm(1.7))
+      .fillColor('#FFFFFF')
+      .text('SUKUUPAY', x + pad, y + (headerH - mm(1.7)) / 2 - mm(0.3), {
+        width: W - pad * 2,
+        align: 'right',
+        lineBreak: false,
+        characterSpacing: 0.5,
+      });
+  }
+
+  // Gold divider
+  doc.rect(x, y + headerH, W, mm(0.7)).fill('#F2B705');
+
+  // ── Terms ──
+  const termsTop = y + headerH + mm(0.7) + mm(2.5);
+  resetTextCursor(doc, x + pad, termsTop);
+  doc.font(BACKEND_FONTS.bold)
+    .fontSize(mm(1.6))
     .fillColor('#94A3B8')
-    .text('Student ID', x + W * 0.28, idRowY);
+    .text('INSTITUTIONAL TERMS & CONDITIONS', x + pad, termsTop, {
+      lineBreak: false,
+      characterSpacing: 0.4,
+    });
+
+  const termsText =
+    card.termsOverride ||
+    `This credential is the exclusive legal property of ${
+      card.schoolName || 'the issuing school'
+    }. It is not transferable. Return promptly if requested. Valid for academic use only.`;
+
+  const termsBodyY = termsTop + mm(2.6);
+  resetTextCursor(doc, x + pad, termsBodyY);
+  doc.font(BACKEND_FONTS.regular)
+    .fontSize(mm(1.7))
+    .fillColor('#64748B')
+    .text(termsText, x + pad, termsBodyY, {
+      width: W - pad * 2,
+      height: H * 0.11,
+      lineGap: mm(0.3),
+    });
+
+  // ── Student ID row ──
+  const idRowY = y + H * 0.42;
+  const idLabel = 'STUDENT ID';
+  const idValue = `"${card.studentId || '—'}"`;
+
+  doc.font(BACKEND_FONTS.bold).fontSize(mm(1.7));
+  const idLabelW = doc.widthOfString(idLabel);
+  doc.font(BACKEND_FONTS.mono).fontSize(mm(2.2));
+  const idValueW = doc.widthOfString(idValue);
+  const idGap = mm(2.5);
+  const idTotalW = idLabelW + idGap + idValueW;
+  const idStartX = x + (W - idTotalW) / 2;
+
+  resetTextCursor(doc, idStartX, idRowY + mm(0.6));
+  doc.font(BACKEND_FONTS.bold)
+    .fontSize(mm(1.7))
+    .fillColor('#94A3B8')
+    .text(idLabel, idStartX, idRowY + mm(0.6), {
+      lineBreak: false,
+      characterSpacing: 0.4,
+    });
+
+  resetTextCursor(doc, idStartX + idLabelW + idGap, idRowY);
   doc.font(BACKEND_FONTS.mono)
-    .fontSize(mm(2.8))
+    .fontSize(mm(2.2))
     .fillColor('#0F172A')
-    .text(`"${card.studentId || '—'}"`, x + W * 0.46, idRowY - mm(0.3));
+    .text(idValue, idStartX + idLabelW + idGap, idRowY, {
+      lineBreak: false,
+    });
 
-  // Info Grid
+  // ── Info Grid ──
   const gridX = x + pad;
-  const gridY = y + H * 0.46;
-  const gridW = innerW;
-  const gridH = H * 0.36;
+  const gridY = y + H * 0.50;
+  const gridW = W - pad * 2;
+  const gridH = H * 0.27;
 
-  doc.save();
-  doc.roundedRect(gridX, gridY, gridW, gridH, mm(2))
-    .lineWidth(0.3)
+  doc.roundedRect(gridX, gridY, gridW, gridH, mm(1.5))
+    .lineWidth(0.4)
     .strokeColor('#CBD5E1')
     .stroke();
-  doc.restore();
 
   const guardianText = card.guardianName
-    ? `${card.guardianName}${card.guardianPhone ? ` · ${card.guardianPhone}` : ''}`
+    ? `${card.guardianName}${
+        card.guardianPhone ? ` · ${card.guardianPhone}` : ''
+      }`
     : '—';
 
   const cells = [
-    { row: 0, col: 0, label: 'Guardian', value: guardianText, warning: false },
-    { row: 0, col: 1, label: 'Emergency', value: card.emergencyContact || '—', warning: false },
-    { row: 1, col: 0, label: 'Holder', value: card.studentName || '—', warning: false },
-    { row: 1, col: 1, label: 'Expires', value: 'Active Session', warning: true },
+    { row: 0, col: 0, label: 'GUARDIAN', value: guardianText, warning: false },
+    {
+      row: 0,
+      col: 1,
+      label: 'EMERGENCY',
+      value: card.emergencyContact || '—',
+      warning: false,
+    },
+    {
+      row: 1,
+      col: 0,
+      label: 'HOLDER',
+      value: card.studentName || '—',
+      warning: false,
+    },
+    {
+      row: 1,
+      col: 1,
+      label: 'EXPIRES',
+      value: 'Active Session',
+      warning: true,
+    },
   ];
 
   const cellW = gridW / 2;
   const cellH = gridH / 2;
 
+  doc.save();
+  doc.lineWidth(0.4).strokeColor('#CBD5E1');
+  doc
+    .moveTo(gridX + cellW, gridY)
+    .lineTo(gridX + cellW, gridY + gridH)
+    .stroke();
+  doc
+    .moveTo(gridX, gridY + cellH)
+    .lineTo(gridX + gridW, gridY + cellH)
+    .stroke();
+  doc.restore();
+
   for (const cell of cells) {
     const cellX = gridX + cell.col * cellW;
     const cellY = gridY + cell.row * cellH;
 
-    doc.save();
-    if (cell.col === 0 && cell.row === 0) {
-      doc.moveTo(gridX, cellY + cellH).lineTo(gridX + gridW, cellY + cellH).lineWidth(0.3).strokeColor('#CBD5E1').stroke();
-      doc.moveTo(gridX + cellW, gridY).lineTo(gridX + cellW, gridY + gridH).lineWidth(0.3).strokeColor('#CBD5E1').stroke();
-    }
-    doc.restore();
-
+    const innerPadX = mm(2.5);
     const labelW = mm(16);
+
+    resetTextCursor(doc, cellX + innerPadX, cellY + mm(2.0));
     doc.font(BACKEND_FONTS.bold)
-      .fontSize(mm(1.8))
+      .fontSize(mm(1.4))
       .fillColor('#94A3B8')
-      .text(cell.label, cellX + mm(2.5), cellY + mm(2.5));
+      .text(cell.label, cellX + innerPadX, cellY + mm(2.0), {
+        width: labelW,
+        lineBreak: false,
+        characterSpacing: 0.3,
+      });
 
     const valColor = cell.warning ? '#D97706' : '#0F172A';
-    const valText = fitText(doc, cell.value, cellW - labelW - mm(4), mm(2.3), BACKEND_FONTS.bold);
+    const valText = fitText(
+      doc,
+      cell.value,
+      cellW - labelW - mm(5),
+      mm(1.8),
+      BACKEND_FONTS.bold
+    );
     doc.font(BACKEND_FONTS.bold)
-      .fontSize(mm(2.3))
+      .fontSize(mm(1.8))
       .fillColor(valColor)
-      .text(valText, cellX + labelW + mm(2), cellY + mm(2.3));
+      .text(valText, cellX + labelW + innerPadX, cellY + mm(2.0), {
+        width: cellW - labelW - mm(5),
+        lineBreak: false,
+      });
   }
 
-  // Footer
-  doc.save();
-  doc.rect(x + pad, y + H * 0.90, innerW, mm(0.5)).fill('#CBD5E1');
+  // ── SukuuPay footer mark ──
+  drawSukuuPayFooterMark(doc, x, y, W, H);
+
   doc.restore();
-
-  doc.font(BACKEND_FONTS.bold)
-    .fontSize(mm(1.8))
-    .fillColor('#94A3B8')
-    .text(card.footerLeft || 'SukuPay Secure ID', x + pad, y + H * 0.92);
-
-  doc.font(BACKEND_FONTS.bold)
-    .fontSize(mm(1.8))
-    .fillColor('#94A3B8')
-    .text(card.footerRight || card.academicYear || '', x + W * 0.5, y + H * 0.92);
 };
 
 // ─────────────────────────── RENDER LOOP ───────────────────────────
@@ -501,14 +759,15 @@ const drawCard = async (doc, slot, card, side, imageCache, options) => {
   }
 };
 
-const drawFillers = (doc, geometry, cardsInChunk) => {
-  const { slots, perPage } = geometry;
-  for (let i = cardsInChunk; i < perPage; i++) {
-    const slot = slots[i];
-    if (!slot) continue;
+const drawFillers = (doc, geometry, occupiedSlotIndexes) => {
+  const occupied = new Set(occupiedSlotIndexes);
+  for (const slot of geometry.slots) {
+    if (occupied.has(slot.index)) continue;
     doc.save();
+    resetTextCursor(doc, slot.x, slot.y);
     doc.rect(slot.x, slot.y, slot.width, slot.height).fill('#FFFFFF');
-    doc.rect(slot.x, slot.y, slot.width, slot.height)
+    doc
+      .rect(slot.x, slot.y, slot.width, slot.height)
       .lineWidth(0.25)
       .strokeColor('#CBD5E1')
       .dash(1.5, { space: 1.5 })
@@ -526,16 +785,14 @@ const drawFillers = (doc, geometry, cardsInChunk) => {
   }
 };
 
-const drawCutGuides = (doc, geometry, cardsInChunk) => {
-  const { slots, cardWidth, cardHeight } = geometry;
-  const count = Math.min(cardsInChunk, slots.length);
-  if (!count) return;
-
+const drawCutGuides = (doc, geometry, occupiedSlotIndexes) => {
+  if (!occupiedSlotIndexes.length) return;
   doc.save();
   doc.lineWidth(0.3).strokeColor('#CBD5E1').dash(1, { space: 2 });
-  for (let i = 0; i < count; i++) {
-    const slot = slots[i];
-    doc.rect(slot.x, slot.y, cardWidth, cardHeight).stroke();
+  for (const index of occupiedSlotIndexes) {
+    const slot = geometry.slots.find((s) => s.index === index);
+    if (!slot) continue;
+    doc.rect(slot.x, slot.y, slot.width, slot.height).stroke();
   }
   doc.undash();
   doc.restore();
@@ -549,6 +806,9 @@ const chunk = (array, size) => {
   return result;
 };
 
+const studentsPerSheet = (geometry) =>
+  Math.max(1, Math.floor(geometry.perPage / 2));
+
 export const generateIdCardSheets = async (cards, options = {}) => {
   const {
     layout = DEFAULT_SHEET_LAYOUT,
@@ -560,8 +820,7 @@ export const generateIdCardSheets = async (cards, options = {}) => {
   } = options;
 
   const geometry = sheetGeometry(layout);
-  const { slots, perPage } = geometry;
-  const faces = side === 'front' ? ['front'] : ['front', 'back'];
+  const perSheet = studentsPerSheet(geometry);
 
   const resolvedCards = cards.map((c) =>
     resolveCardData(c.student || c, c.school || {}, {
@@ -569,7 +828,7 @@ export const generateIdCardSheets = async (cards, options = {}) => {
     })
   );
 
-  const chunks = chunk(resolvedCards, perPage);
+  const chunks = chunk(resolvedCards, perSheet);
 
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
@@ -577,7 +836,7 @@ export const generateIdCardSheets = async (cards, options = {}) => {
       margin: 0,
       info: {
         Title: 'Student ID cards',
-        Subject: `Print at A4 landscape, ${perPage} cards per page, double-sided`,
+        Subject: `Print at A4 landscape, ${perSheet} students per sheet, double-sided`,
       },
     });
 
@@ -596,34 +855,46 @@ export const generateIdCardSheets = async (cards, options = {}) => {
 
       const cardChunk = chunks[chunkIndex];
 
-      for (const face of faces) {
-        doc.addPage({
-          size: [geometry.sheetWidth, geometry.sheetHeight],
-          margin: 0,
-        });
+      doc.addPage({
+        size: [geometry.sheetWidth, geometry.sheetHeight],
+        margin: 0,
+      });
 
-        const renderCount = Math.min(cardChunk.length, perPage);
+      const occupiedSlotIndexes = [];
 
-        for (let i = 0; i < renderCount; i++) {
-          const card = cardChunk[i];
-          const slot = slots[i];
+      const rows = side === 'front' ? [0] : side === 'back' ? [1] : [0, 1];
+
+      for (const row of rows) {
+        for (let col = 0; col < cardChunk.length; col++) {
+          const card = cardChunk[col];
+          const slot = slotAt(geometry, row, col);
           if (!card || !slot) continue;
+
           try {
-            await drawCard(doc, slot, card, face, imageCache, {
-              showQr, showPhoto, showStamp,
-            });
+            await drawCard(
+              doc,
+              slot,
+              card,
+              row === 0 ? 'front' : 'back',
+              imageCache,
+              { showQr, showPhoto, showStamp }
+            );
+            occupiedSlotIndexes.push(slot.index);
           } catch (err) {
-            console.error(`[ID-CARD-SHEET] draw failed on slot ${i}:`, err.message);
+            console.error(
+              `[ID-CARD-SHEET] draw failed on student ${col} (${
+                row === 0 ? 'front' : 'back'
+              }):`,
+              err.message
+            );
           }
         }
+      }
 
-        if (cardChunk.length < perPage) {
-          drawFillers(doc, geometry, cardChunk.length);
-        }
+      drawFillers(doc, geometry, occupiedSlotIndexes);
 
-        if (includeCutGuides) {
-          drawCutGuides(doc, geometry, cardChunk.length);
-        }
+      if (includeCutGuides) {
+        drawCutGuides(doc, geometry, occupiedSlotIndexes);
       }
 
       setImmediate(() => renderChunk(chunkIndex + 1));

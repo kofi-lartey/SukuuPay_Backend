@@ -48,7 +48,7 @@ export const BACKEND_FONTS = {
   bold: 'Helvetica-Bold',
   boldOblique: 'Helvetica-BoldOblique',
   oblique: 'Helvetica-Oblique',
-  mono: 'Courier-Bold',
+  mono: 'Courier',
 };
 
 export const FRONTEND_FONT_STACK = {
