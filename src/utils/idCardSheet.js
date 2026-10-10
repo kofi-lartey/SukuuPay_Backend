@@ -1,4 +1,4 @@
-import fs from "node:fs";
+﻿import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import PDFDocument from "pdfkit";
@@ -21,7 +21,7 @@ const CR80 = { width: mm(85.6), height: mm(53.98) };
 export const A4 = A4_LANDSCAPE;
 export const CARD = CR80;
 
-// ──────────────────── SukuuPay mark ────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ SukuuPay mark â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SUKUUPAY_MARK_PATH = path.join(HERE, "../../public/images/sukuupay-mark.png");
@@ -43,7 +43,7 @@ const getSukuuPayMark = () => {
   return sukuuPayMarkBuffer;
 };
 
-// ──────────────────── Sheet geometry ────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Sheet geometry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export const LAYOUTS = {
   '6up_a4_landscape': {
@@ -124,7 +124,7 @@ export const sheetGeometry = (layoutName = DEFAULT_SHEET_LAYOUT) => {
 const slotAt = (geometry, row, column) =>
   geometry.slots.find((s) => s.row === row && s.column === column) || null;
 
-// ──────────────────── Image cache ────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Image cache â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const IMAGE_FETCH_TIMEOUT_MS = 5000;
 
@@ -143,7 +143,7 @@ const createImageCache = () => {
  * Fetches an image buffer.
  *
  * Cloudinary's `f_auto` transform serves WebP or AVIF to clients that
- * advertise support — and PDFKit can decode neither, so the school logo
+ * advertise support â€” and PDFKit can decode neither, so the school logo
  * would silently fall through to the initial-letter tile. Pin the format
  * to PNG at fetch time so the response is always decodable.
  */
@@ -168,7 +168,7 @@ const fetchImage = async (url) => {
   }
 };
 
-// ──────────────────── Helpers ────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const fitText = (doc, text, maxWidth, size, font = BACKEND_FONTS.bold) => {
   const value = String(text ?? '').trim();
@@ -176,10 +176,10 @@ const fitText = (doc, text, maxWidth, size, font = BACKEND_FONTS.bold) => {
   doc.font(font).fontSize(size);
   if (doc.widthOfString(value) <= maxWidth) return value;
   let cut = value.length;
-  while (cut > 1 && doc.widthOfString(`${value.slice(0, cut)}…`) > maxWidth) {
+  while (cut > 1 && doc.widthOfString(`${value.slice(0, cut)}â€¦`) > maxWidth) {
     cut -= 1;
   }
-  return `${value.slice(0, cut)}…`;
+  return `${value.slice(0, cut)}â€¦`;
 };
 
 const drawImageFitClipped = (doc, imgBuffer, x, y, w, h, radius) => {
@@ -206,52 +206,77 @@ const resetTextCursor = (doc, x, y) => {
 };
 
 /**
- * Draws the SukuuPay mark + caption on one line, centred at the bottom of
- * the card. This is now called from both `drawCardFront` and `drawCardBack`.
+ * Draws the SukuuPay mark + caption on the left and the academic year on the
+ * right, on one line at the bottom of the card â€” the same arrangement the React
+ * preview uses. Called from both `drawCardFront` and `drawCardBack`.
+ *
+ * The year used to be missing entirely: the footer carried only the caption, so
+ * a printed card did not say which session it belonged to even though the
+ * preview showed it. It is now passed in and drawn on the right-hand edge.
  */
-const drawSukuuPayFooterMark = (doc, x, y, W, H) => {
+const drawSukuuPayFooterMark = (doc, x, y, W, H, academicYear) => {
   const markBuffer = getSukuuPayMark();
-  if (!markBuffer) return;
 
   const markSize = mm(3.0);
   const gap = mm(1.2);
   const captionText = 'SukuuPay Secure ID';
   const captionSize = mm(1.5);
+  const sidePad = W * 0.05;
+  const bottomPad = mm(1.5);
 
-  doc.font(BACKEND_FONTS.bold).fontSize(captionSize);
-  const captionW = doc.widthOfString(captionText);
-  const rowW = markSize + gap + captionW;
-
-  const rowX = x + (W - rowW) / 2;
-  const rowBottomPad = mm(1.5);
-  const rowY = y + H - rowBottomPad - markSize;
-
-  try {
-    doc.save();
-    doc.image(markBuffer, rowX, rowY, {
-      fit: [markSize, markSize],
-      align: 'center',
-      valign: 'center',
-    });
-    doc.restore();
-  } catch (err) {
-    console.warn(`[ID-CARD] SukuuPay footer mark draw failed: ${err.message}`);
-    return;
-  }
-
+  const rowY = y + H - bottomPad - markSize;
   const captionH = doc.heightOfString(captionText);
   const captionY = rowY + (markSize - captionH) / 2;
 
-  resetTextCursor(doc, rowX + markSize + gap, captionY);
+  if (markBuffer) {
+    try {
+      doc.save();
+      doc.image(markBuffer, x + sidePad, rowY, {
+        fit: [markSize, markSize],
+        align: 'center',
+        valign: 'center',
+      });
+      doc.restore();
+    } catch (err) {
+      console.warn(`[ID-CARD] SukuuPay footer mark draw failed: ${err.message}`);
+    }
+  }
+
+  const textX = markBuffer ? x + sidePad + markSize + gap : x + sidePad;
+  resetTextCursor(doc, textX, captionY);
   doc.font(BACKEND_FONTS.bold)
     .fontSize(captionSize)
     .fillColor('#94A3B8')
-    .text(captionText, rowX + markSize + gap, captionY, {
+    .text(captionText, textX, captionY, {
       lineBreak: false,
     });
+
+  if (academicYear) {
+    doc.font(BACKEND_FONTS.bold).fontSize(captionSize);
+    const yearText = String(academicYear);
+    const yearW = doc.widthOfString(yearText);
+    const yearX = x + W - sidePad - yearW;
+    resetTextCursor(doc, yearX, captionY);
+    doc.font(BACKEND_FONTS.bold)
+      .fontSize(captionSize)
+      .fillColor('#94A3B8')
+      .text(yearText, yearX, captionY, {
+        lineBreak: false,
+      });
+  }
 };
 
-// ─────────────────────────── FRONT ───────────────────────────
+
+/**
+ * The card is monochrome.
+ *
+ * The header band used to be filled with the school's `brandColor`, so a
+ * school with a blue brand printed a blue credential, and a yellow accent rule
+ * (`#F2B705`) ran beneath both faces. Both are gone: the band is a fixed
+ * neutral charcoal, and the band's own edge separates it from the body without
+ * a coloured rule underneath.
+ */
+const HEADER_FILL = '#0F172A';
 
 const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
   doc.save();
@@ -264,17 +289,16 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
     .strokeColor('#CBD5E1')
     .stroke();
 
-  const brandHex = card.brandColor || '#0F172A';
   const pad = W * 0.045;
 
-  // ── Header Band (28% height) ──
+  // â”€â”€ Header Band (28% height) â”€â”€
   const headerH = H * 0.28;
   doc.save();
   doc.roundedRect(x, y, W, headerH, mm(2)).clip();
-  doc.rect(x, y, W, headerH).fill(brandHex);
+  doc.rect(x, y, W, headerH).fill(HEADER_FILL);
   doc.restore();
 
-  // ── Logo Tile ──
+  // â”€â”€ Logo Tile â”€â”€
   const logoSize = headerH * 0.62;
   const logoX = x + pad;
   const logoY = y + (headerH - logoSize) / 2;
@@ -314,7 +338,7 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
     });
   }
 
-  // ── School Name & Motto ──
+  // â”€â”€ School Name & Motto â”€â”€
   const textX = logoX + logoSize + W * 0.03;
   const textW = W - (textX - x) - pad;
   const schoolNameText = fitText(
@@ -346,23 +370,23 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
       .text(mottoText, textX, logoY + mm(4.0), { lineBreak: false });
   }
 
-  // ── Gold Accent Divider Line ──
-  doc.rect(x, y + headerH, W, mm(0.7)).fill('#F2B705');
-
-  // ── Body Layout ──
-  const bodyY = y + headerH + mm(0.7) + mm(3);
+  // â”€â”€ Body Layout â”€â”€
+  // No accent rule under the band: the charcoal band against the white body is
+  // separation enough, and a coloured rule here is what made the card read as a
+  // blue-and-yellow scheme.
+  const bodyY = y + headerH + mm(3);
   const leftX = x + pad;
   const leftW = W * 0.52;
 
   const rows = [
-    { label: 'Student ID', value: card.studentId || '—', mono: true },
-    { label: 'Class / stream', value: card.studentClass || '—', mono: false },
+    { label: 'Student ID', value: card.studentId || 'â€”', mono: true },
+    { label: 'Class / stream', value: card.studentClass || 'â€”', mono: false },
     {
       label: 'Phone',
-      value: card.guardianPhone || card.studentPhone || '—',
+      value: card.guardianPhone || card.studentPhone || 'â€”',
       mono: true,
     },
-    { label: 'Session', value: card.academicYear || '—', mono: false },
+    { label: 'Session', value: card.academicYear || 'â€”', mono: false },
   ];
 
   let currentY = bodyY;
@@ -399,7 +423,7 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
     currentY += rowSpacing;
   }
 
-  // ── Signature Line — above the footer mark ──
+  // â”€â”€ Signature Line â€” above the footer mark â”€â”€
   const sigY = y + H - mm(9);
   doc.moveTo(leftX, sigY)
     .lineTo(leftX + leftW * 0.75, sigY)
@@ -415,7 +439,7 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
       characterSpacing: 0.4,
     });
 
-  // ── Right Column: Photo, Name, QR ──
+  // â”€â”€ Right Column: Photo, Name, QR â”€â”€
   const rightW = W * 0.40;
   const rightX = x + W - rightW - pad;
 
@@ -456,7 +480,7 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
     .stroke();
 
   // Name
-  const nameY = photoY + photoSize + mm(1.2);
+  const nameY = photoY + photoSize + mm(1.5);
   const nameText = fitText(
     doc,
     card.studentName || 'Student Name',
@@ -474,10 +498,15 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
       lineBreak: false,
     });
 
-  // QR — above the footer mark
+  // QR â€” anchored above the footer mark.
+  //
+  // The 10mm bottom offset used to park the QR within a millimetre of the
+  // student name, so the name and "SCAN VERIFY" collided. Dropping it to 6.7mm
+  // puts the QR 2.5mm clear of the name while still leaving 2mm above the
+  // footer mark, which is what balances the right column.
   const qrSize = mm(5.5);
   const qrX = rightX + rightW - qrSize;
-  const qrY = y + H - qrSize - mm(10);
+  const qrY = y + H - qrSize - mm(6.7);
 
   if (options.showQr !== false && card.qrCodeUrl) {
     const qrBuf = await imageCache(card.qrCodeUrl);
@@ -516,13 +545,13 @@ const drawCardFront = async (doc, card, x, y, W, H, imageCache, options) => {
       lineBreak: false,
     });
 
-  // ── SukuuPay footer mark ──
-  drawSukuuPayFooterMark(doc, x, y, W, H);
+  // â”€â”€ SukuuPay footer mark â”€â”€
+  drawSukuuPayFooterMark(doc, x, y, W, H, card.academicYear);
 
   doc.restore();
 };
 
-// ─────────────────────────── BACK ───────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ BACK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const drawCardBack = async (doc, card, x, y, W, H, imageCache, options) => {
   doc.save();
@@ -534,14 +563,13 @@ const drawCardBack = async (doc, card, x, y, W, H, imageCache, options) => {
     .strokeColor('#CBD5E1')
     .stroke();
 
-  const brandHex = card.brandColor || '#0F172A';
   const pad = W * 0.05;
 
-  // ── Header Band ──
+  // â”€â”€ Header Band â”€â”€
   const headerH = H * 0.13;
   doc.save();
   doc.roundedRect(x, y, W, headerH, mm(2)).clip();
-  doc.rect(x, y, W, headerH).fill(brandHex);
+  doc.rect(x, y, W, headerH).fill(HEADER_FILL);
   doc.restore();
 
   resetTextCursor(doc, x + pad, y + (headerH - mm(1.7)) / 2 - mm(0.3));
@@ -593,11 +621,9 @@ const drawCardBack = async (doc, card, x, y, W, H, imageCache, options) => {
       });
   }
 
-  // Gold divider
-  doc.rect(x, y + headerH, W, mm(0.7)).fill('#F2B705');
-
-  // ── Terms ──
-  const termsTop = y + headerH + mm(0.7) + mm(2.5);
+  // â”€â”€ Terms â”€â”€
+  // No accent rule under the band, so the terms move up by the rule's height.
+  const termsTop = y + headerH + mm(2.5);
   resetTextCursor(doc, x + pad, termsTop);
   doc.font(BACKEND_FONTS.bold)
     .fontSize(mm(1.6))
@@ -609,8 +635,7 @@ const drawCardBack = async (doc, card, x, y, W, H, imageCache, options) => {
 
   const termsText =
     card.termsOverride ||
-    `This credential is the exclusive legal property of ${
-      card.schoolName || 'the issuing school'
+    `This credential is the exclusive legal property of ${card.schoolName || 'the issuing school'
     }. It is not transferable. Return promptly if requested. Valid for academic use only.`;
 
   const termsBodyY = termsTop + mm(2.6);
@@ -624,10 +649,10 @@ const drawCardBack = async (doc, card, x, y, W, H, imageCache, options) => {
       lineGap: mm(0.3),
     });
 
-  // ── Student ID row ──
+  // â”€â”€ Student ID row â”€â”€
   const idRowY = y + H * 0.42;
   const idLabel = 'STUDENT ID';
-  const idValue = `"${card.studentId || '—'}"`;
+  const idValue = `"${card.studentId || 'â€”'}"`;
 
   doc.font(BACKEND_FONTS.bold).fontSize(mm(1.7));
   const idLabelW = doc.widthOfString(idLabel);
@@ -654,7 +679,7 @@ const drawCardBack = async (doc, card, x, y, W, H, imageCache, options) => {
       lineBreak: false,
     });
 
-  // ── Info Grid ──
+  // â”€â”€ Info Grid â”€â”€
   const gridX = x + pad;
   const gridY = y + H * 0.50;
   const gridW = W - pad * 2;
@@ -666,33 +691,29 @@ const drawCardBack = async (doc, card, x, y, W, H, imageCache, options) => {
     .stroke();
 
   const guardianText = card.guardianName
-    ? `${card.guardianName}${
-        card.guardianPhone ? ` · ${card.guardianPhone}` : ''
-      }`
-    : '—';
+    ? `${card.guardianName}${card.guardianPhone ? ` Â· ${card.guardianPhone}` : ''
+    }`
+    : 'â€”';
 
   const cells = [
-    { row: 0, col: 0, label: 'GUARDIAN', value: guardianText, warning: false },
+    { row: 0, col: 0, label: 'GUARDIAN', value: guardianText },
     {
       row: 0,
       col: 1,
       label: 'EMERGENCY',
-      value: card.emergencyContact || '—',
-      warning: false,
+      value: card.emergencyContact || 'â€”',
     },
     {
       row: 1,
       col: 0,
       label: 'HOLDER',
-      value: card.studentName || '—',
-      warning: false,
+      value: card.studentName || 'â€”',
     },
     {
       row: 1,
       col: 1,
       label: 'EXPIRES',
       value: 'Active Session',
-      warning: true,
     },
   ];
 
@@ -728,7 +749,9 @@ const drawCardBack = async (doc, card, x, y, W, H, imageCache, options) => {
         characterSpacing: 0.3,
       });
 
-    const valColor = cell.warning ? '#D97706' : '#0F172A';
+    // Monochrome: the Expires cell used to be amber (#D97706), which read as a
+    // third colour on a card that is otherwise charcoal and grey.
+    const valColor = '#0F172A';
     const valText = fitText(
       doc,
       cell.value,
@@ -745,13 +768,13 @@ const drawCardBack = async (doc, card, x, y, W, H, imageCache, options) => {
       });
   }
 
-  // ── SukuuPay footer mark ──
-  drawSukuuPayFooterMark(doc, x, y, W, H);
+  // â”€â”€ SukuuPay footer mark â”€â”€
+  drawSukuuPayFooterMark(doc, x, y, W, H, card.academicYear);
 
   doc.restore();
 };
 
-// ─────────────────────────── RENDER LOOP ───────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ RENDER LOOP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const drawCard = async (doc, slot, card, side, imageCache, options) => {
   const { x, y, width: W, height: H } = slot;
@@ -814,18 +837,30 @@ const chunk = (array, size) => {
   return result;
 };
 
-const studentsPerSheet = (geometry) =>
-  Math.max(1, Math.floor(geometry.perPage / 2));
+/**
+ * How many students share one sheet.
+ *
+ * `generateIdCardSheets` lays each chunk out as **one row of fronts plus one row
+ * of backs**, so a chunk is capped by the row width (`perRow`) â€” not by half the
+ * sheet's slots. The old `floor(perPage / 2)` read `perPage` as if every slot
+ * were a student, which only happens to be true for a two-row layout.
+ *
+ * For 9-up (3 rows x 3 columns) it produced 4, so a chunk needed a 4th column
+ * that the layout does not have. `slotAt()` returned null for it and the render
+ * loop silently `continue`d, so the fourth student on every 9-up sheet vanished
+ * from the print run â€” a card missing from the printer, not an obvious crash.
+ */
+const studentsPerSheet = (geometry) => Math.max(1, geometry.perRow);
 
 /**
  * Normalises whatever the caller handed over into resolved cards.
  *
- * Cards arrive here **already resolved** — both the single-card path and the
+ * Cards arrive here **already resolved** â€” both the single-card path and the
  * batch path run `resolveCardData` against the school record first. Re-resolving
  * such a card is destructive: a flat card carries no `school` object, so
  * `resolveCardData` is handed `{}` and rebrands the card from its fallbacks.
  * `schoolName` collapses to `''`, `schoolLogo` to `null`, `schoolMotto` to
- * `''` and `brandColor` to the fallback — which is why a printed card showed a
+ * `''` and `brandColor` to the fallback â€” which is why a printed card showed a
  * green header with an "S" initial tile instead of the school's own logo and
  * name. The student fields survived only because the flat card itself was
  * passed in as the student argument.
@@ -912,8 +947,7 @@ export const generateIdCardSheets = async (cards, options = {}) => {
             occupiedSlotIndexes.push(slot.index);
           } catch (err) {
             console.error(
-              `[ID-CARD-SHEET] draw failed on student ${col} (${
-                row === 0 ? 'front' : 'back'
+              `[ID-CARD-SHEET] draw failed on student ${col} (${row === 0 ? 'front' : 'back'
               }):`,
               err.message
             );

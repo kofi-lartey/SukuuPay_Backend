@@ -33,11 +33,6 @@ export const COLORS = {
   magStripeBrand: '#E2E8F0',
   brandBadge: '#ECFDF3',
   brandBadgeText: '#0F172A',
-  // Dark charcoal, not the old green (#0A5C36). A school with no brand colour
-  // of its own would otherwise print a green header while the on-screen
-  // preview — which defaults to the same charcoal — showed something else, so
-  // the PDF never matched the preview it was approved from.
-  brandFallback: '#0F172A',
   surfaceLight: '#F1F5F9',
   qrBg: '#F8FAFC',
   amber600: '#B45309',
@@ -224,7 +219,6 @@ export const resolveCardData = (student = {}, school = {}, derived = {}, options
     schoolStamp: school?.stamp || null,
     schoolMotto: school?.motto || '',
     schoolCode: school?.schoolCode || '',
-    brandColor: school?.brandColor || COLORS.brandFallback,
     studentImage: student?.studentImage || null,
     studentName: student?.studentName || '',
     studentId: student?.studentId || '',

@@ -35,7 +35,6 @@ const card = (i) => ({
   emergencyContact: 'Guardian 0244123456',
   schoolPhone: '0302001000',
   schoolAddress: 'P.O. Box 12, Prampram',
-  brandColor: '#0A5C36',
 });
 
 /** Inflates every FlateDecode stream in a PDF buffer. */
@@ -55,6 +54,47 @@ const inflateStreams = (buffer) => {
 };
 
 const pageCount = (buffer) => (buffer.toString('latin1').match(/\/Type\s*\/Page[^s]/g) || []).length;
+
+/**
+ * Every text-operator content stream of a PDF, decoded to plain strings.
+ *
+ * pdfkit writes standard (Helvetica) text as hex-encoded PDF strings inside
+ * `[...] TJ` arrays, so a label is never ASCII in the raw stream. It also
+ * splits one label across several `<hex>` operands — kerning and
+ * `characterSpacing` both do it — so the operands are concatenated rather than
+ * read one at a time. `INSTITUTIONAL TERMS & CONDITIONS` is emitted as several
+ * pieces precisely because the back face sets `characterSpacing`.
+ */
+const decodeText = (s) => {
+  let out = '';
+  const re = /\[((?:<[0-9A-Fa-f]*>|[^\]])*)\]\s*TJ/g;
+  let match;
+  while ((match = re.exec(s))) {
+    for (const hex of match[1].match(/<[0-9A-Fa-f]*>/g) || []) {
+      out += Buffer.from(hex.slice(1, -1), 'hex').toString('latin1');
+    }
+  }
+  return out;
+};
+
+const textOf = (buffer) =>
+  inflateStreams(buffer).filter((s) => /\]\s*TJ/.test(s)).map(decodeText).join('\n');
+
+/**
+ * Every student's card must be on the paper.
+ *
+ * A chunk that is wider than the layout's row width cannot be placed, and
+ * `slotAt()` returning null makes the render loop `continue` silently — so the
+ * PDF stays structurally valid while a student is missing from the print run.
+ * The page count alone cannot see that; only the students' own text can.
+ */
+const assertEveryCardPrinted = (buffer, n) => {
+  const text = textOf(buffer);
+  for (let i = 1; i <= n; i += 1) {
+    const id = `PBS-2026-000${i}`;
+    assert.ok(text.includes(id), `student ${id} never reached the sheet — a card was silently dropped`);
+  }
+};
 
 // ─────────────────────────────────────────────
 // The card is a real card
@@ -174,28 +214,78 @@ describe('ID card sheet: the PDF', () => {
     assert.ok(buffer.toString('latin1').startsWith('%PDF-'));
   });
 
-  test('seven cards spill onto a second sheet, four pages in total', async () => {
+  test('seven cards spill onto a third sheet, and all seven still print', async () => {
+    // Three students share a sheet, so seven need ceil(7/3) = 3. This used to
+    // expect 4 pages on the assumption that a "6-up" sheet holds six students —
+    // but the grid is 3 wide x 2 tall and row 0 carries the fronts while row 1
+    // carries the backs, so three is the real capacity.
+    //
+    // The page count alone cannot catch the worse failure, so every card is
+    // also checked on the paper: `studentsPerSheet` used to be
+    // `floor(perPage / 2)`, which is 4 for 9-up, and a chunk of 4 needed a 4th
+    // column that a 3-wide grid does not have — the 4th student was silently
+    // dropped from the print run.
+    const n = 7;
     const buffer = await generateIdCardSheets(
-      Array.from({ length: 7 }, (_, i) => card(i + 1)),
+      Array.from({ length: n }, (_, i) => card(i + 1)),
       { layout: '6up_a4_landscape' }
     );
-    assert.equal(pageCount(buffer), 4, '2 groups x front + back');
+
+    assert.equal(pageCount(buffer), 3);
+    assertEveryCardPrinted(buffer, n);
   });
 
-  test('a nine-up sheet fits all nine on one pair', async () => {
+  test('a nine-up sheet prints every card on it', async () => {
+    // The regression test for the dropped card. 9-up is 3 wide x 3 tall, so it
+    // has 9 slots but still only 3 columns — `floor(9 / 2)` chunks of 4 overflow
+    // the row and the 4th student disappears. Asserting only the page count
+    // would have hidden that, because the PDF was still a valid 3-page file;
+    // this asserts the students are actually on it.
+    const n = 9;
     const buffer = await generateIdCardSheets(
-      Array.from({ length: 9 }, (_, i) => card(i + 1)),
+      Array.from({ length: n }, (_, i) => card(i + 1)),
       { layout: '9up_a4_landscape' }
     );
-    assert.equal(pageCount(buffer), 2);
+
+    assert.equal(pageCount(buffer), 3);
+    assertEveryCardPrinted(buffer, n);
   });
 
-  test('front_only prints half the pages', async () => {
-    const buffer = await generateIdCardSheets(
-      Array.from({ length: 6 }, (_, i) => card(i + 1)),
-      { layout: '6up_a4_landscape', side: 'front' }
-    );
-    assert.equal(pageCount(buffer), 1);
+  test('the side option prints only the faces asked for', () => {
+    // "front_only" is not "half the pages": chunking is the same either way, so
+    // both modes emit one page per sheet. What the option *does* control is
+    // which faces land on those pages, which is asserted on the content.
+    const one = [card(1)];
+
+    return Promise.all([
+      generateIdCardSheets(one, { layout: '6up_a4_landscape', side: 'front' }),
+      generateIdCardSheets(one, { layout: '6up_a4_landscape', side: 'back' }),
+      generateIdCardSheets(one, { layout: '6up_a4_landscape', side: 'front_back' }),
+    ]).then(([front, back, both]) => {
+      assert.equal(pageCount(front), 1, 'front only: one page');
+      assert.equal(pageCount(back), 1, 'back only: one page');
+      assert.equal(pageCount(both), 1, 'front and back: one page');
+
+      const frontText = textOf(front);
+      const backText = textOf(back);
+      const bothText = textOf(both);
+
+      // A back-only page must not carry front-only content.
+      assert.ok(backText.includes('OFFICIAL CREDENTIAL'), 'back face never rendered');
+      assert.ok(
+        !backText.includes('AUTHORIZE SIGNATURE'),
+        'the back-only PDF drew front content'
+      );
+      // A front-only page must not carry back-only content.
+      assert.ok(frontText.includes('AUTHORIZE SIGNATURE'), 'front face never rendered');
+      assert.ok(
+        !frontText.includes('OFFICIAL CREDENTIAL'),
+        'the front-only PDF drew back content'
+      );
+      // The default draws both.
+      assert.ok(bothText.includes('OFFICIAL CREDENTIAL'), 'front_back: back missing');
+      assert.ok(bothText.includes('AUTHORIZE SIGNATURE'), 'front_back: front missing');
+    });
   });
 
   test('the cards are not blank', async () => {
@@ -249,24 +339,7 @@ describe('ID card sheet: the PDF', () => {
 // The rendered card carries the same fields as the preview
 // ─────────────────────────────────────────────
 describe('ID card sheet: the rendered card matches the preview', () => {
-  // pdfkit writes standard (Helvetica) text as hex-encoded PDF strings, so the
-  // literal label text is not in the raw stream as ASCII. Decoding the `<....>`
-  // operands restores the ASCII and lets the test assert on real field labels.
-  //
-  // PDFKit emits mixed TJ arrays: `[<hex1> 20 <hex2> 0] TJ`. We collapse each
-  // TJ array by decoding its hex strings and concatenating them with the kern
-  // numbers stripped, so `<53747564656e74204944> 0` → "Student ID" and
-  // `<47756172> 20 <6469616e> 0` → "Guardian".
-  const decodeHex = (s) =>
-    s.replace(/<([0-9A-Fa-f]+)>/g, (_m, h) => Buffer.from(h, 'hex').toString('latin1'))
-     .replace(/\[([^\]]*)\] TJ/g, (_m, inside) =>
-       inside
-         .replace(/\s+-?\d+(\.\d+)?\s*/g, '') // strip kern numbers and their surrounding spaces
-         .replace(/\s+(\d+(\.\d+)?)?\]/g, '') // strip trailing kern number
-         .trim()
-     );
-
-  test('the front labels and back footer render', async () => {
+  test('the front carries the field-grid labels and the footer', async () => {
     const c = {
       ...card(1),
       dateOfBirth: new Date('2012-04-23'),
@@ -274,58 +347,74 @@ describe('ID card sheet: the rendered card matches the preview', () => {
       academicYear: '2025/2026',
       schoolCode: 'SC-001',
     };
-    const buffer = await generateIdCardSheets([c], { layout: '6up_a4_landscape' });
-    const streams = inflateStreams(buffer).map(decodeHex);
-    const front = streams[0];
-    const back = streams.find((s) => s.includes('Institutional')) || streams[1];
+    const front = textOf(
+      await generateIdCardSheets([c], { layout: '6up_a4_landscape', side: 'front' })
+    );
 
-    // Front: the two-column field grid labels.
+    // The two-column field grid, exactly as the preview labels them.
     assert.ok(front.includes('Student ID'), 'front body: Student ID label missing');
     assert.ok(front.includes('Class / stream'), 'front body: Class / stream label missing');
-    // Footer: "SukuPay Secure ID" + academic year (matches frontend back footer).
-    assert.ok(back.includes('Secure ID'), 'footer: Secure ID text missing');
-    assert.ok(back.includes('2025/2026'), 'footer: academic year text missing');
+    // The right column: name, photo placeholder, QR caption.
+    assert.ok(front.includes('SCAN VERIFY'), 'front: SCAN VERIFY caption missing');
+    assert.ok(front.includes(c.studentName), 'front: student name missing');
+    // Footer: SukuuPay mark caption + session year.
+    assert.ok(front.includes('Secure ID'), 'footer: Secure ID text missing');
+    assert.ok(front.includes('2025/2026'), 'footer: academic year text missing');
   });
 
-  test('the back carries the Guardian/Emergency/Holder/Expires grid and terms', async () => {
+  test('the back carries the terms heading and the four-cell grid', async () => {
     const c = {
       ...card(1),
       guardianName: 'Madam Abena',
       guardianPhone: '0244000001',
       emergencyContact: '0201000001',
+      academicYear: '2025/2026',
     };
-    const buffer = await generateIdCardSheets([c], { layout: '6up_a4_landscape' });
-    const streams = inflateStreams(buffer).map(decodeHex);
-    // The back is the stream that is NOT the front: pick the one with "Institutional".
-    const back = streams.find((s) => s.includes('Institutional')) || streams[1];
+    const back = textOf(
+      await generateIdCardSheets([c], { layout: '6up_a4_landscape', side: 'back' })
+    );
 
-    for (const label of ['Guardian', 'Emergency', 'Holder', 'Expires']) {
+    // The back renders these labels in the enum casing of the grid, not the
+    // title case the preview uses — assert what the renderer emits.
+    for (const label of ['GUARDIAN', 'EMERGENCY', 'HOLDER', 'EXPIRES']) {
       assert.ok(back.includes(label), `back grid: ${label} label missing`);
     }
-    // Terms heading is a back-only element.
-    assert.ok(back.includes('Institutional'), 'back: Institutional terms heading missing');
+    assert.ok(
+      back.includes('INSTITUTIONAL TERMS & CONDITIONS'),
+      'back: Institutional terms heading missing'
+    );
+    assert.ok(back.includes('OFFICIAL CREDENTIAL'), 'back: header text missing');
+
+    // The values follow through, not just the labels.
+    assert.ok(back.includes(c.studentName), 'back grid: HOLDER value missing');
+    assert.ok(back.includes('Madam Abena'), 'back grid: GUARDIAN value missing');
+    assert.ok(back.includes(c.emergencyContact), 'back grid: EMERGENCY value missing');
+
+    // Footer, matching the preview's two-part line.
+    assert.ok(back.includes('Secure ID'), 'back footer: Secure ID text missing');
+    assert.ok(back.includes('2025/2026'), 'back footer: academic year text missing');
   });
 
-  test('the resolved student ID flows through to the back barcode label', async () => {
-    // The barcode is synthesized from the student ID. A distinctive ID must appear
-    // verbatim on the back, proving `resolveCardData` → `drawCard` wire the field
-    // end-to-end (the regression left it undefined).
-    const buffer = await generateIdCardSheets(
-      [{ ...card(1), studentId: 'PBS-2026-0001' }],
-      { layout: '6up_a4_landscape' }
-    );
-    const back = inflateStreams(buffer).map(decodeHex).find((s) => s.includes('Institutional')) || [];
+  test('the resolved student ID flows through to the back face', async () => {
+    // The barcode is synthesized from the student ID. A distinctive ID must
+    // appear verbatim on the back, proving `resolveCardData` -> `drawCard` wire
+    // the field end-to-end (the regression left it undefined).
+    const renderBack = async (id) =>
+      textOf(
+        await generateIdCardSheets([{ ...card(1), studentId: id }], {
+          layout: '6up_a4_landscape',
+          side: 'back',
+        })
+      );
+
+    const back = await renderBack('PBS-2026-0001');
     assert.ok(back, 'a back content stream was produced');
-    assert.ok(String(back).includes('PBS-2026-0001'), 'student ID did not reach the back face');
+    assert.ok(back.includes('PBS-2026-0001'), 'student ID did not reach the back face');
 
     // A different ID must not bleed the previous one.
-    const buffer2 = await generateIdCardSheets(
-      [{ ...card(1), studentId: 'S-9' }],
-      { layout: '6up_a4_landscape' }
-    );
-    const back2 = inflateStreams(buffer2).map(decodeHex).find((s) => s.includes('Institutional')) || [];
-    assert.ok(String(back2).includes('S-9'), 'second student ID did not reach the back face');
-    assert.ok(!String(back2).includes('PBS-2026-0001'), 'a previous ID leaked into a different card');
+    const back2 = await renderBack('S-9');
+    assert.ok(back2.includes('S-9'), 'second student ID did not reach the back face');
+    assert.ok(!back2.includes('PBS-2026-0001'), 'a previous ID leaked into a different card');
   });
 });
 

@@ -62,10 +62,12 @@ const renderPage = async (doc, pageData) => {
   const margin = 40;
 
   // Background border
+  // Neutral charcoal, not the navy the template used to carry: ID cards are
+  // monochrome now, so a blue border here is a blue credential.
   doc
     .rect(margin, margin, pageWidth - margin * 2, pageHeight - margin * 2)
     .lineWidth(2)
-    .strokeColor("#1E3A8A")
+    .strokeColor("#0F172A")
     .stroke();
 
   // School logo (top-left)

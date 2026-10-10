@@ -22,7 +22,7 @@ import * as frontend from '../../frontend/src/components/students/idcards/cardCo
 const CARD_GEOMETRY_KEYS = ['widthMm', 'heightMm', 'cornerRadiusMm', 'bleedMm', 'safeMarginMm', 'printDpi'];
 const COLOR_KEYS = ['body', 'muted', 'label', 'border', 'cardBg', 'headerRule', 'footerRule',
   'magStripe', 'magStripeText', 'magStripeBrand', 'brandBadge', 'brandBadgeText',
-  'brandFallback', 'surfaceLight', 'qrBg'];
+  'surfaceLight', 'qrBg'];
 const TYPO_KEYS = ['name', 'field', 'label', 'body', 'footer', 'scan', 'magStripe', 'barcode', 'small'];
 
 describe('ID card contract: backend and frontend are in lockstep', () => {
@@ -92,10 +92,13 @@ describe('ID card contract: backend and frontend are in lockstep', () => {
     // can silently omit a field the preview shows. We cannot import the service
     // without Mongoose wiring, but we can assert the contract exposes exactly the
     // keys buildCardData is expected to forward.
+    // The contract test used to pin `brandColor` here. It is gone: the card is
+    // monochrome, so no renderer reads a school brand colour any more. If a
+    // colour ever comes back to the card it has to come back through here, with
+    // both twins updated together.
     const contractKeys = new Set(Object.keys(backend.resolveCardData({ parents: [] }, {})));
     const expected = new Set([
     'schoolName', 'schoolLogo', 'schoolStamp', 'schoolMotto', 'schoolCode',
-    'brandColor',
       'studentImage', 'studentName', 'studentId', 'dateOfBirth', 'studentClass',
       'academicYear', 'guardianName', 'guardianPhone', 'emergencyContact', 'qrCodeUrl',
     ]);
