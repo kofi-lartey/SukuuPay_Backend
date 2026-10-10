@@ -18,7 +18,11 @@ import {
   verifyPaymentByReference,
   buildParentReceipt,
 } from "../services/pay.service.js";
-import { generateReceiptPdf, receiptFilename } from "../utils/receiptService.js";
+import { generateReceiptPdf, receiptFilename, normaliseBreakdown } from "../utils/receiptService.js";
+import { sendEmailWithAttachment } from "../services/emailService.js";
+import { sendWhatsAppDocument } from "../utils/whatsappApi.js";
+import { Student } from "../models/studentModel.js";
+import ApiError from "../utils/ApiError.js";
 // Every `catch` in this file answers the request itself, so it cannot use the
 // `errorHandler` middleware — and each one used to echo `error.message` unconditionally,
 // which bypassed the rule that middleware enforces. That is how an internal
@@ -409,6 +413,327 @@ export const refundPaymentController = async (req, res) => {
     return res.status(error.status || 500).json({
       success: false,
       message: resolveErrorMessage(error),
+    });
+  }
+};
+
+// ──────────────────── Admin: Receipt PDF download ────────────────────
+/**
+ * Admin: streams the receipt as a PDF.
+ *
+ * Uses the same service function the JSON endpoint uses, so the two outputs
+ * cannot disagree. A bursar who reads the modal and a bursar who downloads
+ * the PDF see the same document.
+ */
+export const getAdminReceiptPdfController = async (req, res) => {
+  try {
+    const { paymentId } = req.params;
+    const receipt = await generateReceipt(paymentId, req.user);
+
+    const pdfBuffer = await generateReceiptPdf(
+      {
+        receiptNumber: receipt.receipt.receiptNumber,
+        paymentId: receipt.receipt.paymentId,
+        reference: receipt.receipt.reference,
+        amount: receipt.receipt.amount,
+        feesBreakdown: receipt.receipt.feesBreakdown,
+        paymentMethod: receipt.receipt.paymentMethod,
+        completedAt: receipt.receipt.date,
+        createdAt: receipt.receipt.date,
+        notes: receipt.receipt.description,
+      },
+      {
+        student: receipt.receipt.student,
+        school: receipt.receipt.school,
+      }
+    );
+
+    const filename = receiptFilename(receipt.receipt.receiptNumber, paymentId);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Length", String(pdfBuffer.length));
+    res.setHeader("Cache-Control", "private, max-age=0, must-revalidate");
+
+    return res.status(200).send(pdfBuffer);
+  } catch (error) {
+    console.error("[receipt-pdf/admin] failed:", error);
+    return res
+      .status(error.status || 500)
+      .send(error.message || "Receipt could not be generated");
+  }
+};
+
+// ──────────────────── Parent: Receipt PDF download ────────────────────
+/**
+ * Parent: streams the receipt as a PDF.
+ *
+ * The token in the URL is what authorises the download. `buildParentReceipt`
+ * finds the student from the token and then scopes the payment lookup by
+ * `studentId === payment.studentId`, so a parent cannot download another
+ * family's receipt by guessing a payment id.
+ */
+export const getParentReceiptPdfController = async (req, res) => {
+  try {
+    const { token, paymentId } = req.params;
+    const { payment, student, school } = await buildParentReceipt(token, paymentId);
+
+    const pdfBuffer = await generateReceiptPdf(
+      {
+        receiptNumber: payment.receiptNumber,
+        paymentId: payment.paymentId,
+        reference: payment.reference,
+        amount: payment.amount,
+        feesBreakdown: payment.feesBreakdown,
+        paymentMethod: payment.paymentMethod,
+        completedAt: payment.completedAt,
+        createdAt: payment.createdAt,
+        notes: payment.description,
+      },
+      {
+        student,
+        school,
+      }
+    );
+
+    const filename = receiptFilename(payment.receiptNumber, paymentId);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Length", String(pdfBuffer.length));
+    res.setHeader("Cache-Control", "private, max-age=0, must-revalidate");
+
+    return res.status(200).send(pdfBuffer);
+  } catch (error) {
+    console.error("[receipt-pdf/parent] failed:", error);
+    return res
+      .status(error.status || 500)
+      .send(error.message || "Receipt could not be generated");
+  }
+};
+
+// ──────────────────── Receipt delivery helpers ────────────────────
+
+/**
+ * Maps the receipt projection onto the shape `generateReceiptPdf` renders.
+ *
+ * One mapping for both delivery routes, so the emailed PDF and the WhatsApp
+ * PDF are byte-for-byte the same document as the downloaded one. The receipt
+ * fields arrive from `generateReceipt` (admin) or `buildParentReceipt`
+ * (parent) and are spelled slightly differently by the two — which is
+ * exactly the kind of difference that should not be discovered by comparing
+ * two PDFs side by side.
+ */
+const receiptForPdf = (receipt) => ({
+  receiptNumber: receipt.receiptNumber,
+  paymentId: receipt.paymentId,
+  reference: receipt.reference,
+  amount: receipt.amount,
+  feesBreakdown: receipt.feesBreakdown,
+  paymentMethod: receipt.paymentMethod,
+  completedAt: receipt.date || receipt.completedAt,
+  createdAt: receipt.date || receipt.createdAt,
+  notes: receipt.description || receipt.notes,
+});
+
+/**
+ * Renders the receipt PDF once, for whichever channel asked.
+ *
+ * The buffer is produced here rather than by the caller so the email route
+ * and the WhatsApp route cannot disagree about which document was sent, and
+ * so a render failure is reported once, identically, by both.
+ */
+const renderReceiptAttachment = async (receipt) => {
+  const pdf = await generateReceiptPdf(receiptForPdf(receipt), {
+    student: receipt.student,
+    school: receipt.school,
+  });
+  const filename = receiptFilename(receipt.receiptNumber, receipt.paymentId);
+  return { pdf, filename };
+};
+
+/**
+ * A Ghanaian number to Meta's international format.
+ *
+ * Meta rejects a `+`, and rejects a national number with no country code, so
+ * `0241234567` becomes `233241234567` and `+233 24 123 4567` becomes the same
+ * thing. `formatPhoneForWhatsapp` in `sms.service.js` does the same job for
+ * SMS; this copy is local because that one is not exported and the rule is
+ * three lines.
+ */
+const toWhatsAppNumber = (phone) => {
+  const digits = String(phone || "").replace(/\D/g, "");
+  if (!digits) return null;
+  if (digits.startsWith("233")) return digits;
+  if (digits.startsWith("0")) return `233${digits.slice(1)}`;
+  return `233${digits}`;
+};
+
+/** HTML-escapes the few parent-controlled strings that reach an email body. */
+const escapeHtml = (value) =>
+  String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+/** Cedi figure for the message body of both channels. */
+const moneyLine = (pesewas) =>
+  `${((Number(pesewas) || 0) / 100).toLocaleString("en-GH", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+
+// ──────────────────── Admin: Email the receipt ────────────────────
+/**
+ * POST /payments/:paymentId/receipt/email
+ *
+ * Sends the receipt to the parent as an email attachment.
+ *
+ * **The PDF is generated server-side and attached, never downloaded.** The
+ * bursar's device should not have to touch the file at all: a bursar who
+ * "sends" a receipt by downloading it and attaching it in a mail client is
+ * one bad phone call away from emailing last term's receipt to the wrong
+ * parent. The server holds the payment, renders the document, and puts it on
+ * the message.
+ *
+ * The recipient is the primary parent's email on file. When the record has
+ * none, the endpoint refuses rather than guessing — with `PARENT_EMAIL_REQUIRED`,
+ * which the frontend reads as "ask for an address" and shows a field for.
+ * A supplied address is then written back to the primary parent so the next
+ * receipt does not have to ask again, which is the whole reason the field is
+ * optional rather than a separate "update parent" flow.
+ */
+export const emailReceiptController = async (req, res) => {
+  try {
+    const { paymentId } = req.params;
+    const receipt = await generateReceipt(paymentId, req.user);
+    const doc = receipt.receipt;
+
+    // The caller's address wins; otherwise the one on the parent's record.
+    const suppliedEmail = String(req.body?.email || "").trim() || null;
+    const to = suppliedEmail || doc.student?.parentEmail || null;
+
+    if (!to) {
+      throw new ApiError(
+        "No email address is on file for this parent. Add one to send the receipt.",
+        400,
+        "PARENT_EMAIL_REQUIRED"
+      );
+    }
+
+    // Written back only when the caller supplied it. An address already on
+    // the record has nothing to persist, and writing it again would stamp
+    // `updatedAt` on every send.
+    if (suppliedEmail && !doc.student?.parentEmail && receipt.studentDocId) {
+      await Student.findOneAndUpdate(
+        {
+          _id: receipt.studentDocId,
+          ...(receipt.primaryParentId ? { "parents._id": receipt.primaryParentId } : {}),
+        },
+        { $set: { "parents.$.email": suppliedEmail.toLowerCase() } }
+      );
+    }
+
+    const { pdf, filename } = await renderReceiptAttachment(doc);
+
+    const when = doc.date ? new Date(doc.date) : new Date();
+    const dateLine = Number.isNaN(when.getTime())
+      ? "—"
+      : when.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+
+    await sendEmailWithAttachment({
+      to,
+      subject: `Payment receipt ${doc.receiptNumber || ""} — ${doc.student?.studentName || "your child"}`.trim(),
+      html: [
+        "<p>Dear Parent,</p>",
+        `<p>Please find attached the payment receipt for ${escapeHtml(
+          doc.student?.studentName || "your child"
+        )}.</p>`,
+        "<ul>",
+        `<li><strong>Receipt number:</strong> ${escapeHtml(doc.receiptNumber || "—")}</li>`,
+        `<li><strong>Amount:</strong> GH₵ ${moneyLine(doc.amount)}</li>`,
+        `<li><strong>Date:</strong> ${escapeHtml(dateLine)}</li>`,
+        "</ul>",
+        `<p>Thank you.<br />${escapeHtml(doc.school?.name || "School")}</p>`,
+      ].join(""),
+      attachments: [{ name: filename, content: pdf }],
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: `Receipt sent to ${to}`,
+      data: { to },
+    });
+  } catch (error) {
+    console.error("[receipt-email/admin] failed:", error);
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+// ──────────────────── Admin: WhatsApp the receipt ────────────────────
+/**
+ * POST /payments/:paymentId/receipt/whatsapp
+ *
+ * Sends the receipt to the parent as a WhatsApp document message.
+ *
+ * **This is the WhatsApp Business API, not `wa.me`.** `wa.me` opens a chat
+ * with pre-filled text and there is no way to attach a file to it — the
+ * envelope it can carry is a sentence, and a sentence is not a receipt. Meta's
+ * API takes an uploaded media id and delivers the PDF into the parent's chat
+ * as a real document they can download, forward, and print.
+ *
+ * The flow is the two-step the API requires: upload the PDF to Meta's media
+ * store, then send a document message referencing the returned id.
+ * `sendWhatsAppDocument` does both, so this controller is only about who the
+ * receipt is for and what the caption should say.
+ *
+ * The phone number comes from the parent's record, never from the request. A
+ * bursar cannot retarget a receipt at a number of their choosing through this
+ * endpoint — the delivery address is the one the school has for that parent,
+ * which is also what makes the audit trail mean something.
+ */
+export const whatsappReceiptController = async (req, res) => {
+  try {
+    const { paymentId } = req.params;
+    const receipt = await generateReceipt(paymentId, req.user);
+    const doc = receipt.receipt;
+
+    const to = toWhatsAppNumber(doc.student?.parentPhone);
+    if (!to) {
+      throw new ApiError(
+        "No phone number is on file for this parent. Add one to send the receipt.",
+        400,
+        "PARENT_PHONE_REQUIRED"
+      );
+    }
+
+    const { pdf, filename } = await renderReceiptAttachment(doc);
+
+    const caption = [
+      `Payment receipt from ${doc.school?.name || "your school"}`,
+      `Student: ${doc.student?.studentName || "—"}`,
+      `Receipt: ${doc.receiptNumber || "—"}`,
+      `Amount: GH₵ ${moneyLine(doc.amount)}`,
+    ].join("\n");
+
+    await sendWhatsAppDocument({ to, filename, content: pdf, caption });
+
+    return res.status(200).json({
+      success: true,
+      message: `Receipt sent on WhatsApp to ${doc.student?.parentPhone}`,
+      data: { to },
+    });
+  } catch (error) {
+    console.error("[receipt-whatsapp/admin] failed:", error);
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
     });
   }
 };

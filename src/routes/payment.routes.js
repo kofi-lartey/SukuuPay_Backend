@@ -7,12 +7,15 @@ import {
   getPaymentHistoryController,
   requestPaymentPlanController,
   notifySchoolController,
-  getReceiptDownloadController,
   listPaymentsController,
   getPaymentSummaryController,
   exportPaymentsController,
   getPaymentDetailController,
   getPaymentReceiptController,
+  getAdminReceiptPdfController,
+  getParentReceiptPdfController,
+  emailReceiptController,
+  whatsappReceiptController,
   hubtelWebhookController,
   refundPaymentController,
 } from "../controllers/payment.controller.js";
@@ -34,6 +37,8 @@ import {
   payNotifySchoolSchema,
   payReceiptParamSchema,
   paymentIdParamSchema,
+  receiptEmailSchema,
+  receiptWhatsappSchema,
   initiatePaymentSchema,
   verifyPaymentSchema,
   hubtelWebhookSchema,
@@ -150,18 +155,56 @@ paymentRoute.post(
   verifyPaymentController
 );
 
-// GET /pay/:token/receipt/:paymentId - Receipt, as JSON or as a PDF file
-//
-// One `params` schema, not two. `validate` writes back the validated value and
-// strips unknown keys, so a chain of `payTokenParamSchema` then
-// `paymentIdParamSchema` on the same segment deleted `paymentId` before the second
-// ran and 422'd every request — this endpoint had never served a receipt. See
-// `payReceiptParamSchema`.
+// GET /pay/:token/receipt/:paymentId - Parent: PDF download
 paymentRoute.get(
   "/pay/:token/receipt/:paymentId",
   payLinkViewLimit,
   validate(payReceiptParamSchema, "params"),
-  getReceiptDownloadController
+  getParentReceiptPdfController
+);
+
+// ─── Admin: JSON receipt (existing) ───
+paymentRoute.get(
+  "/payments/:paymentId/receipt",
+  authenticate,
+  requireSchoolAdmin,
+  validate(paymentIdParamSchema, "params"),
+  getPaymentReceiptController
+);
+
+// ─── Admin: PDF download ───
+paymentRoute.get(
+  "/payments/:paymentId/receipt.pdf",
+  authenticate,
+  requireSchoolAdmin,
+  validate(paymentIdParamSchema, "params"),
+  getAdminReceiptPdfController
+);
+
+// ─── Admin: Email the receipt as an attachment ───
+//
+// Registered after `/receipt.pdf` because the two suffixes are part of the
+// path — Express matches the whole pattern, so `/receipt/email` and
+// `/receipt.pdf` are distinct routes in any order. The body is optional in
+// whole, so an absent body is not an error here (express.json() may still have
+// run, and `email: ""` means "not supplied").
+paymentRoute.post(
+  "/payments/:paymentId/receipt/email",
+  authenticate,
+  requireSchoolAdmin,
+  validate(paymentIdParamSchema, "params"),
+  validate(receiptEmailSchema),
+  emailReceiptController
+);
+
+// ─── Admin: WhatsApp the receipt as a document message ───
+paymentRoute.post(
+  "/payments/:paymentId/receipt/whatsapp",
+  authenticate,
+  requireSchoolAdmin,
+  validate(paymentIdParamSchema, "params"),
+  validate(receiptWhatsappSchema),
+  whatsappReceiptController
 );
 
 // ──────────────────── Webhook (no auth, but validated) ────────────────────
@@ -237,15 +280,6 @@ paymentRoute.get(
   validate(paymentIdParamSchema, "params"),
   validate(paymentDetailQuerySchema, "query"),
   getPaymentDetailController
-);
-
-// GET /payments/:paymentId/receipt - Download receipt
-paymentRoute.get(
-  "/payments/:paymentId/receipt",
-  authenticate,
-  requireSchoolAdmin,
-  validate(paymentIdParamSchema, "params"),
-  getPaymentReceiptController
 );
 
 // POST /payments/:paymentId/refund - Refund payment

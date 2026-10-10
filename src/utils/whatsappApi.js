@@ -21,7 +21,7 @@ import {
   WHATSAPP_VERIFY_TOKEN,
 } from '../config/env.js';
 import { isPlaceholder, allConfigured } from './placeholder.js';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 /**
  * Typed transport failure. `status` is the HTTP status the API layer should
@@ -265,6 +265,134 @@ export const markWhatsAppRead = async (providerMessageId) => {
       messaging_product: 'whatsapp',
       status: 'read',
       message_id: providerMessageId,
+    },
+  });
+};
+
+// ──────────────────── Media ────────────────────
+
+/**
+ * Uploads a file to Meta's media store and returns the id a message references.
+ *
+ * A document message cannot carry the bytes inline — Meta's API takes an id
+ * from a prior upload, so sending a PDF is two calls: PUT the file, then send
+ * the message. That is not a formality. Meta hosts the file, expires it, and
+ * re-hosts it on their CDN for delivery, which is how the same PDF reaches a
+ * parent on a slow 3G connection as a streamed download rather than a
+ * multi-megabyte payload in the message body.
+ *
+ * `multipart/form-data` is built by hand rather than with FormData so the
+ * request works in any Node runtime and the boundary is one we control.
+ * Meta is strict about the field names (`messaging_product`, `file`,
+ * `type`) and about the filename ending in the extension of `type`.
+ *
+ * @param {{ content: Buffer, name: string, type?: string }}
+ * @returns {Promise<string>} the media id
+ */
+export const uploadWhatsAppMedia = async ({ content, name, type = 'application/pdf' }) => {
+  assertConfigured();
+
+  if (!Buffer.isBuffer(content) || !content.length) {
+    throw new WhatsAppTransportError('A media upload requires a non-empty Buffer', {
+      status: 400,
+      code: 'WHATSAPP_MEDIA_EMPTY',
+    });
+  }
+
+  const boundary = `----sukuupay${crypto.randomUUID()}`;
+  const parts = [
+    `--${boundary}\r\n`,
+    'Content-Disposition: form-data; name="messaging_product"\r\n\r\n',
+    'whatsapp\r\n',
+    `--${boundary}\r\n`,
+    `Content-Disposition: form-data; name="file"; filename="${String(name).replace(/"/g, '')}"\r\n`,
+    `Content-Type: ${type}\r\n\r\n`,
+  ];
+
+  const head = Buffer.from(parts.join(''), 'utf8');
+  const tail = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
+  const body = Buffer.concat([head, content, tail]);
+
+  const url = `${WHATSAPP_GRAPH_BASE_URL}/${WHATSAPP_PHONE_NUMBER_ID}/media`;
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        accept: 'application/json',
+      },
+      body,
+      signal: AbortSignal.timeout(WHATSAPP_REQUEST_TIMEOUT_MS),
+    });
+  } catch (error) {
+    throw new WhatsAppTransportError(`WhatsApp media upload failed: ${error.message}`, {
+      status: 502,
+      code: 'WHATSAPP_PROVIDER_UNREACHABLE',
+    });
+  }
+
+  const text = await response.text();
+  let payload = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const detail = payload?.error?.message || text || response.statusText;
+    throw new WhatsAppTransportError(
+      `WhatsApp media upload failed (${response.status}): ${detail}`,
+      {
+        status: 502,
+        code: 'WHATSAPP_PROVIDER_REJECTED',
+        providerStatus: response.status,
+        providerBody: payload ?? text,
+      }
+    );
+  }
+
+  const id = payload?.id;
+  if (!id) {
+    throw new WhatsAppTransportError('WhatsApp media upload returned no id', {
+      status: 502,
+      code: 'WHATSAPP_PROVIDER_ERROR',
+      providerBody: payload,
+    });
+  }
+  return id;
+};
+
+/**
+ * Sends a document message — the path a payment receipt takes.
+ *
+ * The caption carries the identifying facts because it is what a parent sees
+ * in the chat without opening the file: which child, which receipt, how much.
+ * A receipt the parent has to open to learn it is for their own child is a
+ * receipt they will ignore.
+ */
+export const sendWhatsAppDocument = async ({ to, filename, content, caption }) => {
+  if (!to) {
+    throw new WhatsAppTransportError('A document message requires a recipient', {
+      status: 400,
+      code: 'WHATSAPP_RECIPIENT_MISSING',
+    });
+  }
+
+  const mediaId = await uploadWhatsAppMedia({ content, name: filename });
+
+  return sendWhatsAppMessage({
+    to,
+    kind: 'document',
+    document: {
+      id: mediaId,
+      // Meta requires a filename with an extension on a document message, and
+      // the filename is what the parent's file manager saves the receipt as.
+      filename,
+      ...(caption ? { caption } : {}),
     },
   });
 };

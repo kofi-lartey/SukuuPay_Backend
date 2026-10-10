@@ -549,6 +549,7 @@ export const getReceipt = async (token, paymentId) => {
     receipt: {
       receiptNumber: payment.receiptNumber,
       paymentId: payment.paymentId,
+      reference: payment.reference,
       date: payment.completedAt,
       student: {
         studentId: student.studentId,
@@ -1174,9 +1175,15 @@ export const generateReceipt = async (paymentId, user) => {
   const filter = { paymentId, deletedAt: null };
   if (schoolId) filter.schoolId = schoolId;
 
+  // `parents` on the student and `logo`/`phone`/`email`/`brandColor` on the
+  // school are projected because a receipt is not only read on screen — it is
+  // emailed and sent on WhatsApp, and both of those need an address to send
+  // to that this function is the only place that already has. Without it the
+  // delivery endpoints have to look the student up again, and a second read
+  // of the same record on the same request is how the two answers drift.
   const payment = await Payment.findOne(filter)
-    .populate("studentId", "studentId studentName studentClass")
-    .populate("schoolId", "name schoolCode address city region")
+    .populate("studentId", "studentId studentName studentClass parents")
+    .populate("schoolId", "name schoolCode address city region phone email logo brandColor")
     .lean();
 
   if (!payment) {
@@ -1206,15 +1213,27 @@ export const generateReceipt = async (paymentId, user) => {
     });
   }
 
+  // The guardian the receipt is about, resolved here so the email and
+  // WhatsApp endpoints do not each re-read the student.
+  const primaryParent =
+    (payment.studentId?.parents || []).find((p) => p.isPrimary) ||
+    (payment.studentId?.parents || [])[0] ||
+    null;
+
   return {
     receipt: {
       receiptNumber: payment.receiptNumber,
       paymentId: payment.paymentId,
+      reference: payment.reference,
       date: payment.completedAt,
       student: {
         studentId: payment.studentId.studentId,
         studentName: payment.studentId.studentName,
         studentClass: payment.studentId.studentClass,
+        // Where to send the receipt. `null` when the record has no address —
+        // the caller asks the bursar for one rather than inventing it.
+        parentEmail: primaryParent?.email || null,
+        parentPhone: primaryParent?.phone || null,
       },
       school: {
         name: payment.schoolId.name,
@@ -1222,6 +1241,12 @@ export const generateReceipt = async (paymentId, user) => {
         address: payment.schoolId.address,
         city: payment.schoolId.city,
         region: payment.schoolId.region,
+        phone: payment.schoolId.phone,
+        email: payment.schoolId.email,
+        // The logo the PDF header draws and the modal preview renders. Absent
+        // on both, the bordered initial tile stands in.
+        logo: payment.schoolId.logo,
+        brandColor: payment.schoolId.brandColor,
       },
       amount: payment.amount,
       currency: payment.currency,
@@ -1229,6 +1254,10 @@ export const generateReceipt = async (paymentId, user) => {
       description: payment.description,
       feesBreakdown: payment.feesBreakdown,
     },
+    // The primary parent's subdocument id, so a supplied email can be
+    // persisted against the right record.
+    primaryParentId: primaryParent?._id || null,
+    studentDocId: payment.studentId?._id || null,
   };
 };
 

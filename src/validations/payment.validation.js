@@ -238,6 +238,33 @@ export const generateReceiptSchema = Joi.object({
   paymentId: Joi.string().trim().min(5).max(50).required(),
 });
 
+/**
+ * `POST /payments/:paymentId/receipt/email`.
+ *
+ * The email is optional and that is the point: the route reads the parent's
+ * address off the student record, and this field is only needed when there is
+ * none on file. It is validated as an email rather than a plain string so a
+ * typo is refused here — with a message about the address — rather than
+ * reaching Brevo and coming back as a provider error the bursar cannot act on.
+ */
+export const receiptEmailSchema = Joi.object({
+  email: Joi.string().trim().email().allow("", null).messages({
+    "string.email": "Enter a valid email address",
+  }),
+});
+
+/**
+ * `POST /payments/:paymentId/receipt/whatsapp`.
+ *
+ * No body at all — an empty schema. The recipient is derived from the parent's
+ * record on the server; accepting a phone number here would let a caller point
+ * any receipt at any number, and the audit trail would stop meaning "the
+ * parent was sent it". The schema still runs for that reason: `validate` reads
+ * every field against this list, so a stray key in the payload is dropped
+ * rather than leaned on.
+ */
+export const receiptWhatsappSchema = Joi.object({});
+
 // ──────────────────── Parent pay portal ────────────────────
 //
 // The schemas below describe the *public* parent portal. They share
