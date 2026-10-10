@@ -5,6 +5,7 @@ import {
   getMyAdRequest,
   createMyAdRequest,
   withdrawMyAdRequest,
+  trackAdImpression,
 } from "../controllers/schoolAd.controller.js";
 import { authenticate, authorize } from "../middleware/authenticate.js";
 import { validate } from "../middleware/validate.js";
@@ -30,6 +31,13 @@ publicAdRoute.get(
   validate(listSchoolAdsQuerySchema, "query"),
   listPublicSchoolAds
 );
+
+/**
+ * Impression tracking — always answers 200 so a failed impression never
+ * breaks the viewport observer or the page. The client sends the adId and
+ * the server increments the counter if the ad is live.
+ */
+publicAdRoute.post("/public/school-ads/impression", trackAdImpression);
 
 /**
  * A school's own advertisement requests.

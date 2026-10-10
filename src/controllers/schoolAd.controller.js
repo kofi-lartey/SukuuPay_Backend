@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import mongoose from "mongoose";
 import { SchoolAd, AD_PLACEMENTS } from "../models/SchoolAd.js";
 import { School } from "../models/schoolModel.js";
 import { User } from "../models/userModel.js";
@@ -183,6 +184,46 @@ export const listPublicSchoolAds = async (req, res) => {
     res.set("Cache-Control", "no-store");
     return res.status(200).json({ success: true, ads: [] });
   }
+};
+
+// ─────────────────────────────────────────────
+// POST /public/school-ads/impression
+// ─────────────────────────────────────────────
+/**
+ * Records an impression for a school ad creative.
+ *
+ * This is called from the public advertisements hub when a card first
+ * enters the viewport. It is deliberately fire-and-forget from the client's
+ * perspective — a failed impression is not worth surfacing to the user.
+ * The endpoint always answers 200 to avoid breaking the viewport observer
+ * or causing retries that would spam the server.
+ */
+export const trackAdImpression = async (req, res) => {
+  try {
+    const { adId } = req.body;
+    if (!adId || !mongoose.Types.ObjectId.isValid(adId)) {
+      return res.status(200).json({ success: true });
+    }
+
+    // Increment the impression counter atomically. The query is scoped to
+    // live ads only so a deleted/expired ad cannot be inflated.
+    const now = new Date();
+    await SchoolAd.updateOne(
+      {
+        _id: adId,
+        status: "approved",
+        deletedAt: null,
+        startsAt: { $lte: now },
+        endsAt: { $gt: now },
+      },
+      { $inc: { impressions: 1 } }
+    );
+  } catch (error) {
+    // Log but never fail the request — the impression is a nice-to-have
+    // metric, not a gate for the user experience.
+    console.warn("[schoolAd] impression track failed:", error.message);
+  }
+  return res.status(200).json({ success: true });
 };
 
 // ─────────────────────────────────────────────

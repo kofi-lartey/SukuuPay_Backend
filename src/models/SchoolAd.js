@@ -192,6 +192,19 @@ const schoolAdSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+
+    /**
+     * Impression counter for this creative.
+     *
+     * Incremented once per unique viewer per session via the public
+     * impression endpoint. Not mission-critical — a missed increment is
+     * preferable to a failed page load — so the endpoint answers 200 even
+     * when the ad is not found.
+     */
+    impressions: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true }
 );
