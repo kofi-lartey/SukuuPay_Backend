@@ -260,6 +260,73 @@ describe('listStudentsQuerySchema', () => {
     assert.equal(check(listStudentsQuerySchema, { search: 'Mensah, J.' }).error, undefined);
     assert.equal(check(listStudentsQuerySchema, { search: 'Osei [Jr]' }).error, undefined);
   });
+
+  test('accepts the photograph filters and nothing else', async () => {
+    const { listStudentsQuerySchema } = await load();
+    // `has`/`missing` are the two photo states the print studio offers. A third
+    // value reaching the service would build a filter that matches nobody, which
+    // looks like an empty school rather than a bad request.
+    assert.equal(check(listStudentsQuerySchema, { photo: 'has' }).error, undefined);
+    assert.equal(check(listStudentsQuerySchema, { photo: 'missing' }).error, undefined);
+    assert.equal(check(listStudentsQuerySchema, { photo: '' }).error, undefined);
+    assert.ok(check(listStudentsQuerySchema, { photo: 'yes' }).error);
+    assert.ok(check(listStudentsQuerySchema, { photo: 'true' }).error);
+  });
+});
+
+// ── The roster filter itself ──
+describe('buildRosterFilter', () => {
+  const loadFilter = async () => import('../src/services/student.service.js');
+  const SCHOOL_ID = '65f1c2a4e8b9d0123456789a';
+
+  test('scopes to the school and drops deleted students', async () => {
+    const { buildRosterFilter } = await loadFilter();
+    const filter = buildRosterFilter({}, SCHOOL_ID);
+    assert.equal(filter.schoolId, SCHOOL_ID);
+    // Soft-deleted students must never appear in a print run.
+    assert.equal(filter.deletedAt, null);
+  });
+
+  test('"has" matches only a student actually holding a photo', async () => {
+    const { buildRosterFilter } = await loadFilter();
+    const filter = buildRosterFilter({ photo: 'has' }, SCHOOL_ID);
+
+    // `$ne: null`, not `{ $exists: true }`: MongoDB reads a missing field as
+    // null, so `$exists` alone would let a document with no studentImage key
+    // through, while `$ne: null` matches only a real URL.
+    assert.deepEqual(filter.studentImage, { $ne: null });
+  });
+
+  test('"missing" is the exact complement of "has"', async () => {
+    const { buildRosterFilter } = await loadFilter();
+    const filter = buildRosterFilter({ photo: 'missing' }, SCHOOL_ID);
+
+    // A bare null, which in MongoDB matches both an explicit null and a
+    // document with no key at all. Either way there is no photo.
+    assert.equal(filter.studentImage, null);
+  });
+
+  test('no photo param leaves the filter alone', async () => {
+    const { buildRosterFilter } = await loadFilter();
+    // If the clause were applied unconditionally, an unfiltered roster would
+    // silently show only students without a photo.
+    assert.equal('studentImage' in buildRosterFilter({}, SCHOOL_ID), false);
+    assert.equal('studentImage' in buildRosterFilter({ photo: 'all' }, SCHOOL_ID), false);
+    assert.equal('studentImage' in buildRosterFilter({ photo: '' }, SCHOOL_ID), false);
+  });
+
+  test('the photo filter composes with class and search', async () => {
+    const { buildRosterFilter } = await loadFilter();
+    const filter = buildRosterFilter(
+      { photo: 'has', class: 'JHS 2A', search: 'Mensah' },
+      SCHOOL_ID
+    );
+    // A photo filter that dropped the class and search clauses would widen a
+    // batch to the whole school, so all three have to survive together.
+    assert.equal(filter.studentClass, 'JHS 2A');
+    assert.deepEqual(filter.studentImage, { $ne: null });
+    assert.ok(Array.isArray(filter.$or), 'search clause lost');
+  });
 });
 
 describe('statsQuerySchema', () => {

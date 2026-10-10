@@ -584,13 +584,28 @@ const FEE_STATUS = {
  * they had drifted: the list searched four fields (including both parent name
  * and parent phone) while the export searched only two, so "export what I am
  * looking at" produced a different set of rows than the list above it.
+ *
+ * Exported because a filter built by string comparison is a filter nobody can
+ * test: the `photo` clause in particular hinges on MongoDB's null semantics,
+ * which is exactly the sort of thing that is wrong and still looks plausible.
  */
-const buildRosterFilter = (query, schoolId, { searchFields } = {}) => {
+export const buildRosterFilter = (query, schoolId, { searchFields } = {}) => {
   const filter = { schoolId, deletedAt: null };
 
   if (query.status && query.status !== "all") filter.status = query.status;
   if (query.class) filter.studentClass = query.class;
   if (query.gender) filter.gender = query.gender;
+
+  // Photograph presence.
+  //
+  // `studentImage` defaults to null, so `null` covers both "never uploaded" and
+  // any legacy document written before the field existed — either way there is
+  // no photo, and the card prints a placeholder tile. `$ne: null` is the exact
+  // complement: it matches a document holding a URL and nothing else, because
+  // MongoDB treats a missing field as null.
+  if (query.photo && query.photo !== "all") {
+    filter.studentImage = query.photo === "missing" ? null : { $ne: null };
+  }
 
   if (query.search) {
     const clause = searchClause(

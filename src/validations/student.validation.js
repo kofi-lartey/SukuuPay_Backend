@@ -287,6 +287,10 @@ export const listStudentsQuerySchema = Joi.object({
     schoolId: objectIdValidator.optional(),
     class: classNameValidator.allow("").optional(),
     gender: Joi.string().valid("male", "female").allow("").optional(),
+    // Photograph presence. Server-side because the print studio needs this over
+    // the whole roster — the roster is 24 students to a page, so a client-side
+    // photo filter would only ever see the page you are already looking at.
+    photo: Joi.string().valid("has", "missing").allow("").optional(),
     status: Joi.string()
         .valid(...STATUS_ENUM, "all")
         .default("active"),

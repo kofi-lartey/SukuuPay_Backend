@@ -395,6 +395,53 @@ describe('ID card sheet: the rendered card matches the preview', () => {
     assert.ok(back.includes('2025/2026'), 'back footer: academic year text missing');
   });
 
+  test('nothing on the card prints as mojibake', async () => {
+    // pdfkit writes Helvetica & friends as raw bytes the font decodes as WinAnsi,
+    // so a character outside ASCII becomes one broken character per UTF-8 byte:
+    // an em dash takes three, a middle dot two. This bit real cards — a guardian
+    // line printed as "Adisa Â· 0557…" — and it recurred because the literals in
+    // the renderer had already been mangled by a mis-encoding.
+    //
+    // Asserted on the rendered text rather than on the source, so a non-ASCII
+    // literal that creeps back in anywhere — school data, a placeholder, a
+    // truncation marker — fails here instead of on a printed card.
+    //
+    // The hostile values are written as escapes so this test file stays pure
+    // ASCII too: a file that can itself be mangled cannot catch mangling.
+    const hostile = {
+      ...card(1),
+      guardianName: 'Ab\u00e9na', // accented e
+      guardianPhone: '0557655008',
+      schoolMotto: 'Power \u2014 our minds', // em dash
+      studentName: 'Kwame \u2026', // ellipsis
+      emergencyContact: '', // blank: must reach the fallback, not a stray glyph
+      studentClass: '',
+    };
+
+    const front = textOf(
+      await generateIdCardSheets([hostile], { layout: '6up_a4_landscape', side: 'front' })
+    );
+    const back = textOf(
+      await generateIdCardSheets([hostile], { layout: '6up_a4_landscape', side: 'back' })
+    );
+
+    for (const [face, text] of [['front', front], ['back', back]]) {
+      const offenders = [...new Set((text.match(/[^\x20-\x7E\n\t]/g) || []))];
+      assert.equal(
+        offenders.length,
+        0,
+        `${face} face: non-ASCII reached the PDF, which prints as mojibake: ${offenders.join(' ')}`
+      );
+    }
+
+    // And folding yields something readable, not an empty string or a question
+    // mark: an accent resolves to its base letter, an em dash to a hyphen.
+    assert.ok(back.includes('Abena'), 'accented guardian name did not fold to ASCII');
+    assert.ok(back.includes('0557655008'), 'guardian phone did not survive the fold');
+    assert.ok(front.includes('Power - our minds'), 'em dash in the motto did not fold');
+    assert.ok(front.includes('Kwame ...'), 'ellipsis in the name did not fold to "..."');
+  });
+
   test('the resolved student ID flows through to the back face', async () => {
     // The barcode is synthesized from the student ID. A distinctive ID must
     // appear verbatim on the back, proving `resolveCardData` -> `drawCard` wire
