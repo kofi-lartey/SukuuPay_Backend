@@ -239,7 +239,11 @@ describe('lifecycle, audit and record-keeping', () => {
 
     assert.ok(providerIndex, 'providerId must be indexed');
     assert.equal(providerIndex[1].unique, true, 'otherwise two accounts can claim one Google identity');
-    assert.equal(providerIndex[1].sparse, true, 'a plain unique index would reject the second user ever created');
+    assert.deepEqual(
+      providerIndex[1].partialFilterExpression,
+      { providerId: { $exists: true, $ne: null } },
+      'a sparse index still indexes null providerId, which collides on the second password-only invite; the partial filter excludes nulls so only Google accounts are indexed'
+    );
   });
 
   test('password stays required, so no existing invariant moves', async () => {

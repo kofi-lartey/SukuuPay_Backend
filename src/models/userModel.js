@@ -67,6 +67,36 @@ export const userModel = new mongoose.Schema(
     },
 
     /**
+     * The classes this account is assigned to teach.
+     *
+     * A class in SukuuPay is a **name** (`School.academic.classes`), not a
+     * document — there is no `Class` collection and the student module
+     * deliberately kept it that way. So a link between a teacher and a class
+     * cannot be a reference; it is a `{ className, subject }` pair recorded on
+     * the teacher's own account, one entry per class per subject taught.
+     *
+     * Two entries for the same class (Mathematics and English in JHS 2A) are
+     * normal. `utils/teacherScope.js` is the single reader of this field and
+     * collapses them into one class with both subjects, so no endpoint has to
+     * decide how to present that.
+     *
+     * Additive and defaulted to `[]`, so no migration is needed: every teacher
+     * created before this field simply has no assigned classes, which is the
+     * state they were already in — nothing in the codebase could read a
+     * teacher's classes, because there was no way to record them.
+     *
+     * `school_admin` and `super_admin` never need an entry here: they act on
+     * every class in their school, and `teacherScope` resolves that from the
+     * role rather than from a list an admin would have to maintain.
+     */
+    assignedClasses: [
+      {
+        className: { type: String, required: true, trim: true },
+        subject: { type: String, default: "", trim: true },
+      },
+    ],
+
+    /**
      * The school the platform owner is currently viewing, or null.
      *
      * This is a *pointer to the current impersonation*, not the record of it. Two
@@ -424,22 +454,35 @@ export const User = mongoose.model("User", userModel);
 /**
  * One SukuuPay account per Google identity.
  *
- * Sparse-unique, and sparse is the load-bearing word: the overwhelming majority of
- * accounts are password-only and have `providerId: null`, and a plain unique index
- * would treat every one of those nulls as a duplicate — refusing the second user ever
- * created. A partial unique index skips documents that do not carry the key at all.
+ * Unique, but partial: the index only covers documents where `providerId` is
+ * present and non-null. Password-only accounts carry `providerId: null` (the
+ * field default), and a sparse unique index still indexes that `null` — MongoDB
+ * treats an explicit `null` as a present value under `sparse: true`, which is
+ * what made the second password-only invite die on a `providerId: null` E11000.
+ *
+ * A `partialFilterExpression` of `providerId: { $ne: null }` is the index-level
+ * guarantee the prose above meant: the index is only over Google accounts, and
+ * nulls are genuinely skipped, so a password-only user never collides with
+ * another one on this field.
  *
  * This is the database-level guarantee behind account linking. Application code
- * already checks for an existing `providerId` before creating anything, but that check
- * is a read followed by a write, and two simultaneous first sign-ins on a new address
- * both pass it. Without this index the loser gets a `E11000` at write time; with it,
- * the guarantee is in the database where it cannot be raced past.
+ * already checks for an existing `providerId` before creating anything, but that
+ * check is a read followed by a write, and two simultaneous first sign-ins on a
+ * new address both pass it. Without this index the loser gets a `E11000` at
+ * write time; with it, the guarantee is in the database where it cannot be
+ * raced past.
  *
  * Also indexed (non-uniquely) as a partial on `authProvider`, because the admin
- * console's "users signed in with Google" filter is a real question an operator asks
- * and this makes it cheap.
+ * console's "users signed in with Google" filter is a real question an operator
+ * asks and this makes it cheap.
  */
-userModel.index({ providerId: 1 }, { unique: true, sparse: true });
+userModel.index(
+  { providerId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { providerId: { $exists: true, $ne: null } },
+  }
+);
 userModel.index(
   { authProvider: 1 },
   { partialFilterExpression: { authProvider: 'google' } }

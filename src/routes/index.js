@@ -14,8 +14,14 @@ import { idCardTemplateRoute } from './idCardTemplate.routes.js';
 import { uploadRoute } from './upload.routes.js';
 import { notificationRoute } from './notification.routes.js';
 import { parentMessageRoute } from './parentMessage.routes.js';
+import { parentRoute } from './parent.routes.js';
+import { teacherRoute } from './teacher.routes.js';
 import { settingsRoute } from './settings.routes.js';
 import { adminRoute } from './admin.routes.js';
+import { adminAttendanceRoute } from './admin.attendance.routes.js';
+import { adminRecordsRoute } from './admin.records.routes.js';
+import { adminTimetableRoute } from './admin.timetable.routes.js';
+import { adminAcademicRoute } from './admin.academic.routes.js';
 import { healthRoute } from './health.routes.js';
 import { whatsappRoute } from './whatsapp.routes.js';
 import { smsRoute } from './sms.routes.js';
@@ -66,7 +72,67 @@ router.use('/notifications', notificationRoute);
 // days by TTL and carry no state, while a fee dispute raised by a parent has to
 // outlive them and be answerable. Adjacent in the stack, different thing.
 router.use('/', parentMessageRoute);
+// The parent portal's academic reads — attendance, report cards, timetable.
+// Mounted at `/pay`, where the token in the path is the credential, so these
+// answer `/api/pay/:token/attendance` and so on. Adjacent to the fee surface it
+// shares a token with, and separate from it: `payment.routes.js` owns money and
+// `parent.routes.js` owns the register and the report card.
+router.use('/pay', parentRoute);
+
+// The teacher portal — a sibling of the parent portal rather than of the admin
+// console. It answers `/api/teacher/*` and carries its own gate
+// (`authenticate`, `requireTeacher`, `requireSchool`) because a teacher is
+// neither the platform owner nor a parent: nothing on these paths is owned by
+// `admin.routes.js`, so no path collides and no mount ordering is load-bearing.
+//
+// It is registered here, adjacent to the parent portal, because both surfaces
+// are scoped to the signed-in caller and resolve their own scope from the token
+// — neither takes an id in the query. That is the family they belong to.
+router.use('/teacher', teacherRoute);
+
 router.use('/settings', settingsRoute);
+
+/**
+ * The school's own console for academics — attendance, report cards,
+ * timetables. Mounted at `/admin` but **before** the platform console
+ * (`adminRoute`) below.
+ *
+ * ## Why before, and why not inside `admin.routes.js`
+ *
+ * `admin.routes.js` is the *platform* console: it begins with
+ * `adminRoute.use(authenticate, authorize('super_admin'))`, which runs for every
+ * request that reaches that router. A teacher taking a roll in Tamale is not the
+ * platform owner, and that gate would answer `403` for `/admin/attendance/bulk`
+ * *before* this router ever matched the path — Express does not fall through to
+ * the next `/admin` mount once a middleware sends a response.
+ *
+ * Mounting these three routers ahead of `adminRoute` fixes both halves of that:
+ * a path they own (`/attendance/*`, `/records/*`, `/timetable`) is matched and
+ * authorised by them first, while a path owned by the platform (`/dashboard`,
+ * `/schools/:id`, …) matches no route here, falls through, and lands on
+ * `adminRoute` with its `super_admin` gate intact. The two routers are also
+ * deliberately kept out of the same file: `admin.routes.js` documents its own
+ * boot-failure hazard (an undefined import takes down `/admin` and everything
+ * that mounts it), so adding three more imports to it would widen that blast
+ * radius for no benefit they cannot have in their own files.
+ *
+ * No path collides in either direction — the platform console registers nothing
+ * under `/attendance`, `/records` or `/timetable` — which is what makes the
+ * ordering safe to lean on.
+ */
+router.use('/admin', adminAttendanceRoute);
+router.use('/admin', adminRecordsRoute);
+router.use('/admin', adminTimetableRoute);
+// The headmaster's academic console — grade approval, report card review and
+// publication, class and subject-teacher management, timetables and the
+// oversight dashboard. Mounted here, adjacent to the three academic routers
+// above and before the platform console, for exactly the reason they are: it
+// gates many of its routes on `requireTeacher`, and `adminRoute` below would
+// answer `403` for a teacher before this router could ever match a path. Its
+// paths (`/academic`, `/grades`, `/reports/{compile,publish,…}`, `/classes`,
+// `/timetables`) collide with none of the platform console's.
+router.use('/admin', adminAcademicRoute);
+
 router.use('/admin', adminRoute);
 // The unauthenticated ad slider.
 router.use('/', publicAdRoute);

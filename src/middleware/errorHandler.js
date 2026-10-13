@@ -39,6 +39,8 @@ const errorHandler = (error, _req, res, _next) => {
     return res.status(409).json({
       success: false,
       message: `An account with this ${field} already exists`,
+      code: 'DUPLICATE_KEY',
+      conflict: error.keyValue || null,
     });
   }
 

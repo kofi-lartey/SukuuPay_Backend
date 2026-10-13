@@ -265,6 +265,73 @@ describe('invitation fields on the User model', () => {
   });
 });
 
+// ── The unique index on providerId ──
+describe('the providerId unique index', () => {
+  // The bug this closes. Every password-only account carries
+  // `providerId: null` (the field default), and MongoDB treats an explicit
+  // `null` as a present value even under `sparse: true` — so the legacy
+  // `sparse: true` unique index indexed those nulls and the *second* invitation
+  // to any platform died on E11000 with `keyValue: { providerId: null }`.
+  //
+  // Fixing the schema is not enough: an index already in the database is never
+  // rewritten, so `boot/reconcileProviderIdIndex.js` drops the legacy one and
+  // recreates this declaration. This test keeps the declaration correct, and
+  // the boot migration is tested directly below.
+  const declared = async () => {
+    const { User } = await import('../src/models/userModel.js');
+    // `schema.indexes()` returns `[keys, options]` pairs as declared, with no
+    // database involved — which is what makes this a unit test.
+    return User.schema.indexes().filter(([keys]) => 'providerId' in keys);
+  };
+
+  test('is unique over providerId', async () => {
+    const indexes = await declared();
+    assert.equal(indexes.length, 1, `expected exactly one providerId index, got ${indexes.length}`);
+    assert.equal(indexes[0][1].unique, true, 'the providerId index must be unique');
+  });
+
+  test('is partial over non-null values only', async () => {
+    const [{ 1: options }] = await declared();
+    assert.deepEqual(
+      options.partialFilterExpression,
+      { providerId: { $exists: true, $ne: null } },
+      'the index must exclude null, or two password-only invites collide'
+    );
+    assert.notEqual(options.sparse, true, 'sparse: true still indexes an explicit null');
+  });
+});
+
+// ── The boot migration that replaces the legacy index ──
+describe('reconcileProviderIdIndex', () => {
+  // The database already holds the old index on this platform, so the schema
+  // fix alone leaves every deployment broken. This migration is what actually
+  // repairs them, so its classification of "legacy" is load-bearing.
+  const read = () =>
+    import('node:fs').then((fs) =>
+      fs.readFileSync(new URL('../src/boot/reconcileProviderIdIndex.js', import.meta.url), 'utf8')
+    );
+
+  test('is idempotent and runs on boot', async () => {
+    const { readFileSync } = await import('node:fs');
+    const boot = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8');
+    assert.match(boot, /reconcileProviderIdIndex\(\)/);
+  });
+
+  test('drops a unique index over providerId with no partial filter', async () => {
+    // The legacy definition: unique, indexes `null`, collides on every second
+    // password-only invite.
+    const source = await read();
+    assert.match(source, /index\.unique/);
+    assert.match(source, /partialFilterExpression/);
+  });
+
+  test('leaves a non-unique index over the same key alone', async () => {
+    // A non-unique index breaks no inserts, so it must not be dropped.
+    const source = await read();
+    assert.match(source, /Boolean\(index\.unique\)/);
+  });
+});
+
 // ── The route wiring ──
 describe('invitation routes', () => {
   const readRoutes = () =>

@@ -220,6 +220,96 @@ export const AUDIT_ACTIONS = {
   // question it was never asked.
   SCHOOL_LOGO_UPDATE: "school.logo_update",
   SCHOOL_STAMP_UPDATE: "school.stamp_update",
+
+  // ── Academics: attendance, report cards, timetables ──
+  //
+  // Three writes, three actions, because the questions asked of each are
+  // different — see the note beside the matching entries in `models/AuditLog.js`.
+  // `report_card.publish` is the one worth singling out: it is the instant a
+  // draft becomes readable by anyone holding the student's pay link, so it is the
+  // disclosure boundary and the only entry in this group a headteacher will ever
+  // be asked to prove.
+  ATTENDANCE_BULK_MARK: "attendance.bulk_mark",
+  ATTENDANCE_AUTO_MARK: "attendance.auto_mark",
+  REPORT_CARD_COMPILE: "report_card.compile",
+  REPORT_CARD_PUBLISH: "report_card.publish",
+  TIMETABLE_UPSERT: "timetable.upsert",
+
+  // ── Grade approval workflow ─────────────────────────────────────────────
+  //
+  // The review layer the headmaster runs over the marks a class teacher typed.
+  // Four actions rather than one `grade.update`, because the four questions an
+  // auditor asks are different: "who sent this class in for review", "who
+  // signed it off", "who sent it back and why", and "who reopened a rejected
+  // block". The first and last are a teacher's; the middle two are a
+  // headmaster's. Every value here must also appear in the `AUDIT_ACTIONS`
+  // enum in `models/AuditLog.js` — see the parity note there.
+  GRADE_SUBMIT: "grade.submit",
+  GRADE_APPROVE: "grade.approve",
+  GRADE_REJECT: "grade.reject",
+  GRADE_REOPEN: "grade.reopen",
+
+  // ── Class and subject-teacher management ────────────────────────────────
+  //
+  // Classes are names (`School.academic.classes`), not documents, and a
+  // teacher's link to a class lives on their own account
+  // (`User.assignedClasses`). So "assigning a teacher" is a write to a *user*,
+  // and `class.*` here names the *decision* rather than the row it wrote. The
+  // questions differ: creating a class, retiring one, naming the class teacher
+  // (the class-teacher slot, no subject), attaching a subject teacher to a
+  // subject, and detaching one again.
+  CLASS_CREATE: "class.create",
+  CLASS_ARCHIVE: "class.archive",
+  CLASS_ASSIGN_TEACHER: "class.assign_teacher",
+  CLASS_ASSIGN_SUBJECT_TEACHER: "class.assign_subject_teacher",
+  CLASS_UNASSIGN_SUBJECT_TEACHER: "class.unassign_subject_teacher",
+
+  // ── Report card review, beyond compile and publish ───────────────────────
+  //
+  // The headmaster's remark and the withdrawal of a published card. Unpublish
+  // is the correction path: an error found after the parents have seen it sends
+  // `published → review`, and the trail must show who pulled it back. PUBLISH
+  // above is reused for the disclosure moment itself — one action, one meaning.
+  REPORT_CARD_HEAD_REMARK: "report_card.head_remark",
+  REPORT_CARD_UNPUBLISH: "report_card.unpublish",
+
+  // Publishing a timetable is a separate action from writing one (`upsert`
+  // above): writing is a schedule change, publishing is the moment the grid
+  // becomes readable through every pay link in that class.
+  TIMETABLE_PUBLISH: "timetable.publish",
+
+  // ── Teacher grade book writes ──
+  //
+  // The teacher portal's two grade writes, namespaced `teacher.*` so they sort
+  // beside the school-side academic actions and read as what they are: a class
+  // teacher entering marks, not a headteacher publishing a term.
+  //
+  // Two actions rather than one, because the questions asked of each are
+  // different. A single save is a correction — "why did this child's mark move
+  // from 62 to 68" — and the answer must name one student and one score. A bulk
+  // save is a term's column going in at once, and the answer that matters is
+  // "how many of the 45 landed and how many failed", which is a count, not a
+  // name. One action would have to record one of those and drop the other.
+  //
+  // Neither is `report_card.compile`: compiling reads the grade book and turns
+  // it into a terminal report, and it already has its own entry above. These
+  // two are the marks themselves.
+  TEACHER_GRADE_SAVE: "teacher.grade.save",
+  TEACHER_GRADE_BULK_SAVE: "teacher.grade.bulk.save",
+
+  // ── Parent portal reads ──
+  // Unauthenticated reads through a pay token, hashed before logging
+  // (`utils/tokens.js:hashTokenForLog`). Recorded for the same reason
+  // `report.viewed` is: an access to a student's record is evidence whether or
+  // not anything changed, and a school asking "who has seen this child's grades"
+  // deserves an answer that is more specific than "nobody knows".
+  PARENT_ATTENDANCE_VIEWED: "parent.attendance_viewed",
+  PARENT_RECORDS_VIEWED: "parent.records_viewed",
+  PARENT_TIMETABLE_VIEWED: "parent.timetable_viewed",
+  PARENT_CONVERSATIONS_VIEWED: "parent.conversations_viewed",
+  PARENT_CONVERSATION_VIEWED: "parent.conversation_viewed",
+  PARENT_NOTIFICATIONS_VIEWED: "parent.notifications_viewed",
+  PARENT_NOTIFICATION_READ: "parent.notification_read",
 };
 
 /**

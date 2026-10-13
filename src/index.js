@@ -13,6 +13,7 @@ import errorHandler from './middleware/errorHandler.js';
 import { recordRequestError } from './utils/errorBuffer.js';
 import { ensureSuperAdmin } from './boot/ensureSuperAdmin.js';
 import { migrateGateways } from './boot/migrateGateways.js';
+import { reconcileProviderIdIndex } from './boot/reconcileProviderIdIndex.js';
 
 const app = express();
 
@@ -115,6 +116,10 @@ mongoose.connect(MONGODB_URI)
     // (hubbel, arke, mnotify) to the sole active gateway, paystack.
     // Idempotent — re-runs are a no-op.
     await migrateGateways();
+    // Replace the legacy unique `providerId` index (which indexed explicit
+    // `null`s, so only one password-only invite could ever succeed per
+    // database) with the declared partial one. Idempotent — re-runs are a no-op.
+    await reconcileProviderIdIndex();
   })
   .catch((error) => {
     console.error('Database connection failed:', error);

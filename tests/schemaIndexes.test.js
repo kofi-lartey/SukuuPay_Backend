@@ -36,6 +36,10 @@ const MODELS = [
   '../src/models/DisbursementBatch.js',
   '../src/models/studentModel.js',
   '../src/models/AuditLog.js',
+  '../src/models/Attendance.js',
+  '../src/models/ReportCard.js',
+  '../src/models/Timetable.js',
+  '../src/models/ParentPortalReadState.js',
 ];
 
 /** Load a module and pick its exported Mongoose model, whatever that export is called. */
@@ -90,16 +94,16 @@ describe('the indexes whose options were being lost are intact', () => {
     assert.equal(index[1].sparse, true, 'without sparse, every payment stores a null in it');
   });
 
-  test('User.providerId is unique AND sparse', async () => {
+  test('User.providerId is unique AND partial (excludes null)', async () => {
     const model = await loadModel('../src/models/userModel.js');
     const index = model.schema.indexes().find(([fields]) => fields.providerId === 1);
 
     assert.ok(index, 'one Google identity must map to one account');
     assert.equal(index[1].unique, true, 'unique is what stops a second account claiming it');
-    assert.equal(
-      index[1].sparse,
-      true,
-      'without sparse, the second password-only account ever created collides on null'
+    assert.deepEqual(
+      index[1].partialFilterExpression,
+      { providerId: { $exists: true, $ne: null } },
+      'a sparse unique index still indexes null providerId values, which is what made the second password-only invite collide on E11000; the partial filter excludes nulls so only Google accounts are indexed'
     );
   });
 

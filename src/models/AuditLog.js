@@ -225,10 +225,96 @@ const AUDIT_ACTIONS = [
   "school.join_approved",
   "school.join_rejected",
 
-  // ── School assets ──
+  // School assets
+  //
   // Not `settings.update`, which means a *platform* setting changed.
   "school.logo_update",
   "school.stamp_update",
+
+  // ── Academics: attendance, report cards, timetables ──────────────────────
+  //
+  // The three school-side writes on the academic surface. Each is its own action
+  // rather than one `academic.update`, because the questions asked of each are
+  // different: "who marked the roll on the day X students were absent" is an
+  // attendance question, "who published a term's cards" is a disclosure question
+  // (it is the moment a parent can first see a grade), and "who rewrote the
+  // timetable" is a scheduling question. One action answers none of them.
+  //
+  // `attendance.auto_mark` is separate from `attendance.bulk_mark` because it is
+  // the one mark no teacher typed: it was inferred from a handset's position, so
+  // "why is this student marked present when the register says he arrived at
+  // 09:40" is answerable from the trail alone.
+  "attendance.bulk_mark",
+  "attendance.auto_mark",
+  "report_card.compile",
+  "report_card.publish",
+  "timetable.upsert",
+
+  // ── Grade approval workflow ─────────────────────────────────────────────
+  // Submit (a teacher sends a class in), approve and reject (a headmaster
+  // signs off or sends it back with a reason), and reopen (a rejected block
+  // goes back to draft to be edited). Kept distinct for the same reason the
+  // grade writes above are: each answers a different question about who did
+  // what to a mark before a parent ever saw it.
+  //
+  // Parity: any value here must also appear in `AUDIT_ACTIONS` in
+  // `config/constants.js` (see the note near the top of this file).
+  "grade.submit",
+  "grade.approve",
+  "grade.reject",
+  "grade.reopen",
+
+  // ── Class and subject-teacher management ────────────────────────────────
+  // The decisions the headmaster makes about who teaches what, recorded as the
+  // decision rather than the underlying `User.assignedClasses` row. Create and
+  // archive a class name; assign the class teacher (the no-subject slot);
+  // attach and detach a subject teacher.
+  "class.create",
+  "class.archive",
+  "class.assign_teacher",
+  "class.assign_subject_teacher",
+  "class.unassign_subject_teacher",
+
+  // ── Report card review, beyond compile and publish ───────────────────────
+  // The headmaster's remark, and the withdrawal of a published card back into
+  // review so an error can be corrected before it is republished.
+  "report_card.head_remark",
+  "report_card.unpublish",
+
+  // Publishing a timetable, distinct from writing one.
+  "timetable.publish",
+
+  // ── Teacher grade book writes ──
+  //
+  // The teacher portal's two grade writes, and the pair that answers "who put
+  // this mark in and when" for the school-side marks that never appear on a
+  // published card until a headteacher compiles them.
+  //
+  // Separate from each other for the reason the parent-messaging entries are
+  // separate from each other: a single save is one student's correction and the
+  // question is "who moved this child's mark", while a bulk save is a term's
+  // column and the question is "how much of the class actually landed". Both
+  // histories are wanted, and a single action can only hold one of them.
+  //
+  // As with every entry here, any value added must also be added to
+  // `AUDIT_ACTIONS` in `config/constants.js` — see the note above.
+  "teacher.grade.save",
+  "teacher.grade.bulk.save",
+
+  // ── Parent portal reads ───────────────────────────────────────────────────
+  //
+  // Unauthenticated reads, keyed by a hashed pay token. A parent opening
+  // attendance, records or timetable is a record of a student's data leaving the
+  // platform to a holder of that link, which is exactly the access question a
+  // school asks when it asks "who has been looking at this". The token is hashed
+  // before it reaches this document — see `utils/tokens.js:hashTokenForLog`.
+  "parent.attendance_viewed",
+  "parent.records_viewed",
+  "parent.timetable_viewed",
+  "parent.conversations_viewed",
+  "parent.conversation_viewed",
+  "parent.notifications_viewed",
+  "parent.notification_read",
 ];
 
 const auditLogSchema = new mongoose.Schema(

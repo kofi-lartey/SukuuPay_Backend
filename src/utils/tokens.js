@@ -105,6 +105,22 @@ export const generateResetToken = () => crypto.randomBytes(32).toString('hex');
 
 export const hashToken = (value) => crypto.createHash('sha256').update(value).digest('hex');
 
+/**
+ * A pay token reduced to the first 16 hex characters of its SHA-256 digest.
+ *
+ * Every parent-portal read is audited, and the audit has to name *which link*
+ * was used — otherwise "who looked at this student's attendance" is unanswerable.
+ * The token itself is the credential for that student's whole fee history, so it
+ * is hashed first and never stored in full. Sixteen hex characters is
+ * 2^64 of keyspace: more than enough to correlate a term's worth of reads from
+ * one family, and not enough to recover a token whose space is
+ * `STU-` + 8 hex characters.
+ *
+ * Lives beside `hashToken` rather than beside the parent services, because the
+ * rule it enforces is about *tokens*, not about attendance.
+ */
+export const hashTokenForLog = (value) => hashToken(String(value || '')).slice(0, 16);
+
 /** Constant-time comparison of two hex digests. */
 export const safeCompare = (a, b) => {
   if (typeof a !== 'string' || typeof b !== 'string') return false;

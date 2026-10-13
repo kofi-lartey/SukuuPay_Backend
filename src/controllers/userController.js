@@ -136,6 +136,7 @@ const deliverInvitationEmail = async ({
 };
 
 export const inviteUser = async (req, res) => {
+  let normalizedEmail;
   try {
     const { name, email, phone, role, position, schoolId } = req.body;
 
@@ -162,7 +163,32 @@ export const inviteUser = async (req, res) => {
     // unique email index occupied, so inviting that address again dies on a
     // duplicate-key error that reads as a 500. Catching it here turns that into
     // the accurate answer: the address is taken by a removed account.
-    const existingUser = await User.findOne({ email });
+    //
+    // The query is lowercased explicitly because the index is case-sensitive but
+    // the stored value is lowercased on write (`userModel.js`): a legacy mixed-
+    // case address would otherwise slip past this check, reach `create`, and
+    // surface as a raw E11000 instead of this legible 409.
+    normalizedEmail = String(email || '').trim().toLowerCase();
+    if (!normalizedEmail) {
+      // Guard the empty-filter footgun: an undefined email would make this a
+      // `findOne({})` and resolve to whichever account happens to come first.
+      return res.status(409).json({
+        success: false,
+        message: 'An account with this email already exists',
+        code: 'EMAIL_AMBIGUOUS',
+      });
+    }
+    // Case-insensitive duplicate check: the unique index on `email` can be
+    // case-insensitive (legacy mixed-case documents stored before the
+    // `lowercase` setter were universal) whereas this query was case-sensitive,
+    // so it missed a variant and `create` then threw the E11000 it could not
+    // explain. Matching case-insensitively owns the collision up front and
+    // surfaces the exact stored address in `conflict`.
+    const emailVariant = new RegExp(
+      `^${normalizedEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`,
+      'i'
+    );
+    const existingUser = await User.findOne({ email: emailVariant });
     if (existingUser) {
       return res.status(409).json({
         success: false,
@@ -170,6 +196,11 @@ export const inviteUser = async (req, res) => {
           ? 'That email belongs to a removed account. Restore it or use a different address.'
           : 'An account with this email already exists',
         code: existingUser.deletedAt ? 'EMAIL_ON_DELETED_ACCOUNT' : 'EMAIL_TAKEN',
+        conflict: {
+          email: existingUser.email,
+          deleted: Boolean(existingUser.deletedAt),
+          status: existingUser.status,
+        },
       });
     }
 
@@ -289,10 +320,64 @@ export const inviteUser = async (req, res) => {
     });
   } catch (error) {
     if (error.code === 11000) {
+      // The pre-check above should own email collisions; if we still hit the
+      // index, `keyValue` says which key fired. The two real cases are:
+      //
+      //  - `email`: a case variant the lowercased query missed, or a document
+      //    the `deletedAt: null` filter excluded (a soft-deleted account). Both
+      //    return the 409 the invite flow expects, with the stored address.
+      //  - `providerId`: on a database whose index still lacks its
+      //    partialFilterExpression, the explicit `null` on every password-only
+      //    account is indexed, so the second invite of any kind collides here.
+      //    The declared index skips `null`, so this means the migration in
+      //    `boot/reconcileProviderIdIndex.js` has not run (or failed).
+      const conflict = error.keyValue || {};
+      if (conflict.email) {
+        console.warn('[inviteUser] duplicate email on invite', {
+          requestedEmail: normalizedEmail,
+          conflictEmail: conflict.email,
+        });
+        return res.status(409).json({
+          success: false,
+          message: 'An account with this email already exists',
+          code: 'EMAIL_TAKEN',
+          conflict: { email: conflict.email },
+        });
+      }
+      //  - `providerId: null`: the database still holds the legacy *sparse*
+      //    unique index, which MongoDB populated with the explicit `null` every
+      //    password-only account carries. Only one such account can ever exist
+      //    under it. `boot/reconcileProviderIdIndex.js` drops it and recreates
+      //    the declared partial index (which skips null), so this log line
+      //    should not appear on a booted instance after this migration.
+      if (conflict.providerId !== undefined) {
+        console.warn(
+          '[inviteUser] duplicate providerId on invite — the providerId index in this ' +
+            'database is missing its partialFilterExpression; boot/reconcileProviderIdIndex.js ' +
+            'should have replaced it',
+          {
+            keyValue: conflict,
+            keyPattern: error.keyPattern,
+            requestedEmail: normalizedEmail,
+          }
+        );
+        return res.status(409).json({
+          success: false,
+          message: 'An account with this email already exists',
+          code: 'EMAIL_TAKEN',
+          conflict,
+        });
+      }
+      console.warn('[inviteUser] unexpected duplicate key on invite', {
+        keyValue: conflict,
+        keyPattern: error.keyPattern,
+        requestedEmail: normalizedEmail,
+      });
       return res.status(409).json({
         success: false,
         message: 'An account with this email already exists',
         code: 'EMAIL_TAKEN',
+        conflict,
       });
     }
     if (error.name === 'CastError') {
