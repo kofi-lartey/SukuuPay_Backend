@@ -13,6 +13,27 @@ export const ROLES = {
 
 export const USER_ROLES = Object.values(ROLES);
 
+/**
+ * The roles that never run the setup wizard: they join a school that already
+ * exists by entering its school code, and wait for an admin of that school to
+ * approve them (`SchoolJoinRequest`).
+ *
+ * Only `school_admin` provisions a school. Every other self-signup role is a
+ * member of somebody else's staff, so walking them through steps 2–5 — payment
+ * setup, importing students, pricing, sending reminders — would ask them to
+ * configure a school they do not own, and can only end in a 403. `viewer` is
+ * read-only by definition, so there is even less for them to set up.
+ *
+ * Read by `onboardingBlock` in `controllers/authController.js`, which turns it
+ * into the `flow` and `nextRoute` the client routes on. The frontend mirrors it
+ * in `frontend/src/utils/constants.js` as `joinsSchoolByCode`.
+ */
+export const SCHOOL_JOIN_ROLES = [
+  ROLES.ACCOUNTANT,
+  ROLES.TEACHER,
+  ROLES.VIEWER,
+];
+
 // Audit action types — matches the AuditLog `action` field enum.
 export const AUDIT_ACTIONS = {
   STUDENT_CREATE: "student.create",

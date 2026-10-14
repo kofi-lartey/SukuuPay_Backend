@@ -274,12 +274,15 @@ export const requestToJoinSchool = async (user, { schoolCode, applicantName, app
     status: "pending",
   });
 
-  // Tell the people who can actually approve. Best-effort: a notification
-  // failure must not lose the request, which is already committed.
+  // Tell the people who can actually approve — the school's own admin. The
+  // notification used to reach `accountant` as well, back when either could
+  // decide; only `school_admin` decides now, so naming a role in an alert it
+  // cannot act on is just noise in someone's inbox. Best-effort either way: a
+  // notification failure must not lose the request, which is already committed.
   try {
     const approvers = await User.find({
       schoolId: school._id,
-      role: { $in: ["school_admin", "accountant"] },
+      role: "school_admin",
       status: "active",
       deletedAt: null,
     })
@@ -294,7 +297,11 @@ export const requestToJoinSchool = async (user, { schoolCode, applicantName, app
         title: `${request.applicantName || "Someone"} wants to join ${school.name}`,
         message:
           "Review the request and approve or reject their access. Your school code was used to apply.",
-        link: "/dashboard/settings/staff",
+        // The approval module itself. It used to point at
+        // `/dashboard/settings/staff`, which no route has ever matched, so the
+        // one alert that drove this flow notified someone about a page that
+        // 404s.
+        link: "/dashboard/user-management",
         meta: { requestId: request._id, applicantId: user._id },
       })),
       { ordered: false }
@@ -314,19 +321,22 @@ export const requestToJoinSchool = async (user, { schoolCode, applicantName, app
   return { request: request.toJSON(), school, created: true };
 };
 
-/** Pending requests for the caller's own school. Admins only. */
+/** Pending requests for the caller's own school. School admins only. */
 export const listJoinRequests = async (user) => {
   if (!user.schoolId) {
     throw new ApiError("No school in scope", 403, "NO_SCHOOL_SCOPE");
   }
-  if (user.role !== "super_admin" && !["school_admin", "accountant"].includes(user.role)) {
-    throw new ApiError("Only school admins can review join requests", 403, "FORBIDDEN");
+  if (user.role !== "super_admin" && user.role !== "school_admin") {
+    throw new ApiError("Only school admins can review access requests", 403, "FORBIDDEN");
   }
 
   const requests = await SchoolJoinRequest.find({ schoolId: user.schoolId })
     .sort({ createdAt: -1 })
     .limit(100)
-    .populate("userId", "name email phone position status")
+    // `role` is populated because it is the first thing the deciding admin
+    // needs: "a teacher applied" and "a second bursar applied" are different
+    // decisions, and the email address says neither.
+    .populate("userId", "name email phone position role status")
     .lean();
 
   return requests.map((row) => ({
@@ -347,8 +357,8 @@ export const decideJoinRequest = async (user, requestId, { decision, note }) => 
   if (!user.schoolId) {
     throw new ApiError("No school in scope", 403, "NO_SCHOOL_SCOPE");
   }
-  if (user.role !== "super_admin" && !["school_admin", "accountant"].includes(user.role)) {
-    throw new ApiError("Only school admins can review join requests", 403, "FORBIDDEN");
+  if (user.role !== "super_admin" && user.role !== "school_admin") {
+    throw new ApiError("Only school admins can review access requests", 403, "FORBIDDEN");
   }
 
   const request = await SchoolJoinRequest.findOne({

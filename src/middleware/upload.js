@@ -135,6 +135,28 @@ export const schoolLogoUpload = multer({
 }).single("file");
 
 // ─────────────────────────────────────────────
+// USER AVATAR UPLOAD
+// Memory storage, like the school logo: the picture is a portrait cropped to a
+// square by the service, not a file to hand off raw.
+//
+// Smaller ceiling than a student photo (2 MB) and, unlike the school logo's
+// 1 MB, still generous enough for a modern phone camera original — a 12 MP
+// portrait is ~4 MB in memory but a screenshot or a WhatsApp-forwarded photo is
+// well under it, and a teacher who has to shrink a file before uploading simply
+// does not upload one.
+// ─────────────────────────────────────────────
+const avatarStorage = multer.memoryStorage();
+
+export const avatarUpload = multer({
+  storage: avatarStorage,
+  fileFilter,
+  limits: {
+    fileSize: 2 * 1024 * 1024, // 2 MB
+    files: 1,
+  },
+}).single("file");
+
+// ─────────────────────────────────────────────
 // ZIP UPLOAD (bulk student photos)
 // In-memory storage: the archive is extracted and processed in-process.
 // ─────────────────────────────────────────────
@@ -252,7 +274,7 @@ export const uploadParentAudio = multer({
  * @param {import('express').RequestHandler} middleware a multer middleware
  * @returns {import('express').RequestHandler}
  */
-const asClientErrors = (middleware) => (req, res, next) =>
+export const asClientErrors = (middleware) => (req, res, next) =>
   middleware(req, res, (err) => {
     if (!err) return next();
 
@@ -263,14 +285,18 @@ const asClientErrors = (middleware) => (req, res, next) =>
     next(err);
   });
 
-/**
- * The parent voice-note upload, as a route-ready middleware.
- *
- * Use this rather than the raw multer instance: `export const uploadParentAudio` below
- * is the unguarded middleware and is what the tests exercise directly, while this is
- * what the route mounts.
- */
+/** The parent voice-note upload, as a route-ready middleware. */
 export const uploadParentAudioRoute = asClientErrors(uploadParentAudio);
+
+/**
+ * The avatar upload, as a route-ready middleware.
+ *
+ * Wrapped for the same reason as the voice note: an oversized or wrong-format
+ * picture arrives as a multer error with no `.status`, which would otherwise
+ * surface as a 500 telling a teacher "something went wrong" about a file they
+ * can plainly see is too big. Mount this rather than the raw `avatarUpload`.
+ */
+export const avatarUploadRoute = asClientErrors(avatarUpload);
 
 /**
  * Makes an accepted upload visible to the **body**, so a Joi schema can see it.
@@ -401,6 +427,8 @@ export default {
   exposeParentAudioToBody,
   studentPhotoUpload,
   schoolLogoUpload,
+  avatarUpload,
+  avatarUploadRoute,
   zipUpload,
   deleteFromCloudinary,
   extractPublicId,

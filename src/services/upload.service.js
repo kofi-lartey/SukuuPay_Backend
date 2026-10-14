@@ -263,6 +263,112 @@ export const uploadStudentPhotosBulk = async (file, user) => {
 };
 
 // ──────────────────── Upload school logo ────────────────────
+// ──────────────────── Upload a user avatar ────────────────────
+/**
+ * Replaces the signed-in user's profile picture.
+ *
+ * Own-account only, and deliberately not scoped to a school: the subject of the
+ * upload is the caller, so a super_admin with no school and a teacher in one
+ * both get here. The route therefore carries `authenticate` and nothing else —
+ * an `authorize("school_admin")` gate would make the one endpoint a teacher can
+ * act on about *themselves* unreachable, which is the opposite of what a
+ * profile picture is for.
+ *
+ * Follows the corrected delete order `uploadStudentPhoto` learned the hard way:
+ * the old public id is read and held in memory, the record is written **once**,
+ * after the new asset exists, and the old asset is only destroyed afterwards.
+ * Nulling `user.avatar` first means a Cloudinary outage takes the previous
+ * picture with it — and the teacher is told the request simply failed.
+ */
+export const uploadUserAvatar = async (file, user) => {
+  if (!file) {
+    throw new ApiError("No image file provided", 400, "NO_FILE");
+  }
+
+  const allowedMimes = ["image/jpeg", "image/png", "image/webp"];
+  if (!allowedMimes.includes(file.mimetype)) {
+    throw new ApiError("Only JPG, PNG, and WebP images are allowed", 400, "INVALID_MIME");
+  }
+
+  if (file.buffer.length > 2 * 1024 * 1024) {
+    throw new ApiError("Image must be smaller than 2MB", 400, "FILE_TOO_LARGE");
+  }
+
+  // 128 rather than the 200 a student photo demands. An avatar is displayed at
+  // 40–96 px and is often the only thing a teacher can find about themselves
+  // that is a photograph — a cropped headshot off a school ID is smaller than
+  // this, and rejecting it teaches them the feature does not work.
+  await validateImageDimensions(file.buffer, 128);
+
+  // Square cover crop, at the size the rail and the profile screen actually
+  // render. `fit: cover` with a centred gravity is what makes a phone portrait
+  // behave: the face is what has to survive, not the aspect ratio.
+  const resizedBuffer = await sharp(file.buffer)
+    .resize(256, 256, { fit: "cover", position: "center" })
+    .toFormat(file.mimetype === "image/png" ? "png" : "webp")
+    .toBuffer();
+
+  // Read before writing. See the comment above.
+  const oldPublicId = user.avatar ? extractPublicId(user.avatar) : null;
+
+  let uploadResult;
+  try {
+    uploadResult = await uploadBuffer(resizedBuffer, {
+      folder: `${CLOUDINARY_UPLOAD_FOLDER}/users/avatars`,
+      transformation: [
+        { width: 256, height: 256, crop: "fill", gravity: "center" },
+        { quality: "auto:good" },
+        { fetch_format: "auto" },
+      ],
+      resourceType: "image",
+    });
+  } catch (cloudinaryError) {
+    throw new ApiError("Failed to upload your picture", 500, "UPLOAD_FAILED");
+  }
+
+  const avatarUrl = uploadResult?.secure_url || uploadResult?.url;
+  const publicId = uploadResult?.public_id;
+
+  if (!avatarUrl) {
+    throw new ApiError("Failed to upload your picture", 500, "UPLOAD_FAILED");
+  }
+
+  user.avatar = avatarUrl;
+  await user.save();
+
+  if (oldPublicId) {
+    await deleteFromCloudinary(oldPublicId).catch(() => {});
+  }
+
+  return { url: avatarUrl, publicId };
+};
+
+/**
+ * Removes the signed-in user's avatar, falling back to their initials.
+ *
+ * Separate from the upload rather than a special value through it, because
+ * "remove" is the one operation a teacher performs on a picture that is not
+ * theirs to keep — a shared staff-room handset should not be showing the last
+ * person's face.
+ */
+export const removeUserAvatar = async (user) => {
+  if (!user.avatar) {
+    return { url: null, publicId: null };
+  }
+
+  const oldPublicId = extractPublicId(user.avatar);
+
+  user.avatar = null;
+  await user.save();
+
+  if (oldPublicId) {
+    await deleteFromCloudinary(oldPublicId).catch(() => {});
+  }
+
+  return { url: null, publicId: null };
+};
+
+// ──────────────────── Upload school logo ────────────────────
 export const uploadSchoolLogo = async (file, schoolId, user) => {
   if (!file) {
     throw new ApiError("No logo file provided", 400, "NO_FILE");

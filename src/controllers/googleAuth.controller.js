@@ -1,13 +1,12 @@
 import crypto from 'node:crypto';
 import { User } from '../models/userModel.js';
-import { School } from '../models/schoolModel.js';
 import {
   assertOriginAllowed,
   isGoogleAuthConfigured,
   verifyGoogleIdToken,
 } from '../services/googleAuth.service.js';
 import { isFeatureEnabled } from '../services/platformSettings.service.js';
-import { resolveAccountLinkState } from '../utils/accountLink.js';
+import { onboardingBlock } from './authController.js';
 import { SELF_SIGNUP_ROLES } from '../validators/authValidators.js';
 import { issueSession } from '../utils/tokens.js';
 import { log as writeAudit } from '../utils/auditService.js';
@@ -320,10 +319,17 @@ export const googleLogin = async (req, res) => {
       req,
     });
 
-    const linkState = await resolveAccountLinkState(user, async (schoolId) => {
-      const found = await School.exists({ _id: schoolId, deletedAt: null });
-      return Boolean(found);
-    });
+    /**
+     * The same block `POST /auth/login` and `GET /auth/me` return, read from the
+     * one place that resolves it.
+     *
+     * It used to be assembled inline here, which is exactly how the two copies
+     * drift: when `onboardingBlock` learned that an accountant joins a school
+     * by code rather than running the wizard, this copy would have kept sending
+     * a Google-signed-in bursar into step 1 of the flow they cannot use. One
+     * import, one behaviour.
+     */
+    const onboarding = await onboardingBlock(user);
 
     return res.status(200).json({
       success: true,
@@ -346,16 +352,7 @@ export const googleLogin = async (req, res) => {
         emailVerifiedAt: user.emailVerifiedAt,
       },
       outcome,
-      onboarding: {
-        ...linkState,
-        completed: linkState.linked && user.onboardingCompleted === true,
-        highestStep: user.onboardingHighestStep ?? 0,
-        nextRoute: linkState.linked
-          ? user.onboardingCompleted === true
-            ? '/dashboard'
-            : '/onboarding/school-profile'
-          : '/onboarding/school-profile',
-      },
+      onboarding,
     });
   } catch (error) {
     /*

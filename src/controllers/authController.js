@@ -11,7 +11,9 @@ import {
   PASSWORD_RESET_EXPIRE_MINUTES,
 } from '../config/env.js';
 import { School } from '../models/schoolModel.js';
+import { SchoolJoinRequest } from '../models/SchoolJoinRequest.js';
 import { resolveAccountLinkState } from '../utils/accountLink.js';
+import { ROLES, SCHOOL_JOIN_ROLES } from '../config/constants.js';
 import { SELF_SIGNUP_ROLES } from '../validators/authValidators.js';
 import { isFeatureEnabled } from '../services/platformSettings.service.js';
 import {
@@ -34,6 +36,47 @@ const sendAuthResponse = (res, status, message, user, tokens) =>
   });
 
 /**
+ * The routes this block names. Literal strings, because they are the contract
+ * with `App.jsx` and the guard, and a client that receives a path the router
+ * does not have lands on a 404 instead of the step it was promised.
+ */
+const ROUTE_DASHBOARD = '/dashboard';
+const ROUTE_WIZARD = '/onboarding/school-profile';
+const ROUTE_JOIN_SCHOOL = '/onboarding/join-school';
+/**
+ * The teacher portal, which a different shell serves.
+ *
+ * Literal, for the same reason as the three above: it is a contract with the
+ * client, and the client's copy of it (`TEACHER_ROUTES.dashboard` in
+ * `frontend/src/utils/constants.js`) is asserted against this value in the
+ * account-landing tests. A typo here is a redirect to a 404.
+ */
+const ROUTE_TEACHER = '/teacher';
+
+/**
+ * Where an account that is already linked to a school belongs.
+ *
+ * A teacher is not a lesser bursar — they are a different job, and the product
+ * ships them a whole separate portal: the register, the marks sheet and the
+ * timetable under a sky-blue rail they can tell apart from the school console.
+ * Sending them to `/dashboard` instead dropped them into a finance console whose
+ * rail is mostly other people's work, and whose first tap is often a 403 they
+ * have to interpret. This is why the login path used to put a teacher in the
+ * wrong place, and this is the one place that answers it.
+ *
+ * Exported because the resolver is pure and the client's mirror of the same rule
+ * (`frontend/src/utils/landing.js`) is tested against it — two definitions of
+ * "where a teacher lands" would eventually disagree, and the one that loses is
+ * the one in the browser.
+ *
+ * Not an access decision. Nothing is granted or refused here: `TeacherGuard`
+ * admits `teacher` to `/teacher` and the server's `authorize` guards the data.
+ * This only picks a destination.
+ */
+export const landingRouteFor = (role) =>
+  role === ROLES.TEACHER ? ROUTE_TEACHER : ROUTE_DASHBOARD;
+
+/**
  * The machine-readable onboarding state attached to every authenticated
  * response.
  *
@@ -43,8 +86,26 @@ const sendAuthResponse = (res, status, message, user, tokens) =>
  * an unlinked account the provisioning step instead of a dead end — and it is
  * the only place that knows about the `super_admin` exception or about a
  * `schoolId` pointing at an archived school.
+ *
+ * ## Two flows, one tree
+ *
+ * There are now two onboarding flows and this block is where they are told
+ * apart, because the server is the only side that knows which role is which:
+ *
+ *   - **`wizard`** — a `school_admin`, and the platform owner. They provision a
+ *     school and walk the five steps to configure it.
+ *   - **`join`** — `accountant`, `teacher` and `viewer`. They have nothing to
+ *     configure: the school already exists. They are asked for one thing, the
+ *     school code, and then wait. `completed` is therefore true the moment they
+ *     are linked, and `onboardingCompleted` on the user stays false forever —
+ *     they never ran a wizard, and making them complete one was the bug.
+ *
+ * `flow` is reported so the client can route without re-deriving the role, and
+ * `nextRoute` so it never has to. `joinRequest` carries the live pending request
+ * (if any) so the waiting screen can name the school it is waiting on after a
+ * reload, instead of asking the applicant to remember which code they typed.
  */
-const onboardingBlock = async (user) => {
+export const onboardingBlock = async (user) => {
   // `me` and `login` both run this on the request path, so the existence check
   // is a single indexed `_id` lookup on an already-loaded id — cheaper than the
   // extra round trip a dangling reference would otherwise cost the bursar on
@@ -54,19 +115,72 @@ const onboardingBlock = async (user) => {
     return Boolean(found);
   });
 
+  if (SCHOOL_JOIN_ROLES.includes(user.role)) {
+    // Already linked: invited staff arrive here with `schoolId` set, and an
+    // approved applicant has just been given one. For both, onboarding is
+    // finished — there is no wizard for this role to have completed.
+    if (state.linked) {
+      return {
+        ...state,
+        flow: 'join',
+        completed: true,
+        highestStep: 0,
+        joinRequested: false,
+        joinRequest: null,
+        nextRoute: landingRouteFor(user.role),
+      };
+    }
+
+    // The most recent request, whichever way it was decided — newest first,
+    // because a rejected applicant who re-applied leaves the old row behind on
+    // purpose (see `SchoolJoinRequest`'s index comment). Reporting the newest
+    // means the waiting screen names the school the applicant actually typed,
+    // and a declined one can say so instead of showing an empty form as though
+    // nothing had happened.
+    const latest = await SchoolJoinRequest.findOne({ userId: user._id })
+      .sort({ createdAt: -1 })
+      .populate('schoolId', 'name schoolCode')
+      .lean();
+
+    return {
+      ...state,
+      flow: 'join',
+      completed: false,
+      highestStep: 0,
+      joinRequested: latest?.status === 'pending',
+      joinRequest: latest
+        ? {
+            status: latest.status,
+            schoolName: latest.schoolId?.name || null,
+            schoolCode: latest.schoolId?.schoolCode || null,
+            requestedAt: latest.createdAt,
+            decidedAt: latest.decidedAt,
+            decidedNote: latest.decidedNote || null,
+          }
+        : null,
+      // The one screen this flow has. Deliberately not `/onboarding`: the
+      // wizard's index redirects into step 1, which is the five-step flow this
+      // role is being kept out of.
+      nextRoute: ROUTE_JOIN_SCHOOL,
+    };
+  }
+
   const completed = state.linked && user.onboardingCompleted === true;
 
   return {
     ...state,
+    flow: 'wizard',
     completed,
     highestStep: user.onboardingHighestStep ?? 0,
-    // One source of truth for "where does this user go next". The guard and the
-    // post-signup redirect both read it instead of reimplementing the ordering.
+    // One source of truth for "where does this user go next". The guard, the
+    // post-signup redirect and both login paths read it instead of
+    // reimplementing the ordering — including where a teacher lands, which
+    // `landingRouteFor` answers for both flows so the two never disagree.
     nextRoute: state.linked
       ? completed
-        ? '/dashboard'
-        : '/onboarding/school-profile'
-      : '/onboarding/school-profile',
+        ? landingRouteFor(user.role)
+        : ROUTE_WIZARD
+      : ROUTE_WIZARD,
   };
 };
 

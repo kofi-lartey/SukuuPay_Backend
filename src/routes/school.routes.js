@@ -44,10 +44,25 @@ schoolRoute.post("/schools/me", authenticate, validate(provisionMySchoolSchema),
 
 schoolRoute.post("/schools/join", authenticate, validate(joinSchoolSchema), joinSchoolController);
 
+/**
+ * The approval queue, and the decision on it.
+ *
+ * Gated on `school_admin` (plus `super_admin`, the platform owner acting across
+ * tenants) because that is the role the joining staff have to be approved *by*:
+ * a teacher or an accountant signals intent with a school code, and the person
+ * who owns the school's SukuuPay account decides whether that person gets in.
+ * `requireSchool` runs ahead of the role check so an admin whose own school is
+ * missing gets the provisioning 409 rather than a misleading 403.
+ *
+ * Both routes are the backend half of the admin dashboard's user-approval
+ * module; `frontend/src/components/user-management/PendingApprovals.jsx` is the
+ * other half.
+ */
 schoolRoute.get(
   "/schools/join-requests",
   authenticate,
   requireSchool,
+  authorize("super_admin", "school_admin"),
   listJoinRequestsController
 );
 
@@ -55,6 +70,7 @@ schoolRoute.put(
   "/schools/join-requests/:requestId",
   authenticate,
   requireSchool,
+  authorize("super_admin", "school_admin"),
   validate(joinRequestIdParamSchema, "params"),
   validate(decideJoinRequestSchema),
   decideJoinRequestController

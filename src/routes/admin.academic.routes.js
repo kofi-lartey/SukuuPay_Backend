@@ -34,6 +34,12 @@ import {
 } from "../controllers/admin/timetable.controller.js";
 import { getAcademicOverviewController } from "../controllers/admin/academicDashboard.controller.js";
 import {
+  listTeacherStudentsController,
+  listTeacherAssignmentCountsController,
+  assignStudentsController,
+  unassignStudentsController,
+} from "../controllers/admin/teacherAssignment.controller.js";
+import {
   submitGradesSchema,
   approveGradesSchema,
   rejectGradesSchema,
@@ -51,6 +57,12 @@ import {
   timetableQuerySchema,
   publishTimetableSchema,
 } from "../validations/admin.academic.validation.js";
+import {
+  teacherIdParamSchema,
+  listTeacherStudentsQuerySchema,
+  assignStudentsSchema,
+  unassignStudentsSchema,
+} from "../validations/teacherAssignment.validation.js";
 
 /**
  * The headmaster's academic console — the review, approval and configuration
@@ -168,8 +180,63 @@ router.delete(
   archiveClassController
 );
 
+// ── Teacher assignment ─────────────────────────────────────────────────────
+// Which *students* a teacher is responsible for — a different question from
+// which *classes* they teach, and one the class endpoints above cannot answer:
+// `User.assignedClasses` holds `{ className, subject }` rows, and a form
+// teacher, a remedial teacher and a house master can all hold the same child.
+// The student→teacher link therefore lives in `models/TeacherAssignment.js`.
+//
+// `requireSchoolAdmin` on all four. A `teacher` may read their own students
+// through the teacher portal's `/teacher` surface, but *naming who is
+// responsible for whom* is a headmaster's decision, so the whole group is a
+// disclosure boundary rather than a write boundary.
+//
+// The literal `teacher-assignment-counts` is registered before the `:teacherId`
+// routes, for the fixed-before-wildcard rule the file states above: a param
+// route would otherwise capture it and read a count for a teacher whose id is
+// the word "teacher-assignment-counts".
+//
+// `POST` carries both assignment paths — individual `studentIds` and a class
+// name — because they are one intent ("link these children to this teacher")
+// with two selectors. `DELETE` is separate because withdrawing is not the
+// inverse of assigning: it refuses class-mediated rows unless `force`, see
+// `unassignStudents` in the service.
+router.get(
+  "/users/teacher-assignment-counts",
+  requireSchoolAdmin,
+  requireSchool,
+  listTeacherAssignmentCountsController
+);
+router.get(
+  "/users/:teacherId/students",
+  requireSchoolAdmin,
+  requireSchool,
+  validate(teacherIdParamSchema, "params"),
+  validate(listTeacherStudentsQuerySchema, "query"),
+  listTeacherStudentsController
+);
+router.post(
+  "/users/:teacherId/students",
+  requireSchoolAdmin,
+  requireSchool,
+  validate(teacherIdParamSchema, "params"),
+  // Both body shapes, one route. Validation's `.xor('studentIds','className')`
+  // is what makes "both at once" a 400 rather than a decision made by whichever
+  // key the controller happens to read first, and an empty body a 400 too.
+  validate(assignStudentsSchema),
+  assignStudentsController
+);
+router.delete(
+  "/users/:teacherId/students",
+  requireSchoolAdmin,
+  requireSchool,
+  validate(teacherIdParamSchema, "params"),
+  validate(unassignStudentsSchema),
+  unassignStudentsController
+);
+
 // ── Timetables ──
-// `publish` (a literal) is registered before `:className` (a param) so a
 // GET/POST on the literal can never be captured by the param — the same
 // fixed-before-wildcard rule the platform console documents.
 router.get("/timetables", requireTeacher, requireSchool, validate(timetableQuerySchema, "query"), listTimetablesController);
