@@ -5,6 +5,11 @@ import { User } from "../../models/userModel.js";
 import { log as auditLog } from "../../utils/auditService.js";
 import { AUDIT_ACTIONS } from "../../config/constants.js";
 import ApiError from "../../utils/ApiError.js";
+import {
+  currentSlotHolder,
+  moveClassSlot,
+  syncClassTeacher,
+} from "./teacherClassLink.js";
 
 /**
  * Class and teacher management, built on how SukuuPay *actually* models a class.
@@ -67,43 +72,11 @@ const loadTeacher = async (schoolId, teacherUserId) => {
 };
 
 /**
- * Move a `{ className, subject }` assignment to one teacher, clearing it from
- * whoever held it.
- *
- * The owner of an assignment is a *row on a user*, so "assign" is two writes:
- * pull the row from its current holder, then add it to the new one. A class
- * with no previous holder is the common case and the `$pull` is a harmless
- * no-op. An empty `subject` is the class-teacher slot; a named `subject` is a
- * subject-teacher slot. The two never collide because they are different rows,
- * so one person can be a class's form teacher *and* its Mathematics teacher.
+ * The `{ className, subject }` slot primitives now live in
+ * `teacherClassLink.js`, next to the per-student rows they must stay in step
+ * with. They were private here, which is what allowed the two assignment
+ * surfaces to drift — see that module's header for the bug this fixed.
  */
-const moveAssignment = async (schoolId, className, subject, teacherUserId) => {
-  await User.updateMany(
-    {
-      schoolId,
-      "assignedClasses.className": className,
-      "assignedClasses.subject": subject,
-    },
-    { $pull: { assignedClasses: { className, subject } } }
-  );
-  await User.updateOne(
-    { _id: teacherUserId },
-    { $addToSet: { assignedClasses: { className, subject } } }
-  );
-};
-
-/** The current holder of a `{ className, subject }` slot, or null. */
-const currentHolderId = async (schoolId, className, subject) => {
-  const holder = await User.findOne({
-    schoolId,
-    "assignedClasses.className": className,
-    "assignedClasses.subject": subject,
-    deletedAt: null,
-  })
-    .select("_id name")
-    .lean();
-  return holder || null;
-};
 
 /**
  * List the school's classes, each with a headcount and a teacher count.
@@ -262,9 +235,16 @@ export const archiveClass = async (schoolId, userId, className) => {
 export const assignClassTeacher = async (schoolId, userId, className, teacherUserId) => {
   await assertClassExists(schoolId, className);
   const teacher = await loadTeacher(schoolId, teacherUserId);
-  const previous = await currentHolderId(schoolId, className, "");
 
-  await moveAssignment(schoolId, className, "", teacher._id);
+  /**
+   * `syncClassTeacher` writes *both* representations.
+   *
+   * This used to be `moveAssignment` alone — `assignedClasses` only, with no
+   * `TeacherAssignment` rows. The admin's Teacher Assignment page therefore
+   * showed a teacher as having no students while the teacher's own portal
+   * worked perfectly, because the two surfaces read different stores.
+   */
+  const { previous } = await syncClassTeacher(schoolId, className, teacher._id);
 
   await auditLog({
     action: AUDIT_ACTIONS.CLASS_ASSIGN_TEACHER,
@@ -292,7 +272,7 @@ export const assignClassTeacher = async (schoolId, userId, className, teacherUse
  *
  * Replaces whatever teacher holds that `{ className, subject }` slot and leaves
  * every other subject's teacher untouched — English's teacher is not affected by
- * a change to Mathematics. `moveAssignment` does the replace-or-add.
+ * a change to Mathematics. `moveClassSlot` does the replace-or-add.
  */
 export const assignSubjectTeacher = async (
   schoolId,
@@ -306,9 +286,9 @@ export const assignSubjectTeacher = async (
   }
   const subj = subject.trim();
   const teacher = await loadTeacher(schoolId, teacherUserId);
-  const previous = await currentHolderId(schoolId, className, subj);
+  const previous = await currentSlotHolder(schoolId, className, subj);
 
-  await moveAssignment(schoolId, className, subj, teacher._id);
+  await moveClassSlot(schoolId, className, subj, teacher._id);
 
   await auditLog({
     action: AUDIT_ACTIONS.CLASS_ASSIGN_SUBJECT_TEACHER,

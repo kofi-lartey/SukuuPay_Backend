@@ -242,14 +242,228 @@ describe('TeacherAssignment', () => {
   });
 });
 
-// ── The service contracts, read rather than executed ────────────────────────
-describe('teacherAssignment.service', () => {
+// ── The two representations, and why they must not drift ────────────────────
+describe('a class assignment writes both representations', () => {
+  const readSource = async (relative) => {
+    const { readFile } = await import('node:fs/promises');
+    return readFile(new URL(relative, import.meta.url), 'utf8');
+  };
+
+  test('there is one shared writer, and both routes call it', async () => {
+    // The bug: `PUT /classes/:className/teacher` wrote `User.assignedClasses`
+    // and no rows; `POST /admin/users/:teacherId/students` with a className wrote
+    // the rows and never touched `assignedClasses`. A teacher assigned through
+    // the new console therefore had an empty dashboard, because the portal reads
+    // `assignedClasses` (`utils/teacherScope.js`) and the write landed elsewhere.
+    const link = await readSource('../src/services/admin/teacherClassLink.js');
+    const assignment = await readSource('../src/services/admin/teacherAssignment.service.js');
+    const classService = await readSource('../src/services/admin/class.service.js');
+
+    assert.ok(/export const syncClassTeacher/.test(link), 'no shared class-teacher writer');
+    assert.ok(
+      assignment.includes('syncClassTeacher'),
+      'the assignment service does not sync the class slot'
+    );
+    assert.ok(
+      classService.includes('syncClassTeacher'),
+      'the class-teacher route does not sync the per-student rows'
+    );
+  });
+
+  test('the slot primitives are no longer private to one service', async () => {
+    // `moveAssignment` was private to `class.service.js`, which is what made it
+    // possible for the other route to write the other representation.
+    const classService = await readSource('../src/services/admin/class.service.js');
+    const link = await readSource('../src/services/admin/teacherClassLink.js');
+
+    assert.ok(!/const moveAssignment =/.test(classService), 'moveAssignment is private again');
+    assert.ok(!/const currentHolderId =/.test(classService), 'currentHolderId is private again');
+    assert.ok(link.includes('export const moveClassSlot'), 'the slot move is not exported');
+    assert.ok(link.includes('export const currentSlotHolder'), 'the slot lookup is not exported');
+  });
+
+  test('the class path moves the slot the portal reads, not only the rows', async () => {
+    const assignment = await readSource('../src/services/admin/teacherAssignment.service.js');
+    const classStart = assignment.indexOf('export const assignStudentsByClass = async');
+    const body = assignment.slice(classStart);
+
+    assert.ok(body.includes('syncClassTeacher'), 'the class path does not write assignedClasses');
+    assert.ok(body.includes('previous'), 'the class path does not record the previous holder');
+
+    // Sliced on the exact boundary, not on a prefix — `assignStudents` is a
+    // prefix of `assignStudentsByClass`, so a plain indexOf picks up whichever
+    // function appears first. And it ends at the *doc comment* of the next
+    // function rather than at its signature: that comment explains why the class
+    // path calls `syncClassTeacher`, so a slice that included it failed an
+    // assertion it was actually passing — the same "the test matched prose" trap
+    // the shell-parity test hit. Comments are stripped for the same reason.
+    const docStart = assignment.lastIndexOf('/**', classStart);
+    const individual = assignment
+      .slice(
+        assignment.indexOf('export const assignStudents = async'),
+        docStart > 0 ? docStart : classStart
+      )
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+
+    assert.ok(
+      individual.includes('linkStudents'),
+      'the individual path no longer links its rows'
+    );
+    assert.ok(
+      !individual.includes('syncClassTeacher'),
+      'the individual path is moving class slots too'
+    );
+  });
+
+  test('dropping the last mediated child also drops the class slot', async () => {
+    // The invariant, both directions: a teacher holds a class-teacher slot iff
+    // they hold a live mediated row in it. Without the removal side the console
+    // reads "Sir Ciblah has no students in JHS 2" while his portal still shows
+    // JHS 2 on every screen.
+    const assignment = await readSource('../src/services/admin/teacherAssignment.service.js');
+    const body = assignment.slice(assignment.indexOf('export const unassignStudents'));
+
+    assert.ok(body.includes('remaining === 0'), 'the last-mediated-check is missing');
+    assert.ok(body.includes('$pull'), 'the removal path does not clear the slot');
+    assert.ok(body.includes('assignedClasses'), 'the slot is not the field being cleared');
+    assert.ok(body.includes('classMediated: true'), 'the check is not scoped to class-mediated rows');
+  });
+});
+
+// ── The dashboard's greeting, derived in Ghana ──────────────────────────────
+describe('the teacher dashboard greeting', () => {
+  const readSource = async (relative) => {
+    const { readFile } = await import('node:fs/promises');
+    return readFile(new URL(relative, import.meta.url), 'utf8');
+  };
+
+  test('is computed on the server, in Africa/Accra', async () => {
+    const source = await readSource('../src/services/teacher/dashboard.service.js');
+    assert.ok(source.includes('greetingForHour'), 'the greeting is not derived from the shared rule');
+    assert.ok(source.includes('Africa/Accra'), 'the greeting is not read in Ghana time');
+    // The payload carries it, so the client does not have to guess.
+    assert.ok(source.includes('greeting,'), 'the payload does not carry the greeting');
+    assert.ok(source.includes('greetingHour'), 'the payload does not carry the hour it was read at');
+  });
+
+  test('is exported, so the client can produce the same words', async () => {
+    // One table on each side, asserted against each other in
+    // `frontend/src/utils/greeting.test.js`. An unexported helper would leave the
+    // client free to re-derive it and drift.
+    const source = await readSource('../src/services/teacher/dashboard.service.js');
+    assert.ok(source.includes('export const greetingForHour'), 'greetingForHour is not exported');
+  });
+});
+
+// ── Drift: the two representations disagreeing ──────────────────────────────
+describe('assignment drift', () => {
+  const readSource = async (relative) => {
+    const { readFile } = await import('node:fs/promises');
+    return readFile(new URL(relative, import.meta.url), 'utf8');
+  };
+
+  test('drift is detected, not just repaired', async () => {
+    // The reported bug was invisible on both screens: the console counted twenty
+    // rows, the portal read zero classes. Detecting it is what makes it
+    // repairable — and what lets the console say so instead of leaving the admin
+    // to work it out from a phone call.
+    const link = await readSource('../src/services/admin/teacherClassLink.js');
+    assert.ok(
+      /export const detectAssignmentDrift/.test(link),
+      'no drift detector — the repair cannot know what to repair'
+    );
+    assert.ok(
+      link.includes('rows.removedAt === null') || link.includes('removedAt: null'),
+      'the detector reads live rows only'
+    );
+  });
+
+  test('the repair writes the slot the portal reads, through the same writer', async () => {
+    // A repair that produced a different shape from the original assignment
+    // would be a third thing to reason about.
+    const link = await readSource('../src/services/admin/teacherClassLink.js');
+    const body = link.slice(link.indexOf('export const repairAssignmentDrift'));
+
+    assert.ok(body.includes('syncClassTeacher'), 'the repair bypasses the shared writer');
+    assert.ok(
+      /for \(const className of row\.classes\)/.test(body),
+      'the repair is not iterating the classes drift reported'
+    );
+    assert.ok(
+      /export const repairAssignmentDrift = async \(schoolId, teacherId\)/.test(link),
+      'the repair signature changed'
+    );
+  });
+
+  test('both are reachable from the route table', async () => {
+    // Drift without an endpoint is a dead end; the whole point is that an admin
+    // can act on it from the screen that showed them the number.
+    const routes = await readSource('../src/routes/admin.academic.routes.js');
+
+    // This file writes paths in double quotes.
+    assert.ok(
+      routes.includes('"/users/teacher-assignment-drift/repair"'),
+      'no repair route — the banner on the page has nothing to call'
+    );
+    // Registered with the literal /users paths, ahead of the parameterised ones.
+    const paths = (routes.match(/router\.(get|post|put|delete)\(\s*"([^"]+)"/g) || []).map((entry) =>
+      entry.replace(/router\.\w+\(\s*"/, '').replace(/"$/, '')
+    );
+    assert.ok(paths.includes('/users/teacher-assignment-drift/repair'));
+    assert.ok(
+      paths.indexOf('/users/teacher-assignment-drift/repair') < paths.indexOf('/users/:teacherId/students'),
+      'the repair route is registered after the parameterised routes it must beat'
+    );
+  });
+});
+
+// ── Bulk removal ────────────────────────────────────────────────────────────
+/**
+ * The *client* half of this lives in the frontend suite now — see
+ * `frontend/src/components/dashboard/academics/bulkRemove.test.js`.
+ *
+ * It was written here at first, and that was wrong for a reason worth
+ * recording: those assertions read `frontend/src/**` to check prop names and
+ * interpolated strings, which are implementation details of a React component,
+ * not a contract between the two apps. Asserting them from the backend meant a
+ * single rename of `classMediatedCount` broke `npm test` in a directory whose
+ * own code had not changed — and, worse, implied the backend suite was the owner
+ * of frontend behaviour.
+ *
+ * What stays below is the backend-side half: that the server can actually do
+ * what the UI offers. Cross-app *contract* checks (this suite's brand tokens,
+ * the avatar ceiling, the greeting table) still read across, because there the
+ * two sides genuinely have to agree and a drift is a real bug.
+ */
+describe('bulk removal — the server side', () => {
   const readSource = async () => {
     const { readFile } = await import('node:fs/promises');
     return readFile(
       new URL('../src/services/admin/teacherAssignment.service.js', import.meta.url),
       'utf8'
     );
+  };
+
+  test('the server accepts force and reports what it left alone', async () => {
+    // Both are needed for the confirmation on the client to be truthful:
+    // `force` to take the class rows, and the skipped count so the plain Remove
+    // can say what it actually did.
+    const source = await readSource();
+    const body = source.slice(source.indexOf('export const unassignStudents'));
+
+    assert.ok(body.includes('force'), 'unassign has no force override');
+    assert.ok(body.includes('skipped'), 'unassign does not report what it left alone');
+    assert.ok(
+      body.includes('classMediated'),
+      'unassign does not distinguish class-mediated rows'
+    );
+    assert.ok(body.includes('slotsDropped'), 'removing the last mediated child does not reconsider the slot');
+  });
+});
+describe('teacherAssignment.service', () => {
+  const readSource = async (relative = '../src/services/admin/teacherAssignment.service.js') => {
+    const { readFile } = await import('node:fs/promises');
+    return readFile(new URL(relative, import.meta.url), 'utf8');
   };
 
   test('re-reads the teacher from the database rather than trusting the path', async () => {
@@ -268,14 +482,24 @@ describe('teacherAssignment.service', () => {
 
   test('resolves a class roster server-side, never from the client', async () => {
     // "34 selected" followed by 3 rows is a bug report that reads as data loss.
-    const source = await readSource();
+    // Resolution now lives in `teacherClassLink.js`, shared with the class-teacher
+    // route, so both paths resolve the same roster the same way.
+    const link = await readSource('../src/services/admin/teacherClassLink.js');
     assert.ok(
-      source.includes('const loadClassRoster = async'),
+      link.includes('const classRoster ='),
       'no server-side roster resolver — the class path trusts the client'
     );
     assert.ok(
-      source.includes('studentClass: name'),
-      'the class roster is not filtered by the class name'
+      link.includes('studentClass: className'),
+      'the class roster is not filtered by studentClass — the field the Student schema actually has'
+    );
+    assert.ok(
+      !/^\s{4}className,\s*$/m.test(link),
+      'the roster is filtering on a bare className field, which matches nothing'
+    );
+    assert.ok(
+      link.includes('status: "active"'),
+      'the roster is not filtered to active students'
     );
   });
 

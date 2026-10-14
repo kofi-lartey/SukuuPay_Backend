@@ -75,3 +75,13 @@ export const unassignStudentsSchema = Joi.object({
   // endpoint: one route, and the flag is visible in the audit row either way.
   force: Joi.boolean().default(false),
 }).unknown(false);
+
+/**
+ * `POST /admin/users/teacher-assignment-drift/repair`
+ *
+ * `teacherId` absent means every teacher in the school, which is the case the
+ * repair exists for: drift is a property of a deployment, not of one account.
+ */
+export const repairAssignmentDriftSchema = Joi.object({
+  teacherId: Joi.string().pattern(OBJECT_ID).optional(),
+}).unknown(false);

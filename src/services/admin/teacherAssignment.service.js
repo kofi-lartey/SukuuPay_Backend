@@ -5,6 +5,7 @@ import { User } from "../../models/userModel.js";
 import { log as auditLog } from "../../utils/auditService.js";
 import { AUDIT_ACTIONS } from "../../config/constants.js";
 import ApiError from "../../utils/ApiError.js";
+import { linkStudents, syncClassTeacher } from "./teacherClassLink.js";
 
 /**
  * Which students a teacher is responsible for, and the writes that change it.
@@ -102,36 +103,17 @@ const loadStudents = async (schoolId, studentIds) => {
 };
 
 /**
- * The roster of a class, server-side.
- *
- * `Workflow C`: assigning a whole class. The class name is looked up as an
- * exact roster filter rather than as a string the client asserts, because a name
- * that does not exist in `School.academic.classes` would otherwise produce an
- * empty, and successful-looking, assignment.
+ * A class name is validated here and the roster resolved in
+ * `teacherClassLink.js`, which owns server-side roster resolution for both
+ * assignment routes. This function used to be the class path's own private copy,
+ * which is how the two paths ended up with different behaviour.
  */
-const loadClassRoster = async (schoolId, className) => {
+const assertValidClassName = (className) => {
   const name = String(className || "").trim();
   if (name.length < 2 || name.length > 50) {
     throw new ApiError("A valid className is required", 400, "VALIDATION_ERROR");
   }
-
-  const roster = await Student.find({
-    schoolId,
-    studentClass: name,
-    status: "active",
-    deletedAt: null,
-  })
-    .select("_id studentName studentClass")
-    .lean();
-
-  if (!roster.length) {
-    // An empty class is not an error — a class created before its students were
-    // imported is a normal state, and refusing the click would tell an admin
-    // they had made a mistake.
-    throw new ApiError(`Class "${name}" has no active students yet`, 409, "CLASS_EMPTY");
-  }
-
-  return roster;
+  return name;
 };
 
 /**
@@ -258,52 +240,12 @@ export const listTeacherAssignmentCounts = async (schoolId) => {
 };
 
 /**
- * The common write path for both assignment routes.
+ * The write path shared by both assignment routes.
  *
- * `$setOnInsert` is the whole trick: a re-link after an un-link revives the
- * tombstone row in place instead of inserting a second one, and the index's
- * partial filter means the tombstone was never blocking it. The two code paths
- * (`assignStudents` and `assignStudentsByClass`) then differ only in which
- * `studentId`s they hand over, which is exactly the difference that should exist
- * — one picks, the other resolves.
+ * Moved to `teacherClassLink.js` — its own module, because the class path has to
+ * write `User.assignedClasses` *and* these rows, and putting the shared bulkWrite
+ * under one roof is what stops the two from drifting again.
  */
-const linkStudents = async ({ schoolId, adminUserId, teacher, students, classMediated }) => {
-  const now = new Date();
-
-  const operations = students.map((student) => ({
-    updateOne: {
-      filter: { schoolId, teacherId: teacher._id, studentId: student._id },
-      update: [
-        {
-          $set: {
-            removedAt: null,
-            classMediated,
-            assignedAt: now,
-            assignedBy: classMediated ? null : adminUserId,
-            // Written on both paths: the individual path copies the class off
-            // the student, and the class path knows it directly. If the two ever
-            // disagreed, the roster panel's row would be a lie.
-            className: student.studentClass || "",
-            schoolId,
-            teacherId: teacher._id,
-            studentId: student._id,
-          },
-        },
-      ],
-      upsert: true,
-    },
-  }));
-
-  const result = await TeacherAssignment.bulkWrite(operations, { ordered: false });
-
-  const written =
-    (result?.upsertedCount || 0) + (result?.modifiedCount || 0);
-
-  // A counted change of zero means everything selected was already assigned.
-  // Answering that as success with `assigned: 0` is honest, and it is the answer
-  // a double-clicked Assign should produce.
-  return { assigned: written, updated: result?.modifiedCount || 0 };
-};
 
 /**
  * `POST /users/:teacherId/students` — assign the students the admin picked.
@@ -314,8 +256,7 @@ export const assignStudents = async (schoolId, adminUserId, teacherUserId, stude
 
   const written = await linkStudents({
     schoolId,
-    adminUserId,
-    teacher,
+    teacherId: teacher._id,
     students,
     classMediated: false,
   });
@@ -343,21 +284,29 @@ export const assignStudents = async (schoolId, adminUserId, teacherUserId, stude
 /**
  * `Workflow C`: assign every active student in a class.
  *
- * Reuses the class semantics the class-teacher endpoint already implements, and
- * stamps every row `classMediated` so the remove path knows these are not
- * individual picks.
+ * ## Why this writes `assignedClasses` too
+ *
+ * **This is the bug that had a teacher seeing an empty dashboard.** The class
+ * path used to write only the per-student rows. The teacher portal reads
+ * `User.assignedClasses` — `utils/teacherScope.js` resolves every class list,
+ * roster, register and dashboard headcount from it, because it is the
+ * authorisation path — so a teacher assigned through this route had rows the
+ * console could see and no class the portal could show. The child was not
+ * missing; the teacher had no way in.
+ *
+ * `syncClassTeacher` writes both representations and withdraws the previous
+ * class teacher's mediated rows, so one call keeps the console and the portal in
+ * step. The per-student path above deliberately does not do this: picking one
+ * child does not put a whole class on somebody's timetable.
  */
 export const assignStudentsByClass = async (schoolId, adminUserId, teacherUserId, className) => {
   const teacher = await loadTeacher(schoolId, teacherUserId);
-  const roster = await loadClassRoster(schoolId, className);
 
-  const written = await linkStudents({
-    schoolId,
-    adminUserId,
-    teacher,
-    students: roster,
-    classMediated: true,
-  });
+  // Refused here rather than in the link step, so a malformed name never reaches
+  // a roster read that would answer "no students" and look like an empty class.
+  const name = assertValidClassName(className);
+
+  const { previous, linked } = await syncClassTeacher(schoolId, name, teacher._id);
 
   await auditLog({
     action: AUDIT_ACTIONS.CLASS_ASSIGN_TEACHER,
@@ -367,16 +316,17 @@ export const assignStudentsByClass = async (schoolId, adminUserId, teacherUserId
     schoolId,
     meta: {
       className,
-      studentCount: written.assigned,
+      studentCount: linked,
       individual: false,
+      previousTeacherId: previous?._id || null,
     },
   });
 
   return {
-    ...written,
+    assigned: linked,
     className,
     teacher: { _id: teacher._id, name: teacher.name, role: teacher.role },
-    assignedIds: roster.map((s) => String(s._id)),
+    previousTeacherId: previous?._id || null,
   };
 };
 
@@ -426,6 +376,7 @@ export const unassignStudents = async (
   const skipped = ids.filter((id) => classHeld.has(String(id)));
 
   let removed = 0;
+  let slotsDropped = 0;
   if (force || removable.length) {
     const targets = force ? ids : removable;
     const result = await TeacherAssignment.updateMany(
@@ -433,6 +384,40 @@ export const unassignStudents = async (
       { $set: { removedAt: new Date() } }
     );
     removed = result.modifiedCount || 0;
+
+    /**
+     * The class-teacher slot is dropped when its last mediated child goes.
+     *
+     * Without this the two representations drift the other way: the console
+     * would read "Sir Ciblah has no students in JHS 2" while his portal still
+     * showed JHS 2 on every screen, because `assignedClasses` still granted him
+     * the scope. The invariant is one sentence and it is enforced here: a
+     * teacher holds a class-teacher slot for a class **iff** they hold a live
+     * mediated row in it.
+     *
+     * Individual rows are untouched — a remedial teacher's picks survive.
+     */
+    const touched = await TeacherAssignment.find({
+      schoolId,
+      teacherId: teacher._id,
+      studentId: { $in: targets },
+    });
+    for (const className of new Set(touched.map((row) => row.className).filter(Boolean))) {
+      const remaining = await TeacherAssignment.countDocuments({
+        schoolId,
+        teacherId: teacher._id,
+        className,
+        classMediated: true,
+        removedAt: null,
+      });
+      if (remaining === 0) {
+        const slot = await User.updateOne(
+          { _id: teacher._id },
+          { $pull: { assignedClasses: { className, subject: "" } } }
+        );
+        if (slot.modifiedCount) slotsDropped += 1;
+      }
+    }
   }
 
   await auditLog({
@@ -445,6 +430,7 @@ export const unassignStudents = async (
       removed,
       skippedClassMediated: skipped.length,
       force: Boolean(force),
+      slotsDropped,
     },
   });
 
@@ -453,6 +439,7 @@ export const unassignStudents = async (
     requested: requested.length,
     skipped: skipped.length,
     skippedReason: skipped.length ? "assigned with a class" : null,
+    slotsDropped,
     removedIds: removed ? (force ? ids : removable).map(String) : [],
     teacher: { _id: teacher._id, name: teacher.name, role: teacher.role },
   };

@@ -17,13 +17,38 @@ const DAY_NAMES = [
 ];
 
 /**
- * The current weekday and calendar day, both read in Accra.
+ * The greeting for an hour of the day, in Ghana.
+ *
+ * Pure and exported so the client can produce the same words while the
+ * dashboard's payload is in flight, and so both are unit-testable against the
+ * same table. The boundaries — before noon, before 17:00, after — are the
+ * school's working day rather than a clock's: 12:00 is when morning registration
+ * and the first two periods are over, and 17:00 is when the afternoon ends and
+ * only marking is left.
+ */
+export const greetingForHour = (hour) => {
+  const h = Number(hour);
+  if (!Number.isFinite(h)) return "Good morning";
+  if (h < 12) return "Good morning";
+  if (h < 17) return "Good afternoon";
+  return "Good evening";
+};
+
+/**
+ * The current weekday, calendar day and greeting, all read in Accra.
  *
  * The weekday is read through `Intl` with an explicit `Africa/Accra` zone
  * rather than with `getDay()`, because the process may run in any timezone: a
  * container set to US Eastern would call a Monday afternoon a Sunday evening
  * and every teacher would be told the wrong day's attendance was pending.
  * Ghana observes no daylight saving, so no branch is needed.
+ *
+ * The *greeting* is computed the same way and for the same reason. It used to be
+ * derived in the browser from `new Date().getHours()`, which made the words a
+ * property of the teacher's laptop clock rather than of the school day: a device
+ * set to US Eastern read 03:00 for a 12:30 Accra lunchtime, and the teacher was
+ * told "Good morning" while marking the afternoon's papers. Deriving it here, in
+ * Africa/Accra, makes one sentence the same for every teacher in the school.
  *
  * The date is normalised to 00:00 UTC, which *is* Accra midnight (UTC+0), so it
  * matches the `date` values `Attendance` rows are stored with.
@@ -32,13 +57,16 @@ const accraToday = (now = new Date()) => {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Africa/Accra",
     weekday: "long",
+    hour: "2-digit",
+    hourCycle: "h23",
   }).formatToParts(now);
   const weekday = parts.find((part) => part.type === "weekday")?.value;
+  const hour = Number(parts.find((part) => part.type === "hour")?.value);
 
   const date = new Date(now);
   date.setUTCHours(0, 0, 0, 0);
 
-  return { weekday, date };
+  return { weekday, hour, greeting: greetingForHour(hour), date };
 };
 
 /**
@@ -56,7 +84,7 @@ const accraToday = (now = new Date()) => {
 export const getTeacherDashboard = async (user) => {
   const { school, classes } = await loadTeacherScope(user, user.schoolId);
   const classNames = classes.map((entry) => entry.className);
-  const { weekday, date } = accraToday();
+  const { weekday, hour, greeting, date } = accraToday();
   const term = resolveTerm(undefined, school);
   const academicYear = resolveSchoolAcademicYear(school);
 
@@ -129,6 +157,12 @@ export const getTeacherDashboard = async (user) => {
 
   return {
     teacherName: user.name,
+    greeting,
+    /**
+     * The Accra hour the greeting was computed from, so the client can keep the
+     * words current without re-deriving the timezone itself.
+     */
+    greetingHour: hour,
     classCount: classes.length,
     totalStudents: classes.reduce((sum, entry) => sum + entry.studentCount, 0),
     today: weekday || DAY_NAMES[new Date().getDay()],

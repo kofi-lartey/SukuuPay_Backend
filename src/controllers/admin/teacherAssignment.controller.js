@@ -5,6 +5,10 @@ import {
   assignStudentsByClass,
   unassignStudents,
 } from "../../services/admin/teacherAssignment.service.js";
+import {
+  detectAssignmentDrift,
+  repairAssignmentDrift,
+} from "../../services/admin/teacherClassLink.js";
 import { resolveErrorMessage } from "../../middleware/errorHandler.js";
 
 /**
@@ -45,10 +49,43 @@ export const listTeacherStudentsController = async (req, res) => {
 export const listTeacherAssignmentCountsController = async (req, res) => {
   try {
     const counts = await listTeacherAssignmentCounts(req.user.schoolId);
+    // Drift is returned with the counts so the console can show the repair
+    // affordance on the same load as the tallies it contradicts, rather than
+    // making an admin discover the mismatch by asking a teacher why their page
+    // is empty.
+    const drift = await detectAssignmentDrift(req.user.schoolId);
     return res.status(200).json({
       success: true,
       message: "Assignment counts loaded",
-      data: { counts },
+      data: { counts, drift },
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+/**
+ * `POST /admin/users/teacher-assignment-drift/repair`
+ *
+ * Writes the `assignedClasses` slots that existing class-mediated rows imply.
+ * The fix for teachers whose console shows children but whose portal shows
+ * none — rows written before `syncClassTeacher` existed, or against service
+ * code from before it was deployed.
+ */
+export const repairAssignmentDriftController = async (req, res) => {
+  try {
+    const { teacherId } = req.body || {};
+    const result = await repairAssignmentDrift(req.user.schoolId, teacherId);
+    return res.status(200).json({
+      success: true,
+      message: result.repaired
+        ? `Synced ${result.classes} class${result.classes === 1 ? "" : "es"} for ${result.repaired} teacher${result.repaired === 1 ? "" : "s"}.`
+        : "Nothing to sync — every assignment is already on the portal.",
+      data: result,
     });
   } catch (error) {
     return res.status(error.status || 500).json({

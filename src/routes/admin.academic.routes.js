@@ -38,6 +38,7 @@ import {
   listTeacherAssignmentCountsController,
   assignStudentsController,
   unassignStudentsController,
+  repairAssignmentDriftController,
 } from "../controllers/admin/teacherAssignment.controller.js";
 import {
   submitGradesSchema,
@@ -62,6 +63,7 @@ import {
   listTeacherStudentsQuerySchema,
   assignStudentsSchema,
   unassignStudentsSchema,
+  repairAssignmentDriftSchema,
 } from "../validations/teacherAssignment.validation.js";
 
 /**
@@ -207,6 +209,21 @@ router.get(
   requireSchoolAdmin,
   requireSchool,
   listTeacherAssignmentCountsController
+);
+/**
+ * `POST /admin/users/teacher-assignment-drift/repair`
+ *
+ * The self-healing path for the bug this whole module exists for: rows written
+ * before `syncClassTeacher` existed leave a teacher with children on the console
+ * and no class on the portal. Registered with the other literal
+ * `/users/…` paths, ahead of the parameterised ones.
+ */
+router.post(
+  "/users/teacher-assignment-drift/repair",
+  requireSchoolAdmin,
+  requireSchool,
+  validate(repairAssignmentDriftSchema),
+  repairAssignmentDriftController
 );
 router.get(
   "/users/:teacherId/students",
