@@ -144,20 +144,18 @@ export const loadTeacherScope = async (user, schoolId) => {
     byClass.set(className, merged);
   }
 
-  // Live class-mediated assignments are a second source of truth: an admin who
-  // assigned a whole class wrote a TeacherAssignment row, and older rows predate
-  // the assignedClasses write entirely. Union them in so a teacher's classes
-  // reflect what was actually assigned, not only what happened to land on the
-  // user document. Additive only — never removes an entry the admin set by hand.
-  const mediated = await TeacherAssignment.find({
+  // Live assignments are a second source of truth: a class-level assignment and
+  // an individual student pick both put that class on the teacher's portal. A
+  // teacher who looks after even one child in JHS 2A should see JHS 2A on their
+  // portal, whatever route put the link there.
+  const liveAssignments = await TeacherAssignment.find({
     schoolId,
     teacherId: user._id,
-    classMediated: true,
     removedAt: null,
   })
     .select("className")
     .lean();
-  for (const row of mediated) {
+  for (const row of liveAssignments) {
     const className = String(row.className || "").trim();
     if (!className || !schoolClasses.includes(className)) continue;
     if (!byClass.has(className)) {
