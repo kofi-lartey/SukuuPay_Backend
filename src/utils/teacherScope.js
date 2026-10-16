@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import { School } from "../models/schoolModel.js";
 import { Student } from "../models/studentModel.js";
+import { TeacherAssignment } from "../models/TeacherAssignment.js";
 import ApiError from "./ApiError.js";
 
 /**
@@ -141,6 +142,27 @@ export const loadTeacherScope = async (user, schoolId) => {
       merged.subjects.push(subject);
     }
     byClass.set(className, merged);
+  }
+
+  // Live class-mediated assignments are a second source of truth: an admin who
+  // assigned a whole class wrote a TeacherAssignment row, and older rows predate
+  // the assignedClasses write entirely. Union them in so a teacher's classes
+  // reflect what was actually assigned, not only what happened to land on the
+  // user document. Additive only — never removes an entry the admin set by hand.
+  const mediated = await TeacherAssignment.find({
+    schoolId,
+    teacherId: user._id,
+    classMediated: true,
+    removedAt: null,
+  })
+    .select("className")
+    .lean();
+  for (const row of mediated) {
+    const className = String(row.className || "").trim();
+    if (!className || !schoolClasses.includes(className)) continue;
+    if (!byClass.has(className)) {
+      byClass.set(className, { className, subjects: [] });
+    }
   }
 
   const entries = [...byClass.values()];

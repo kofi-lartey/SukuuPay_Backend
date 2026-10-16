@@ -16,6 +16,7 @@ import {
   saveSingleGradeController,
   saveBulkGradesController,
   getScheduleController,
+  getAvailableClassesController,
 } from "../controllers/teacher/teacher.controller.js";
 import {
   submitTimetableController,
@@ -88,6 +89,7 @@ router.get("/dashboard", getDashboardController);
 
 // ── Classes ──
 router.get("/classes", getMyClassesController);
+router.get("/classes/available", getAvailableClassesController);
 // Route order matters: `/classes/roster` is a static path and is registered
 // before `/classes/:className/summary`, so a roster read can never be captured
 // by the summary route's `:className`.

@@ -2,6 +2,7 @@ import { Student } from "../../models/studentModel.js";
 import { Grade } from "../../models/Grade.js";
 import { ReportCard } from "../../models/ReportCard.js";
 import { Attendance } from "../../models/Attendance.js";
+import { School } from "../../models/schoolModel.js";
 import {
   loadTeacherScope,
   assertTeacherScope,
@@ -39,6 +40,28 @@ export const initialsOf = (name) =>
  */
 export const getMyClasses = async (user) => {
   const { classes } = await loadTeacherScope(user, user.schoolId);
+  return { classes };
+};
+
+/**
+ * `GET /teacher/classes/available`
+ *
+ * Every class the school runs, for the timetable create picker. A timetable is
+ * class-level and the teacher stamps their own name on each period, so any
+ * class in the school can be built — this is not gated on `assignedClasses`
+ * (which only reflects class-level assignments and stays empty for teachers
+ * holding individual student picks).
+ */
+export const getAvailableClasses = async (user) => {
+  const school = await School.findById(user.schoolId)
+    .select("academic.classes deletedAt")
+    .lean();
+  if (!school || school.deletedAt) {
+    throw new ApiError("School not found", 404, "SCHOOL_NOT_FOUND");
+  }
+  const classes = Array.isArray(school.academic?.classes)
+    ? school.academic.classes.map((className) => ({ className }))
+    : [];
   return { classes };
 };
 

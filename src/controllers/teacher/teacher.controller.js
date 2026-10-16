@@ -2,6 +2,7 @@ import {
   getMyClasses,
   getClassRoster,
   getClassSummary,
+  getAvailableClasses,
 } from "../../services/teacher/classes.service.js";
 import {
   getAttendanceForDate,
@@ -169,6 +170,20 @@ export const getScheduleController = async (req, res) => {
     return res
       .status(200)
       .json({ success: true, message: "Schedule loaded", data });
+  } catch (error) {
+    return failure(res, error);
+  }
+};
+
+// ── Available classes ──
+export const getAvailableClassesController = async (req, res) => {
+  try {
+    const data = await getAvailableClasses(req.teacher);
+    return res.status(200).json({
+      success: true,
+      message: "Classes loaded",
+      data,
+    });
   } catch (error) {
     return failure(res, error);
   }
