@@ -3,6 +3,7 @@ import { School } from "../../models/schoolModel.js";
 import { log as auditLog } from "../../utils/auditService.js";
 import { AUDIT_ACTIONS } from "../../config/constants.js";
 import ApiError from "../../utils/ApiError.js";
+import XLSX from "xlsx";
 
 /** The five days a Ghanaian basic school has lessons. Weekends are never scheduled. */
 const VALID_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
@@ -228,4 +229,234 @@ export const publishTimetable = async (schoolId, userId, { className, term, acad
   });
 
   return timetable.toObject();
+};
+
+/**
+ * The columns a school's timetable file may use.
+ *
+ * Headers are matched case-insensitively, with underscores and spaces treated as
+ * the same separator, so "Start Time", "start_time" and "starttime" all work.
+ */
+const FIELD_ALIASES = {
+  day: ["day", "weekday"],
+  period: ["period", "no", "#"],
+  startTime: ["start_time", "start time", "starttime", "start"],
+  endTime: ["end_time", "end time", "endtime", "end"],
+  subject: ["subject"],
+  teacher: ["teacher", "staff"],
+  room: ["room"],
+};
+
+const normalizeHeader = (header) =>
+  String(header || "").trim().toLowerCase().replace(/[_\s]+/g, " ");
+
+const parseCsv = (text, delimiter) => {
+  const rows = [];
+  let fields = [];
+  let current = "";
+  let inQuotes = false;
+
+  const flushField = () => {
+    fields.push(current);
+    current = "";
+  };
+
+  const flushRow = () => {
+    if (fields.length || current !== "") {
+      rows.push(fields);
+    }
+    fields = [];
+    current = "";
+  };
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+
+    if (inQuotes) {
+      if (ch === '"') {
+        if (next === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === delimiter) {
+      flushField();
+    } else if (ch === "\r") {
+      // Carriage returns are line noise; newlines end a row.
+    } else if (ch === "\n") {
+      flushField();
+      flushRow();
+    } else {
+      current += ch;
+    }
+  }
+
+  flushField();
+  flushRow();
+
+  if (!rows.length) return [];
+  const headers = rows[0].map(normalizeHeader);
+  return rows.slice(1).map((row) =>
+    Object.fromEntries(
+      headers.map((header, index) => [header, row[index] === undefined ? "" : row[index]])
+    )
+  );
+};
+
+const pickColumn = (row, field) => {
+  const aliases = FIELD_ALIASES[field];
+  return Object.keys(row).find((key) => aliases.includes(normalizeHeader(key)));
+};
+
+/**
+ * Guess a CSV delimiter from the header line so schools exporting semicolon
+ * CSVs are not rejected for not using commas.
+ */
+const guessDelimiter = (firstLine) => {
+  const candidates = [",", ";", "\t", "|"];
+  return candidates.reduce(
+    (best, d) => {
+      const count = firstLine.split(d).length - 1;
+      return count > best.count ? { d, count } : best;
+    },
+    { d: ",", count: 0 }
+  ).d;
+};
+
+/**
+ * Parse an uploaded CSV or Excel buffer into lesson rows.
+ *
+ * Rows with blank required cells are kept and reported as invalid, rather than
+ * silently dropped, so a school can see exactly which rows failed instead of
+ * wondering why a lesson vanished.
+ */
+export const parseTimetableFile = (buffer, filename) => {
+  const ext = filename.slice(filename.lastIndexOf(".")).toLowerCase();
+  let raw;
+
+  if (ext === ".csv" || ext === ".txt") {
+    const text = buffer.toString("utf8");
+    const firstLine = text.split("\n")[0] || "";
+    const delimiter = guessDelimiter(firstLine);
+    raw = parseCsv(text, delimiter);
+  } else if (ext === ".xlsx" || ext === ".xls" || ext === ".xlsm") {
+    const workbook = XLSX.read(buffer, { type: "buffer", cellDates: false });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+    if (!rows.length || rows.length < 2) {
+      throw new ApiError(
+        "The file has no data rows — add a header row and at least one lesson.",
+        400,
+        "PARSE_ERROR"
+      );
+    }
+    const headers = rows[0].map(normalizeHeader);
+    raw = rows.slice(1).map((row) =>
+      Object.fromEntries(headers.map((header, index) => [header, row[index]]))
+    );
+  } else {
+    throw new ApiError("Only CSV and Excel files are allowed", 400, "UNSUPPORTED_FILE");
+  }
+
+  const rows = raw.map((row) => {
+    const mapped = {};
+    for (const field of Object.keys(FIELD_ALIASES)) {
+      const key = pickColumn(row, field);
+      if (key !== undefined) mapped[field] = row[key];
+    }
+    return mapped;
+  });
+
+  const errors = [];
+  rows.forEach((row, index) => {
+    const rowNumber = index + 2; // header is row 1
+    const day = String(row.day || "").trim();
+    const period = Number(row.period);
+    const subject = String(row.subject || "").trim();
+    const startTime = String(row.startTime || "").trim();
+    const endTime = String(row.endTime || "").trim();
+
+    if (!VALID_DAYS.includes(day)) {
+      errors.push({ row: rowNumber, field: "day", message: `Unknown day "${day}"` });
+    }
+    if (!Number.isInteger(period) || period < 1 || period > 20) {
+      errors.push({
+        row: rowNumber,
+        field: "period",
+        message: `Period must be a whole number between 1 and 20, got "${row.period}"`,
+      });
+    }
+    if (!subject) {
+      errors.push({ row: rowNumber, field: "subject", message: "Subject is required" });
+    }
+    if (!startTime) {
+      errors.push({ row: rowNumber, field: "startTime", message: "Start time is required" });
+    }
+    if (!endTime) {
+      errors.push({ row: rowNumber, field: "endTime", message: "End time is required" });
+    }
+  });
+
+  if (errors.length) {
+    throw new ApiError(
+      `The file has ${errors.length} invalid row(s)`,
+      400,
+      "VALIDATION_ERROR",
+      { invalidRows: errors.slice(0, 50) }
+    );
+  }
+
+  const days = {};
+  for (const row of rows) {
+    const day = String(row.day).trim();
+    days[day] = [...(days[day] || []), {
+      period: Number(row.period),
+      startTime: String(row.startTime || "").trim(),
+      endTime: String(row.endTime || "").trim(),
+      subject: String(row.subject || "").trim(),
+      teacher: String(row.teacher || "").trim(),
+      room: String(row.room || "").trim(),
+    }];
+  }
+
+  return { rows: rows.length, days };
+};
+
+/**
+ * Import a class timetable from an uploaded CSV or Excel file.
+ *
+ * The file is parsed in memory and then written through the same guarded upsert
+ * as the form, so an import validates the class exists and stores exactly the
+ * same shape a teacher or parent would see in the portal.
+ */
+export const importTimetable = async (schoolId, userId, buffer, filename, payload) => {
+  const { className, term, academicYear, status = "draft" } = payload;
+
+  if (!className || !term || !academicYear) {
+    throw new ApiError("className, term, and academicYear are required", 400, "VALIDATION_ERROR");
+  }
+
+  const { rows, days } = parseTimetableFile(buffer, filename);
+  await assertClassExists(schoolId, className);
+
+  const timetable = await upsertTimetable(schoolId, userId, {
+    className,
+    term,
+    academicYear,
+    days,
+    status,
+  });
+
+  return { imported: rows, timetable };
 };

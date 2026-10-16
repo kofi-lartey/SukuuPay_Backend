@@ -4,6 +4,7 @@ import {
   getTimetable,
   listTimetables,
   publishTimetable,
+  importTimetable,
 } from "../../services/admin/timetable.service.js";
 import { resolveErrorMessage } from "../../middleware/errorHandler.js";
 
@@ -97,6 +98,52 @@ export const publishTimetableController = async (req, res) => {
       success: false,
       message: resolveErrorMessage(error),
       ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+/**
+ * POST /admin/timetables/upload — build a class timetable from a CSV/Excel file.
+ *
+ * Multer runs before this, so `req.file` is the parsed spreadsheet buffer and
+ * `req.body` carries `className`, `term`, `academicYear` and optional `status`.
+ * The file is never stored to disk or Cloudinary — it is parsed in memory and
+ * written through the same guarded upsert as the form.
+ */
+export const importTimetableController = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "A CSV or Excel file is required",
+        code: "NO_FILE",
+      });
+    }
+
+    const result = await importTimetable(
+      req.user.schoolId,
+      req.user._id,
+      req.file.buffer,
+      req.file.originalname,
+      {
+        className: req.body.className,
+        term: req.body.term,
+        academicYear: req.body.academicYear,
+        status: req.body.status || "draft",
+      }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: `Timetable imported — ${result.imported} lesson(s) written`,
+      data: result.timetable,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+      ...(error.meta ? { meta: error.meta } : {}),
     });
   }
 };

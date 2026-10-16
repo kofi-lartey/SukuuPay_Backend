@@ -2,7 +2,8 @@ import express from "express";
 import { authenticate, authorize } from "../middleware/authenticate.js";
 import { requireSchool } from "../middleware/requireSchool.js";
 import { validate } from "../middleware/validate.js";
-import { upsertTimetableController } from "../controllers/admin/timetable.controller.js";
+import { uploadBulk, asClientErrors } from "../middleware/upload.js";
+import { upsertTimetableController, importTimetableController } from "../controllers/admin/timetable.controller.js";
 import { upsertTimetableSchema } from "../validations/admin.timetable.validation.js";
 
 /**
@@ -30,6 +31,15 @@ router.put(
   requireSchool,
   validate(upsertTimetableSchema),
   upsertTimetableController
+);
+
+router.post(
+  "/timetables/upload",
+  authenticate,
+  authorize("super_admin", "school_admin", "teacher"),
+  requireSchool,
+  asClientErrors(uploadBulk),
+  importTimetableController
 );
 
 export const adminTimetableRoute = router;
