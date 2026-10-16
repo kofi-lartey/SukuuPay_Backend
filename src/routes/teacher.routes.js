@@ -18,6 +18,12 @@ import {
   getScheduleController,
 } from "../controllers/teacher/teacher.controller.js";
 import {
+  submitTimetableController,
+  withdrawTimetableController,
+  listTimetablesForTeacherController,
+  getTimetableForTeacherController,
+} from "../controllers/admin/timetable.controller.js";
+import {
   classQuerySchema,
   classSummaryParamsSchema,
   classSummaryQuerySchema,
@@ -29,6 +35,7 @@ import {
   saveSingleGradeSchema,
   saveBulkGradesSchema,
 } from "../validations/teacher.validation.js";
+import { timetableTermSchema } from "../validations/admin.timetable.validation.js";
 
 /**
  * The teacher portal's surface.
@@ -134,6 +141,32 @@ router.post(
 
 // ── Schedule ──
 router.get("/schedule", getScheduleController);
+
+// ── Timetables (teacher submission flow) ──
+// A teacher drafts a timetable through `PUT /admin/timetables` (gated to
+// `teacher` there), then submits or withdraws it here. Listing and reading
+// their own timetables stay on the teacher surface so the UI never has to
+// cross into `/admin`.
+router.get(
+  "/timetables",
+  validate(timetableTermSchema, "query"),
+  listTimetablesForTeacherController
+);
+router.get(
+  "/timetables/:className",
+  validate(timetableTermSchema, "query"),
+  getTimetableForTeacherController
+);
+router.post(
+  "/timetables/:className/submit",
+  validate(timetableTermSchema, "body"),
+  submitTimetableController
+);
+router.post(
+  "/timetables/:className/withdraw",
+  validate(timetableTermSchema, "body"),
+  withdrawTimetableController
+);
 
 export const teacherRoute = router;
 export default router;

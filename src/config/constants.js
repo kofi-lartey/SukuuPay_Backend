@@ -255,6 +255,10 @@ export const AUDIT_ACTIONS = {
   REPORT_CARD_COMPILE: "report_card.compile",
   REPORT_CARD_PUBLISH: "report_card.publish",
   TIMETABLE_UPSERT: "timetable.upsert",
+  TIMETABLE_SUBMIT: "timetable.submit",
+  TIMETABLE_WITHDRAW: "timetable.withdraw",
+  TIMETABLE_APPROVE: "timetable.approve",
+  TIMETABLE_REJECT: "timetable.reject",
 
   // ── Grade approval workflow ─────────────────────────────────────────────
   //

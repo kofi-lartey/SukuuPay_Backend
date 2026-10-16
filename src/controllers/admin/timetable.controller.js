@@ -4,7 +4,15 @@ import {
   getTimetable,
   listTimetables,
   publishTimetable,
+  publishApprovedTimetable,
   importTimetable,
+  submitTimetable,
+  withdrawTimetable,
+  approveTimetable,
+  rejectTimetable,
+  listSubmissions,
+  listTimetablesForTeacher,
+  getTimetableForTeacher,
 } from "../../services/admin/timetable.service.js";
 import { resolveErrorMessage } from "../../middleware/errorHandler.js";
 
@@ -49,7 +57,12 @@ export const upsertTimetableController = async (req, res) => {
  */
 export const saveTimetableForClassController = async (req, res) => {
   try {
-    const result = await saveTimetableForClass(req.user.schoolId, req.user._id, req.body);
+    const result = await saveTimetableForClass(
+      req.user.schoolId,
+      req.user._id,
+      req.body,
+      { actorRole: req.user.role }
+    );
     return res.status(201).json({ success: true, message: "Timetable saved", data: result });
   } catch (error) {
     return res.status(error.status || 500).json({
@@ -91,7 +104,7 @@ export const listTimetablesController = async (req, res) => {
 /** Publish a class's timetable, making it readable through the parent portal. */
 export const publishTimetableController = async (req, res) => {
   try {
-    const result = await publishTimetable(req.user.schoolId, req.user._id, req.body);
+    const result = await publishApprovedTimetable(req.user.schoolId, req.user._id, req.body);
     return res.status(200).json({ success: true, message: "Timetable published", data: result });
   } catch (error) {
     return res.status(error.status || 500).json({
@@ -144,6 +157,181 @@ export const importTimetableController = async (req, res) => {
       message: resolveErrorMessage(error),
       ...(error.code ? { code: error.code } : {}),
       ...(error.meta ? { meta: error.meta } : {}),
+    });
+  }
+};
+
+/**
+ * POST /admin/timetables/:className/submit — teacher sends their draft for review.
+ */
+export const submitTimetableController = async (req, res) => {
+  try {
+    const { className } = req.params;
+    const result = await submitTimetable(req.user.schoolId, req.user._id, {
+      className,
+      term: req.body.term,
+      academicYear: req.body.academicYear,
+      teacherName: req.user.name,
+    });
+    return res.status(200).json({
+      success: true,
+      message: "Timetable submitted for approval",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+/**
+ * POST /admin/timetables/:className/withdraw — teacher pulls their submission back.
+ */
+export const withdrawTimetableController = async (req, res) => {
+  try {
+    const { className } = req.params;
+    const result = await withdrawTimetable(req.user.schoolId, req.user._id, {
+      className,
+      term: req.body.term,
+      academicYear: req.body.academicYear,
+    });
+    return res.status(200).json({
+      success: true,
+      message: "Timetable withdrawn — back to draft",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+/**
+ * POST /admin/timetables/:className/approve — administrator signs off a submission.
+ */
+export const approveTimetableController = async (req, res) => {
+  try {
+    const { className } = req.params;
+    const result = await approveTimetable(req.user.schoolId, req.user._id, {
+      className,
+      term: req.body.term,
+      academicYear: req.body.academicYear,
+      comment: req.body.comment,
+    });
+    return res.status(200).json({
+      success: true,
+      message: "Timetable approved",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+/**
+ * POST /admin/timetables/:className/reject — administrator sends a submission back.
+ */
+export const rejectTimetableController = async (req, res) => {
+  try {
+    const { className } = req.params;
+    const result = await rejectTimetable(req.user.schoolId, req.user._id, {
+      className,
+      term: req.body.term,
+      academicYear: req.body.academicYear,
+      reason: req.body.reason,
+    });
+    return res.status(200).json({
+      success: true,
+      message: "Timetable rejected",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+/**
+ * GET /admin/timetables/submissions — the administrator's review queue.
+ */
+export const listSubmissionsController = async (req, res) => {
+  try {
+    const result = await listSubmissions(req.user.schoolId, {
+      term: req.query.term,
+      academicYear: req.query.academicYear,
+    });
+    return res.status(200).json({
+      success: true,
+      message: "Submissions loaded",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+/**
+ * GET /teacher/timetables — the teacher's own timetables.
+ */
+export const listTimetablesForTeacherController = async (req, res) => {
+  try {
+    const result = await listTimetablesForTeacher(req.teacher.schoolId, req.teacher._id, {
+      term: req.query.term,
+      academicYear: req.query.academicYear,
+    });
+    return res.status(200).json({
+      success: true,
+      message: "Timetables loaded",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+/**
+ * GET /teacher/timetables/:className — one of the teacher's timetables.
+ */
+export const getTimetableForTeacherController = async (req, res) => {
+  try {
+    const { className } = req.params;
+    const result = await getTimetableForTeacher(
+      req.teacher.schoolId,
+      req.teacher._id,
+      className,
+      { term: req.query.term, academicYear: req.query.academicYear }
+    );
+    return res.status(200).json({
+      success: true,
+      message: "Timetable loaded",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
     });
   }
 };

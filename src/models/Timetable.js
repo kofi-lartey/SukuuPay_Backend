@@ -63,6 +63,44 @@ const timetableSchema = new mongoose.Schema(
       default: "draft",
       index: true,
     },
+    /**
+     * The teacher-facing approval lifecycle, separate from `status`.
+     *
+     * `status` gates what parents see (only `published`). `submissionStatus`
+     * gates what a teacher may edit and what an administrator may review:
+     *
+     *   draft      teacher is editing, nothing sent for review
+     *   submitted  teacher has sent it to the administrator; locked for edits
+     *   approved   administrator signed off; administrator may publish
+     *   rejected   administrator sent it back with a reason; editable again
+     */
+    submissionStatus: {
+      type: String,
+      enum: ["draft", "submitted", "approved", "rejected"],
+      default: "draft",
+      index: true,
+    },
+    submittedAt: { type: Date, default: null },
+    submittedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    teacherName: { type: String, default: "", trim: true },
+    approvedAt: { type: Date, default: null },
+    approvedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    approvalComment: { type: String, default: "", trim: true },
+    rejectedAt: { type: Date, default: null },
+    rejectedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    rejectionReason: { type: String, default: "", trim: true },
     publishedAt: { type: Date, default: null },
     publishedBy: {
       type: mongoose.Schema.Types.ObjectId,

@@ -1,5 +1,6 @@
 import { Timetable } from "../../models/Timetable.js";
 import { School } from "../../models/schoolModel.js";
+import { User } from "../../models/userModel.js";
 import { log as auditLog } from "../../utils/auditService.js";
 import { AUDIT_ACTIONS } from "../../config/constants.js";
 import ApiError from "../../utils/ApiError.js";
@@ -56,8 +57,21 @@ export const normalizeDays = (days) => {
  *  - times keep their wall-clock string form. They are "8:00 am", not an
  *    instant, and storing them as one would pin them to a single Monday.
  */
-export const upsertTimetable = async (schoolId, userId, payload) => {
-  const { className, term, academicYear, days, status = "draft" } = payload;
+export const upsertTimetable = async (
+  schoolId,
+  userId,
+  payload,
+  { actorRole } = {}
+) => {
+  const {
+    className,
+    term,
+    academicYear,
+    days,
+    status = "draft",
+    teacherName,
+    submissionStatus,
+  } = payload;
 
   if (!className || !term || !academicYear || !days) {
     throw new ApiError(
@@ -66,6 +80,40 @@ export const upsertTimetable = async (schoolId, userId, payload) => {
       "VALIDATION_ERROR"
     );
   }
+
+  // A timetable that has been sent for review, approved, or published is locked
+  // from further edits — only `draft` (never submitted) and `rejected` (sent
+  // back by the administrator) can be overwritten. This keeps the approval
+  // trail trustworthy: what the administrator saw is what they approve.
+  const existing = await Timetable.findOne({
+    schoolId,
+    className,
+    term,
+    academicYear,
+    deletedAt: null,
+  }).select("submissionStatus").lean();
+  if (
+    existing &&
+    ["submitted", "approved", "published"].includes(existing.submissionStatus)
+  ) {
+    throw new ApiError(
+      `This timetable is ${existing.submissionStatus} and cannot be edited`,
+      403,
+      "TIMETABLE_LOCKED"
+    );
+  }
+
+  // A school administrator is the approving authority, so a timetable they
+  // create is approved straight away; a teacher's draft stays `draft` until
+  // they submit it for review. On an update the existing lifecycle value is
+  // preserved — saving never promotes or demotes a submission.
+  const isAdmin = ["school_admin", "super_admin"].includes(actorRole || "");
+  const nextSubmissionStatus =
+    existing === null
+      ? isAdmin
+        ? "approved"
+        : "draft"
+      : existing.submissionStatus;
 
   const normalised = normalizeDays(days);
 
@@ -81,6 +129,8 @@ export const upsertTimetable = async (schoolId, userId, payload) => {
         academicYear,
         days: normalised,
         status,
+        submissionStatus: nextSubmissionStatus,
+        ...(teacherName !== undefined ? { teacherName } : {}),
         // Stamped only on the transition into `published`. Re-saving a published
         // timetable must not silently renew its publish date, which is the record
         // of when parents were first shown it.
@@ -101,6 +151,7 @@ export const upsertTimetable = async (schoolId, userId, payload) => {
       term,
       academicYear,
       status,
+      submissionStatus: nextSubmissionStatus,
       periods: VALID_DAYS.reduce((sum, day) => sum + normalised[day].length, 0),
     },
   });
@@ -137,13 +188,18 @@ const assertClassExists = async (schoolId, className) => {
  * rather than in the shared write, and only the newer, class-aware surface gets
  * the 404.
  */
-export const saveTimetableForClass = async (schoolId, userId, payload) => {
+export const saveTimetableForClass = async (
+  schoolId,
+  userId,
+  payload,
+  { actorRole } = {}
+) => {
   const { className } = payload;
   if (!className) {
     throw new ApiError("className is required", 400, "VALIDATION_ERROR");
   }
   await assertClassExists(schoolId, className);
-  return upsertTimetable(schoolId, userId, payload);
+  return upsertTimetable(schoolId, userId, payload, { actorRole });
 };
 
 /**
@@ -212,6 +268,63 @@ export const publishTimetable = async (schoolId, userId, { className, term, acad
   });
   if (!timetable) {
     throw new ApiError("Timetable not found", 404, "NOT_FOUND");
+  }
+
+  timetable.status = "published";
+  timetable.publishedAt = new Date();
+  timetable.publishedBy = userId;
+  await timetable.save();
+
+  await auditLog({
+    action: AUDIT_ACTIONS.TIMETABLE_PUBLISH,
+    entity: "Timetable",
+    entityId: timetable._id,
+    userId,
+    schoolId,
+    meta: { className, term, academicYear },
+  });
+
+  return timetable.toObject();
+};
+
+/**
+ * Publish a class's timetable, but only once the administrator has approved it.
+ *
+ * A draft that was never submitted, or a submission the administrator rejected,
+ * must not become visible to parents just because someone called publish. The
+ * guard below is the load-bearing rule: publish is the last step of the
+ * approval flow, not the first.
+ */
+export const publishApprovedTimetable = async (
+  schoolId,
+  userId,
+  { className, term, academicYear }
+) => {
+  if (!className || !term || !academicYear) {
+    throw new ApiError(
+      "className, term, and academicYear are required",
+      400,
+      "VALIDATION_ERROR"
+    );
+  }
+
+  const timetable = await Timetable.findOne({
+    schoolId,
+    className,
+    term,
+    academicYear,
+    deletedAt: null,
+  });
+  if (!timetable) {
+    throw new ApiError("Timetable not found", 404, "NOT_FOUND");
+  }
+
+  if (timetable.submissionStatus !== "approved") {
+    throw new ApiError(
+      "Only an approved timetable can be published",
+      403,
+      "TIMETABLE_NOT_APPROVED"
+    );
   }
 
   timetable.status = "published";
@@ -459,4 +572,352 @@ export const importTimetable = async (schoolId, userId, buffer, filename, payloa
   });
 
   return { imported: rows, timetable };
+};
+
+/**
+ * The submission-status values a timetable can be acted on.
+ */
+const EDITABLE_STATUSES = ["draft", "rejected"];
+
+/**
+ * Load one timetable and assert the caller may act on it.
+ */
+const loadTimetableForActor = async (schoolId, className, term, academicYear) => {
+  const timetable = await Timetable.findOne({
+    schoolId,
+    className,
+    term,
+    academicYear,
+    deletedAt: null,
+  }).lean();
+  if (!timetable) {
+    throw new ApiError("Timetable not found", 404, "NOT_FOUND");
+  }
+  return timetable;
+};
+
+/**
+ * `POST /teacher/timetables/:className/submit`
+ *
+ * A teacher sends their draft to the administrator for review. Once submitted,
+ * the timetable is locked: the teacher can no longer edit it until the
+ * administrator approves, rejects, or the teacher withdraws it.
+ */
+export const submitTimetable = async (
+  schoolId,
+  userId,
+  { className, term, academicYear, teacherName }
+) => {
+  if (!className || !term || !academicYear) {
+    throw new ApiError(
+      "className, term, and academicYear are required",
+      400,
+      "VALIDATION_ERROR"
+    );
+  }
+
+  const timetable = await loadTimetableForActor(
+    schoolId,
+    className,
+    term,
+    academicYear
+  );
+
+  if (timetable.submissionStatus !== "draft") {
+    throw new ApiError(
+      `Only a draft timetable can be submitted (current: ${timetable.submissionStatus})`,
+      403,
+      "TIMETABLE_NOT_DRAFT"
+    );
+  }
+
+  const hasPeriods = VALID_DAYS.some(
+    (day) => (timetable.days?.[day] || []).length > 0
+  );
+  if (!hasPeriods) {
+    throw new ApiError(
+      "Add at least one period before submitting",
+      400,
+      "TIMETABLE_EMPTY"
+    );
+  }
+
+  timetable.submissionStatus = "submitted";
+  timetable.submittedAt = new Date();
+  timetable.submittedBy = userId;
+  if (teacherName !== undefined) timetable.teacherName = teacherName;
+  await timetable.save();
+
+  await auditLog({
+    action: AUDIT_ACTIONS.TIMETABLE_SUBMIT,
+    entity: "Timetable",
+    entityId: timetable._id,
+    userId,
+    schoolId,
+    meta: { className, term, academicYear },
+  });
+
+  return timetable.toObject();
+};
+
+/**
+ * `POST /teacher/timetables/:className/withdraw`
+ *
+ * A teacher pulls a submitted timetable back before the administrator acts on
+ * it. Returns the timetable to `draft` and re-enables editing.
+ */
+export const withdrawTimetable = async (
+  schoolId,
+  userId,
+  { className, term, academicYear }
+) => {
+  if (!className || !term || !academicYear) {
+    throw new ApiError(
+      "className, term, and academicYear are required",
+      400,
+      "VALIDATION_ERROR"
+    );
+  }
+
+  const timetable = await loadTimetableForActor(
+    schoolId,
+    className,
+    term,
+    academicYear
+  );
+
+  if (timetable.submissionStatus !== "submitted") {
+    throw new ApiError(
+      `Only a submitted timetable can be withdrawn (current: ${timetable.submissionStatus})`,
+      403,
+      "TIMETABLE_NOT_SUBMITTED"
+    );
+  }
+
+  timetable.submissionStatus = "draft";
+  timetable.submittedAt = null;
+  timetable.submittedBy = null;
+  await timetable.save();
+
+  await auditLog({
+    action: AUDIT_ACTIONS.TIMETABLE_WITHDRAW,
+    entity: "Timetable",
+    entityId: timetable._id,
+    userId,
+    schoolId,
+    meta: { className, term, academicYear },
+  });
+
+  return timetable.toObject();
+};
+
+/**
+ * `POST /admin/timetables/:className/approve`
+ *
+ * The administrator signs off a submitted timetable. After approval, the
+ * administrator may publish it (parents then see it); the teacher can no longer
+ * edit it.
+ */
+export const approveTimetable = async (
+  schoolId,
+  adminUserId,
+  { className, term, academicYear, comment }
+) => {
+  if (!className || !term || !academicYear) {
+    throw new ApiError(
+      "className, term, and academicYear are required",
+      400,
+      "VALIDATION_ERROR"
+    );
+  }
+
+  const timetable = await loadTimetableForActor(
+    schoolId,
+    className,
+    term,
+    academicYear
+  );
+
+  if (timetable.submissionStatus !== "submitted") {
+    throw new ApiError(
+      `Only a submitted timetable can be approved (current: ${timetable.submissionStatus})`,
+      403,
+      "TIMETABLE_NOT_SUBMITTED"
+    );
+  }
+
+  timetable.submissionStatus = "approved";
+  timetable.approvedAt = new Date();
+  timetable.approvedBy = adminUserId;
+  timetable.approvalComment = String(comment || "").trim();
+  await timetable.save();
+
+  await auditLog({
+    action: AUDIT_ACTIONS.TIMETABLE_APPROVE,
+    entity: "Timetable",
+    entityId: timetable._id,
+    userId: adminUserId,
+    schoolId,
+    meta: { className, term, academicYear, comment },
+  });
+
+  return timetable.toObject();
+};
+
+/**
+ * `POST /admin/timetables/:className/reject`
+ *
+ * The administrator sends a submitted timetable back to the teacher with a
+ * reason. The timetable returns to `draft` and the teacher can edit and
+ * resubmit it.
+ */
+export const rejectTimetable = async (
+  schoolId,
+  adminUserId,
+  { className, term, academicYear, reason }
+) => {
+  if (!className || !term || !academicYear) {
+    throw new ApiError(
+      "className, term, and academicYear are required",
+      400,
+      "VALIDATION_ERROR"
+    );
+  }
+
+  const rejectionReason = String(reason || "").trim();
+  if (!rejectionReason) {
+    throw new ApiError("A rejection reason is required", 400, "VALIDATION_ERROR");
+  }
+
+  const timetable = await loadTimetableForActor(
+    schoolId,
+    className,
+    term,
+    academicYear
+  );
+
+  if (timetable.submissionStatus !== "submitted") {
+    throw new ApiError(
+      `Only a submitted timetable can be rejected (current: ${timetable.submissionStatus})`,
+      403,
+      "TIMETABLE_NOT_SUBMITTED"
+    );
+  }
+
+  timetable.submissionStatus = "rejected";
+  timetable.rejectedAt = new Date();
+  timetable.rejectedBy = adminUserId;
+  timetable.rejectionReason = rejectionReason;
+  await timetable.save();
+
+  await auditLog({
+    action: AUDIT_ACTIONS.TIMETABLE_REJECT,
+    entity: "Timetable",
+    entityId: timetable._id,
+    userId: adminUserId,
+    schoolId,
+    meta: { className, term, academicYear, reason: rejectionReason },
+  });
+
+  return timetable.toObject();
+};
+
+/**
+ * `GET /admin/timetables/submissions` — the administrator's review queue.
+ *
+ * Every timetable in the school awaiting a decision, newest first. Projects
+ * only the fields the review row needs, not the full `days` grid.
+ */
+export const listSubmissions = async (
+  schoolId,
+  { term, academicYear } = {}
+) => {
+  const filter = {
+    schoolId,
+    deletedAt: null,
+    submissionStatus: "submitted",
+  };
+  if (term) filter.term = term;
+  if (academicYear) filter.academicYear = academicYear;
+
+  const submissions = await Timetable.find(filter)
+    .select(
+      "className term academicYear teacherName submissionStatus submittedAt submittedBy updatedAt"
+    )
+    .sort({ submittedAt: -1 })
+    .lean();
+
+  // Attach the submitting teacher's name where it was not snapshotted.
+  const ids = [...new Set(submissions.map((s) => String(s.submittedBy)))];
+  const teachers = await User.find({ _id: { $in: ids } })
+    .select("_id name")
+    .lean();
+  const teacherById = new Map(teachers.map((t) => [String(t._id), t.name]));
+
+  return {
+    submissions: submissions.map((s) => ({
+      ...s,
+      teacher: s.teacherName || teacherById.get(String(s.submittedBy)) || "",
+    })),
+  };
+};
+
+/**
+ * `GET /teacher/timetables` — the teacher's own timetables.
+ *
+ * Every timetable the teacher has touched for their assigned classes, with
+ * its current submission status so the teacher can see whether it is still a
+ * draft, awaiting review, approved, rejected, or published.
+ */
+export const listTimetablesForTeacher = async (
+  schoolId,
+  teacherUserId,
+  { term, academicYear } = {}
+) => {
+  const filter = {
+    schoolId,
+    deletedAt: null,
+    $or: [
+      { submittedBy: teacherUserId },
+      { teacherName: { $regex: new RegExp(String(teacherUserId), "i") } },
+    ],
+  };
+  if (term) filter.term = term;
+  if (academicYear) filter.academicYear = academicYear;
+
+  const timetables = await Timetable.find(filter)
+    .select(
+      "className term academicYear days status submissionStatus submittedAt submittedBy approvedAt rejectedAt rejectionReason updatedAt"
+    )
+    .sort({ updatedAt: -1 })
+    .lean();
+
+  return { timetables };
+};
+
+/**
+ * `GET /teacher/timetables/:className` — one of the teacher's timetables.
+ */
+export const getTimetableForTeacher = async (
+  schoolId,
+  teacherUserId,
+  className,
+  { term, academicYear } = {}
+) => {
+  const filter = {
+    schoolId,
+    className,
+    deletedAt: null,
+    $or: [
+      { submittedBy: teacherUserId },
+      { teacherName: { $regex: new RegExp(String(teacherUserId), "i") } },
+    ],
+  };
+  if (term) filter.term = term;
+  if (academicYear) filter.academicYear = academicYear;
+
+  const timetable = await Timetable.findOne(filter)
+    .sort({ updatedAt: -1 })
+    .lean();
+  return timetable || null;
 };

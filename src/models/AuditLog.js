@@ -249,6 +249,10 @@ const AUDIT_ACTIONS = [
   "report_card.compile",
   "report_card.publish",
   "timetable.upsert",
+  "timetable.submit",
+  "timetable.withdraw",
+  "timetable.approve",
+  "timetable.reject",
 
   // ── Grade approval workflow ─────────────────────────────────────────────
   // Submit (a teacher sends a class in), approve and reject (a headmaster

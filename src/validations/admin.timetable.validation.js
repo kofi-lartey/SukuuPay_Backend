@@ -50,3 +50,18 @@ export const upsertTimetableSchema = Joi.object({
     Friday: Joi.array().items(periodSchema).default([]),
   }).required(),
 });
+
+/** The term and year a timetable belongs to — both narrow a single document. */
+export const timetableTermSchema = Joi.object({
+  term: Joi.string().valid(...ACADEMIC_TERMS).required(),
+  academicYear: Joi.string().trim().pattern(ACADEMIC_YEAR).required(),
+});
+
+/** Approve carries an optional comment; reject requires a reason. */
+export const timetableApproveSchema = timetableTermSchema.keys({
+  comment: Joi.string().trim().max(300).allow("").optional(),
+});
+
+export const timetableRejectSchema = timetableTermSchema.keys({
+  reason: Joi.string().trim().min(3).max(300).required(),
+});
