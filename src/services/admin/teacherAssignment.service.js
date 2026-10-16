@@ -5,7 +5,7 @@ import { User } from "../../models/userModel.js";
 import { log as auditLog } from "../../utils/auditService.js";
 import { AUDIT_ACTIONS } from "../../config/constants.js";
 import ApiError from "../../utils/ApiError.js";
-import { linkStudents, syncClassTeacher } from "./teacherClassLink.js";
+import { linkStudents, moveClassSlot, syncClassTeacher } from "./teacherClassLink.js";
 
 /**
  * Which students a teacher is responsible for, and the writes that change it.
@@ -260,6 +260,18 @@ export const assignStudents = async (schoolId, adminUserId, teacherUserId, stude
     students,
     classMediated: false,
   });
+
+  /**
+   * Individual picks sit in TeacherAssignment rows, but the Classes page and the
+   * teacher portal count from `User.assignedClasses`. When every student the
+   * admin just picked belongs to the same class, move the class-teacher slot to
+   * this teacher so the Classes page shows them as assigned and the portal can
+   * open the class — instead of the admin having to re-run "assign by class".
+   */
+  const classNames = new Set(students.map((s) => s.studentClass).filter(Boolean));
+  if (classNames.size === 1 && written.assigned) {
+    await moveClassSlot(schoolId, [...classNames][0], "", teacher._id);
+  }
 
   await auditLog({
     action: AUDIT_ACTIONS.CLASS_ASSIGN_TEACHER,
