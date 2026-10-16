@@ -3,7 +3,7 @@ import { School } from '../models/schoolModel.js';
 import { sendEmail } from '../services/emailService.js';
 import { invitationEmail } from '../templates/emails.js';
 import { CLIENT_URL } from '../config/env.js';
-import { AUDIT_ACTIONS } from '../config/constants.js';
+import { AUDIT_ACTIONS, SCHOOL_JOIN_ROLES } from '../config/constants.js';
 import { logRequest as auditLog } from '../utils/auditService.js';
 import { createNotification } from '../services/notification.service.js';
 import { generateDefaultPassword } from '../utils/defaultPassword.js';
@@ -237,6 +237,10 @@ export const inviteUser = async (req, res) => {
       // response flag and the resend endpoint exist to make recoverable.
       isEmailVerified: true,
       schoolId: school._id,
+      // Invited staff arrive already linked to their school, so for join-flow
+      // roles (teacher, accountant, viewer) onboarding is complete by definition.
+      // `school_admin` stays false so they still hit the provisioning + wizard.
+      onboardingCompleted: SCHOOL_JOIN_ROLES.includes(targetRole),
       invitedBy: req.user._id,
       invitedAt: new Date(),
       inviteCount: 1,
@@ -293,7 +297,14 @@ export const inviteUser = async (req, res) => {
       try {
         await createNotification({
           userId: req.user._id,
-          schoolId: school._id,
+       schoolId: school._id,
+       // Invited staff arrive already linked to their school, so for join-flow
+       // roles (teacher, accountant, viewer) onboarding is complete by definition —
+       // they have no wizard to walk. `school_admin` stays false so they still
+       // hit the provisioning + wizard steps. Without this, the `user.onboardingCompleted`
+       // field stays false forever, which on a backend without the SCHOOL_JOIN_ROLES
+       // branch in `onboardingBlock` sends them through onboarding again.
+       onboardingCompleted: SCHOOL_JOIN_ROLES.includes(targetRole),
           type: 'system.alert',
           title: `Invitation to ${user.name} was not delivered`,
           message: `The account was created, but the email to ${user.email} failed to send. Re-send the invitation so ${user.name.split(' ')[0]} can sign in.`,

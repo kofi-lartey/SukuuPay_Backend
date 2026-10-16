@@ -419,6 +419,7 @@ export const decideJoinRequest = async (user, requestId, { decision, note }) => 
       await request.save({ session });
 
       applicant.schoolId = user.schoolId;
+      applicant.onboardingCompleted = true;
       await applicant.save({ session });
 
       return request.toJSON();

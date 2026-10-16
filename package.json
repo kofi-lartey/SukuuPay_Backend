@@ -8,6 +8,7 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "audit:unlinked": "node scripts/audit-unlinked-users.js",
+    "fix:onboarding-completed": "node scripts/fix-onboarding-completed.js",
     "demo:backup": "node scripts/backup-demo-data.mjs",
     "demo:purge": "node scripts/purge-demo-data.js",
     "demo:restore": "node scripts/restore-demo-data.mjs"
