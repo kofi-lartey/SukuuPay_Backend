@@ -287,6 +287,15 @@ const AUDIT_ACTIONS = [
 
   // Publishing a timetable, distinct from writing one.
   "timetable.publish",
+  // Deactivating (removing from views without hard-delete), republishing,
+  // and the teacher-initiated removal-request lifecycle.
+  "timetable.deactivate",
+  "timetable.republish",
+  "timetable.remove",
+  "timetable.removal_request",
+  "timetable.removal_withdraw",
+  "timetable.removal_approve",
+  "timetable.removal_reject",
 
   // ── Teacher grade book writes ──
   //

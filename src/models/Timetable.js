@@ -107,6 +107,50 @@ const timetableSchema = new mongoose.Schema(
       ref: "User",
       default: null,
     },
+    /**
+     * Deactivation fields. A teacher or admin deactivates a published timetable to
+     * remove it from parent/teacher views without hard-deleting it. The timetable
+     * stays on disk with `status: "draft"` but `deactivatedAt` set, and schedule
+     * queries filter it out.
+     */
+    deactivatedAt: { type: Date, default: null },
+    deactivatedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    deactivationReason: { type: String, default: "", trim: true },
+    /**
+     * Removal-request fields. A teacher requests removal of a timetable they own;
+     * the admin then confirms or rejects the request. `removalStatus` is `null`
+     * until requested, `"requested"` while pending, and back to `null` on withdraw
+     * or reject. `deletionStatus` records the admin's final decision: `null` while
+     * pending, `"removed"` when confirmed.
+     */
+    removalStatus: {
+      type: String,
+      enum: ["requested", "rejected"],
+      default: null,
+      index: true,
+    },
+    removalRequestedAt: { type: Date, default: null },
+    removalRequestedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    removalReason: { type: String, default: "", trim: true },
+    removalDecidedAt: { type: Date, default: null },
+    removalDecidedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    deletionStatus: {
+      type: String,
+      enum: ["pending", "removed"],
+      default: null,
+    },
     deletedAt: { type: Date, default: null, index: true },
   },
   { timestamps: true }

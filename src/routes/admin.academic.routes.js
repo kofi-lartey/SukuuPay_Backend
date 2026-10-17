@@ -31,6 +31,12 @@ import {
   getTimetableController,
   listTimetablesController,
   publishTimetableController,
+  deactivateTimetableController,
+  republishTimetableController,
+  removeTimetableController,
+  listRemovalRequestsController,
+  confirmRemovalController,
+  rejectRemovalController,
 } from "../controllers/admin/timetable.controller.js";
 import { getAcademicOverviewController } from "../controllers/admin/academicDashboard.controller.js";
 import {

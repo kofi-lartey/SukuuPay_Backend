@@ -259,6 +259,13 @@ export const AUDIT_ACTIONS = {
   TIMETABLE_WITHDRAW: "timetable.withdraw",
   TIMETABLE_APPROVE: "timetable.approve",
   TIMETABLE_REJECT: "timetable.reject",
+  TIMETABLE_DEACTIVATE: "timetable.deactivate",
+  TIMETABLE_REPUBLISH: "timetable.republish",
+  TIMETABLE_REMOVE: "timetable.remove",
+  TIMETABLE_REMOVAL_REQUEST: "timetable.removal_request",
+  TIMETABLE_REMOVAL_WITHDRAW: "timetable.removal_withdraw",
+  TIMETABLE_REMOVAL_APPROVE: "timetable.removal_approve",
+  TIMETABLE_REMOVAL_REJECT: "timetable.removal_reject",
 
   // ── Grade approval workflow ─────────────────────────────────────────────
   //

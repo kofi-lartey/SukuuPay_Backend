@@ -11,13 +11,23 @@ import {
   approveTimetableController,
   rejectTimetableController,
   listSubmissionsController,
+  deactivateTimetableController,
+  republishTimetableController,
+  removeTimetableController,
+  listRemovalRequestsController,
+  confirmRemovalController,
+  rejectRemovalController,
+  requestRemovalController,
+  withdrawRemovalController,
 } from "../controllers/admin/timetable.controller.js";
 import {
   upsertTimetableSchema,
   timetableTermSchema,
   timetableApproveSchema,
   timetableRejectSchema,
+  timetableRemovalRequestSchema,
 } from "../validations/admin.timetable.validation.js";
+import { classNameParamSchema } from "../validations/admin.academic.validation.js";
 
 /**
  * Class timetables, mounted under `/admin` from `routes/index.js`.
@@ -113,6 +123,103 @@ router.post(
   requireSchool,
   validate(timetableRejectSchema, "body"),
   rejectTimetableController
+);
+
+/**
+ * ── Deactivation / Re-publication / Removal ──
+ *
+ * After approval and publication, the headmaster may:
+ *  - Deactivate: remove a published timetable from parent/teacher views
+ *    without deleting it (reversible via republish).
+ *  - Republish: restore a deactivated timetable.
+ *  - Remove: permanently soft-delete a timetable (irreversible).
+ *
+ * Removal requests are a separate flow: the teacher files a request asking
+ * the headmaster to remove a timetable they own; the headmaster confirms or
+ * rejects the request.
+ */
+router.post(
+  "/timetables/deactivate",
+  authenticate,
+  authorize("super_admin", "school_admin"),
+  requireSchool,
+  validate(timetableTermSchema, "body"),
+  deactivateTimetableController
+);
+
+router.post(
+  "/timetables/republish",
+  authenticate,
+  authorize("super_admin", "school_admin"),
+  requireSchool,
+  validate(timetableTermSchema, "body"),
+  republishTimetableController
+);
+
+router.delete(
+  "/timetables/:className/remove",
+  authenticate,
+  authorize("super_admin", "school_admin"),
+  requireSchool,
+  validate(classNameParamSchema, "params"),
+  validate(timetableTermSchema, "query"),
+  removeTimetableController
+);
+
+/**
+ * Removal request queue — the headmaster's review surface for teacher-requested
+ * timetable removals. Separate from the submission queue: a removal request is
+ * about the timetable's *existence*, a submission is about its *content*.
+ */
+router.get(
+  "/timetables/removal-requests",
+  authenticate,
+  authorize("super_admin", "school_admin"),
+  requireSchool,
+  listRemovalRequestsController
+);
+
+router.post(
+  "/timetables/:className/confirm-removal",
+  authenticate,
+  authorize("super_admin", "school_admin"),
+  requireSchool,
+  validate(classNameParamSchema, "params"),
+  validate(timetableTermSchema, "body"),
+  confirmRemovalController
+);
+
+router.post(
+  "/timetables/:className/reject-removal",
+  authenticate,
+  authorize("super_admin", "school_admin"),
+  requireSchool,
+  validate(classNameParamSchema, "params"),
+  validate(timetableTermSchema, "body"),
+  rejectRemovalController
+);
+
+/**
+ * Teacher-initiated removal request — a teacher asks the headmaster to remove
+ * a timetable they own. Gated to teacher (and admin, for parity): the service
+ * enforces that the timetable's `submittedBy` matches the caller.
+ */
+router.post(
+  "/timetables/:className/request-removal",
+  authenticate,
+  authorize("super_admin", "school_admin", "teacher"),
+  requireSchool,
+  validate(timetableRemovalRequestSchema),
+  requestRemovalController
+);
+
+router.post(
+  "/timetables/:className/withdraw-removal",
+  authenticate,
+  authorize("super_admin", "school_admin", "teacher"),
+  requireSchool,
+  validate(timetableTermSchema, "body"),
+  withdrawRemovalController
 );
 
 export const adminTimetableRoute = router;

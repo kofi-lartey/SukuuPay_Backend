@@ -65,3 +65,8 @@ export const timetableApproveSchema = timetableTermSchema.keys({
 export const timetableRejectSchema = timetableTermSchema.keys({
   reason: Joi.string().trim().min(3).max(300).required(),
 });
+
+/** A teacher's removal request carries the reason for the removal. */
+export const timetableRemovalRequestSchema = timetableTermSchema.keys({
+  reason: Joi.string().trim().min(10).max(500).required(),
+});

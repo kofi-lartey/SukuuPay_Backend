@@ -125,6 +125,7 @@ export const getStudentTimetable = async (token, { weekOf, now } = {}) => {
     term: currentTerm,
     status: "published",
     deletedAt: null,
+    deactivatedAt: null,
   }).lean();
 
   await auditLog({

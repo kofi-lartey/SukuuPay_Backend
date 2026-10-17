@@ -13,6 +13,14 @@ import {
   listSubmissions,
   listTimetablesForTeacher,
   getTimetableForTeacher,
+  deactivateTimetable,
+  republishTimetable,
+  removeTimetable,
+  listRemovalRequests,
+  confirmRemoval,
+  rejectRemovalRequest,
+  requestTimetableRemoval,
+  withdrawRemovalRequest,
 } from "../../services/admin/timetable.service.js";
 import { resolveErrorMessage } from "../../middleware/errorHandler.js";
 
@@ -305,6 +313,23 @@ export const listTimetablesForTeacherController = async (req, res) => {
   } catch (error) {
     return res.status(error.status || 500).json({
       success: false,
+       message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+/**
+ * POST /admin/timetables/deactivate — remove a published timetable from views
+ * without hard-deleting it.
+ */
+export const deactivateTimetableController = async (req, res) => {
+  try {
+    const result = await deactivateTimetable(req.user.schoolId, req.user._id, req.body);
+    return res.status(200).json({ success: true, message: "Timetable deactivated", data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
       message: resolveErrorMessage(error),
       ...(error.code ? { code: error.code } : {}),
     });
@@ -312,8 +337,142 @@ export const listTimetablesForTeacherController = async (req, res) => {
 };
 
 /**
- * GET /teacher/timetables/:className — one of the teacher's timetables.
+ * POST /admin/timetables/republish — re-publish a deactivated timetable.
  */
+export const republishTimetableController = async (req, res) => {
+  try {
+    const result = await republishTimetable(req.user.schoolId, req.user._id, req.body);
+    return res.status(200).json({ success: true, message: "Timetable republished", data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+/**
+ * DELETE /admin/timetables/:className/remove — permanently remove a timetable.
+ */
+export const removeTimetableController = async (req, res) => {
+  try {
+    const { className } = req.params;
+    const result = await removeTimetable(req.user.schoolId, req.user._id, {
+      className,
+      term: req.query.term,
+      academicYear: req.query.academicYear,
+    });
+    return res.status(200).json({ success: true, message: "Timetable removed", data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+/**
+ * GET /admin/timetables/removal-requests — the admin's removal request queue.
+ */
+export const listRemovalRequestsController = async (req, res) => {
+  try {
+    const result = await listRemovalRequests(req.user.schoolId);
+    return res.status(200).json({ success: true, message: "Removal requests loaded", data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+/**
+ * POST /admin/timetables/:className/confirm-removal — confirm a removal request.
+ */
+export const confirmRemovalController = async (req, res) => {
+  try {
+    const { className } = req.params;
+    const result = await confirmRemoval(req.user.schoolId, req.user._id, {
+      className,
+      term: req.body.term,
+      academicYear: req.body.academicYear,
+    });
+    return res.status(200).json({ success: true, message: "Removal confirmed", data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+/**
+ * POST /admin/timetables/:className/reject-removal — reject a removal request.
+ */
+export const rejectRemovalController = async (req, res) => {
+  try {
+    const { className } = req.params;
+    const result = await rejectRemovalRequest(req.user.schoolId, req.user._id, {
+      className,
+      term: req.body.term,
+      academicYear: req.body.academicYear,
+    });
+    return res.status(200).json({ success: true, message: "Removal request rejected", data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+/**
+ * POST /teacher/timetables/:className/request-removal — teacher requests removal.
+ */
+export const requestRemovalController = async (req, res) => {
+  try {
+    const { className } = req.params;
+    const result = await requestTimetableRemoval(req.teacher.schoolId, req.teacher._id, {
+      className,
+      term: req.body.term,
+      academicYear: req.body.academicYear,
+      reason: req.body.reason,
+    });
+    return res.status(200).json({ success: true, message: "Removal request submitted", data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+/**
+ * POST /teacher/timetables/:className/withdraw-removal — teacher withdraws a removal request.
+ */
+export const withdrawRemovalController = async (req, res) => {
+  try {
+    const { className } = req.params;
+    const result = await withdrawRemovalRequest(req.teacher.schoolId, req.teacher._id, {
+      className,
+      term: req.body.term,
+      academicYear: req.body.academicYear,
+    });
+    return res.status(200).json({ success: true, message: "Removal request withdrawn", data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
 export const getTimetableForTeacherController = async (req, res) => {
   try {
     const { className } = req.params;

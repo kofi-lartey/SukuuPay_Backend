@@ -23,6 +23,8 @@ import {
   withdrawTimetableController,
   listTimetablesForTeacherController,
   getTimetableForTeacherController,
+  requestRemovalController,
+  withdrawRemovalController,
 } from "../controllers/admin/timetable.controller.js";
 import {
   classQuerySchema,
@@ -36,7 +38,10 @@ import {
   saveSingleGradeSchema,
   saveBulkGradesSchema,
 } from "../validations/teacher.validation.js";
-import { timetableTermSchema } from "../validations/admin.timetable.validation.js";
+import {
+  timetableTermSchema,
+  timetableRemovalRequestSchema,
+} from "../validations/admin.timetable.validation.js";
 
 /**
  * The teacher portal's surface.
@@ -168,6 +173,24 @@ router.post(
   "/timetables/:className/withdraw",
   validate(timetableTermSchema, "body"),
   withdrawTimetableController
+);
+
+/**
+ * ── Removal requests ──
+ *
+ * A teacher can request removal of a timetable they own (submitted or approved).
+ * The request goes to the admin's removal-request queue for review.
+ */
+router.post(
+  "/timetables/:className/request-removal",
+  validate(timetableRemovalRequestSchema),
+  requestRemovalController
+);
+
+router.post(
+  "/timetables/:className/withdraw-removal",
+  validate(timetableTermSchema, "body"),
+  withdrawRemovalController
 );
 
 export const teacherRoute = router;

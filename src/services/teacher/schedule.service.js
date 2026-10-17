@@ -101,8 +101,12 @@ export const getTeacherSchedule = async (user) => {
     className: { $in: classNames },
     term,
     academicYear,
-    status: "published",
     deletedAt: null,
+    deactivatedAt: null,
+    $or: [
+      { status: "published" },
+      { submissionStatus: "approved" },
+    ],
   }).lean();
 
   const clock = accraNow();

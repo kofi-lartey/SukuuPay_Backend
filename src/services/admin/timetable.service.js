@@ -238,7 +238,7 @@ export const listTimetables = async (schoolId, { term, academicYear, status } = 
   if (status) filter.status = status;
 
   const timetables = await Timetable.find(filter)
-    .select("className term academicYear status publishedAt updatedAt")
+    .select("className term academicYear status publishedAt deactivatedAt updatedAt")
     .sort({ className: 1 })
     .lean();
 
@@ -880,7 +880,7 @@ export const listSubmissions = async (
 
   const submissions = await Timetable.find(filter)
     .select(
-      "className term academicYear teacherName submissionStatus submittedAt submittedBy updatedAt"
+      "className term academicYear teacherName submissionStatus submittedAt submittedBy removalStatus removalReason updatedAt"
     )
     .sort({ submittedAt: -1 })
     .lean();
@@ -925,7 +925,7 @@ export const listTimetablesForTeacher = async (
 
   const timetables = await Timetable.find(filter)
     .select(
-      "className term academicYear days status submissionStatus submittedAt submittedBy approvedAt rejectedAt rejectionReason updatedAt"
+      "className term academicYear days status submissionStatus submittedAt submittedBy approvedAt rejectedAt rejectionReason removalStatus removalRequestedAt removalReason deactivatedAt updatedAt"
     )
     .sort({ updatedAt: -1 })
     .lean();
@@ -959,4 +959,378 @@ export const getTimetableForTeacher = async (
     .sort({ updatedAt: -1 })
     .lean();
   return timetable || null;
+};
+
+/**
+ * The guard shared by every state-transition service on a timetable:
+ * load the document, assert it exists, and return it. Keeping this in one
+ * place means "timetable not found" and "term/year mismatch" are always a
+ * 404 with the same shape, no matter which endpoint a caller hits.
+ */
+const requireTimetable = async (schoolId, { className, term, academicYear }) => {
+  const timetable = await Timetable.findOne({
+    schoolId,
+    className,
+    term,
+    academicYear,
+    deletedAt: null,
+  });
+  if (!timetable) {
+    throw new ApiError("Timetable not found", 404, "NOT_FOUND");
+  }
+  return timetable;
+};
+
+/**
+ * Deactivate a published timetable.
+ *
+ * Sets `status` back to `"draft"` and stamps `deactivatedAt`/`deactivatedBy`.
+ * Schedule queries in both the teacher and parent surfaces filter on
+ * `deactivatedAt: null`, so the timetable vanishes from views immediately.
+ * Only a `published` timetable with no active removal request can be
+ * deactivated — a draft is already invisible, and one caught in a removal
+ * flow must be decided there, not here.
+ */
+export const deactivateTimetable = async (schoolId, userId, { className, term, academicYear }) => {
+  const timetable = await requireTimetable(schoolId, { className, term, academicYear });
+
+  if (timetable.status !== "published") {
+    throw new ApiError(
+      `Only a published timetable can be deactivated (current: ${timetable.status})`,
+      403,
+      "TIMETABLE_NOT_PUBLISHED"
+    );
+  }
+
+  if (timetable.removalStatus === "requested") {
+    throw new ApiError(
+      "Timetable has a removal request in progress; resolve it first",
+      409,
+      "TIMETABLE_REMOVAL_PENDING"
+    );
+  }
+
+  timetable.status = "draft";
+  timetable.deactivatedAt = new Date();
+  timetable.deactivatedBy = userId;
+  await timetable.save();
+
+  await auditLog({
+    action: AUDIT_ACTIONS.TIMETABLE_DEACTIVATE,
+    entity: "Timetable",
+    entityId: timetable._id,
+    userId,
+    schoolId,
+    meta: { className, term, academicYear },
+  });
+
+  return timetable.toObject();
+};
+
+/**
+ * Re-publish a deactivated timetable.
+ *
+ * The inverse of `deactivateTimetable`: clears `deactivatedAt`/`deactivatedBy`
+ * and stamps `publishedAt`/`publishedBy` so the publish audit trail is honest.
+ * Only a timetable that was published and then deactivated can be re-published.
+ */
+export const republishTimetable = async (schoolId, userId, { className, term, academicYear }) => {
+  const timetable = await requireTimetable(schoolId, { className, term, academicYear });
+
+  if (!timetable.deactivatedAt || timetable.status !== "draft") {
+    throw new ApiError(
+      "Only a deactivated timetable can be republished",
+      403,
+      "TIMETABLE_NOT_DEACTIVATED"
+    );
+  }
+
+  timetable.status = "published";
+  timetable.deactivatedAt = null;
+  timetable.deactivatedBy = null;
+  timetable.deactivationReason = "";
+  timetable.publishedAt = new Date();
+  timetable.publishedBy = userId;
+  await timetable.save();
+
+  await auditLog({
+    action: AUDIT_ACTIONS.TIMETABLE_REPUBLISH,
+    entity: "Timetable",
+    entityId: timetable._id,
+    userId,
+    schoolId,
+    meta: { className, term, academicYear },
+  });
+
+  return timetable.toObject();
+};
+
+/**
+ * Permanently remove a timetable (soft-delete).
+ *
+ * Sets `deletedAt`, making the timetable invisible to every query that filters
+ * on `deletedAt: null`. This is a hard, irreversible action — the confirmation
+ * step lives on the frontend; the backend simply honours the request.
+ */
+export const removeTimetable = async (schoolId, userId, { className, term, academicYear }) => {
+  const timetable = await requireTimetable(schoolId, { className, term, academicYear });
+
+  timetable.deletedAt = new Date();
+  await timetable.save();
+
+  await auditLog({
+    action: AUDIT_ACTIONS.TIMETABLE_REMOVE,
+    entity: "Timetable",
+    entityId: timetable._id,
+    userId,
+    schoolId,
+    meta: { className, term, academicYear },
+  });
+
+  return { deleted: true };
+};
+
+/**
+ * List every timetable with an active removal request.
+ *
+ * The admin's removal-request queue — separate from the approval queue
+ * (`listSubmissions`, which only shows `submissionStatus: "submitted"`).
+ * Returns the full timetable projection so the admin can inspect who asked
+ * and why without a separate fetch.
+ */
+export const listRemovalRequests = async (schoolId) => {
+  const timetables = await Timetable.find({
+    schoolId,
+    deletedAt: null,
+    removalStatus: "requested",
+  })
+    .select(
+      "className term academicYear teacherName removalStatus removalRequestedAt removalReason removalRequestedBy removalDecidedAt removalDecidedBy deletionStatus updatedAt"
+    )
+    .populate("removalRequestedBy", "_id name")
+    .sort({ removalRequestedAt: -1 })
+    .lean();
+
+  return {
+    requests: timetables.map((t) => ({
+      ...t,
+      removalRequestedByName: t.removalRequestedBy?.name || t.teacherName || "",
+      removalRequestedById: String(t.removalRequestedBy?._id || t.removalRequestedBy || ""),
+    })),
+  };
+};
+
+/**
+ * Confirm a removal request — soft-delete the timetable.
+ *
+ * Sets `deletedAt`, `deletionStatus: "removed"`, and decision tracking fields.
+ * Only a timetable with `removalStatus: "requested"` can be confirmed.
+ */
+export const confirmRemoval = async (schoolId, userId, { className, term, academicYear }) => {
+  const timetable = await requireTimetable(schoolId, { className, term, academicYear });
+
+  if (timetable.removalStatus !== "requested") {
+    throw new ApiError(
+      "Only a timetable with an active removal request can be confirmed for removal",
+      403,
+      "TIMETABLE_NOT_REQUESTED"
+    );
+  }
+
+  timetable.deletedAt = new Date();
+  timetable.deletionStatus = "removed";
+  timetable.removalDecidedAt = new Date();
+  timetable.removalDecidedBy = userId;
+  await timetable.save();
+
+  await auditLog({
+    action: AUDIT_ACTIONS.TIMETABLE_REMOVAL_APPROVE,
+    entity: "Timetable",
+    entityId: timetable._id,
+    userId,
+    schoolId,
+    meta: { className, term, academicYear },
+  });
+
+  return { deleted: true };
+};
+
+/**
+ * Reject a removal request — clear the request and let the timetable live on.
+ *
+ * Sets `removalStatus` back to `null` and stamps decision tracking fields.
+ * Only a timetable with `removalStatus: "requested"` can be rejected.
+ */
+export const rejectRemovalRequest = async (schoolId, userId, { className, term, academicYear }) => {
+  const timetable = await requireTimetable(schoolId, { className, term, academicYear });
+
+  if (timetable.removalStatus !== "requested") {
+    throw new ApiError(
+      "Only a timetable with an active removal request can be rejected",
+      403,
+      "TIMETABLE_NOT_REQUESTED"
+    );
+  }
+
+  timetable.removalStatus = null;
+  timetable.removalRequestedAt = null;
+  timetable.removalRequestedBy = null;
+  timetable.removalReason = "";
+  timetable.removalDecidedAt = new Date();
+  timetable.removalDecidedBy = userId;
+  await timetable.save();
+
+  await auditLog({
+    action: AUDIT_ACTIONS.TIMETABLE_REMOVAL_REJECT,
+    entity: "Timetable",
+    entityId: timetable._id,
+    userId,
+    schoolId,
+    meta: { className, term, academicYear },
+  });
+
+  return timetable.toObject();
+};
+
+/**
+ * Teacher-initiated: request removal of a timetable the teacher owns.
+ *
+ * Only a timetable in `submitted` or `approved` state — i.e. not still being
+ * edited, and not already published — can have a removal request filed
+ * against it. The timetable must belong to this teacher, checked via
+ * `submittedBy` or `teacherName`.
+ */
+export const requestTimetableRemoval = async (
+  schoolId,
+  userId,
+  { className, term, academicYear, reason }
+) => {
+  if (!className || !term || !academicYear) {
+    throw new ApiError(
+      "className, term, and academicYear are required",
+      400,
+      "VALIDATION_ERROR"
+    );
+  }
+
+  const removalReason = String(reason || "").trim();
+  if (!removalReason || removalReason.length < 10) {
+    throw new ApiError("A removal reason of at least 10 characters is required", 400, "VALIDATION_ERROR");
+  }
+
+  const timetable = await Timetable.findOne({
+    schoolId,
+    className,
+    term,
+    academicYear,
+    deletedAt: null,
+  }).lean();
+
+  if (!timetable) {
+    throw new ApiError("Timetable not found", 404, "NOT_FOUND");
+  }
+
+  const isOwner =
+    String(timetable.submittedBy) === String(userId);
+
+  if (!isOwner) {
+    throw new ApiError("You do not have permission to request removal of this timetable", 403, "FORBIDDEN");
+  }
+
+  if (!["submitted", "approved"].includes(timetable.submissionStatus)) {
+    throw new ApiError(
+      `Only a submitted or approved timetable can have a removal requested (current: ${timetable.submissionStatus})`,
+      403,
+      "TIMETABLE_NOT_SUBMITTED"
+    );
+  }
+
+  if (timetable.removalStatus === "requested") {
+    throw new ApiError(
+      "A removal request is already pending for this timetable",
+      409,
+      "TIMETABLE_REMOVAL_PENDING"
+    );
+  }
+
+  const updated = await Timetable.findOneAndUpdate(
+    { schoolId, className, term, academicYear, deletedAt: null },
+    {
+      $set: {
+        removalStatus: "requested",
+        removalRequestedAt: new Date(),
+        removalRequestedBy: userId,
+        removalReason,
+      },
+    },
+    { new: true }
+  ).lean();
+
+  await auditLog({
+    action: AUDIT_ACTIONS.TIMETABLE_REMOVAL_REQUEST,
+    entity: "Timetable",
+    entityId: updated._id,
+    userId,
+    schoolId,
+    meta: { className, term, academicYear, reason: removalReason },
+  });
+
+  return { ...updated, teacherName: timetable.teacherName };
+};
+
+/**
+ * Teacher-initiated: withdraw a removal request before the admin acts on it.
+ *
+ * Only the teacher who filed the request can withdraw it, and only while it is
+ * still pending (`removalStatus: "requested"`).
+ */
+export const withdrawRemovalRequest = async (schoolId, userId, { className, term, academicYear }) => {
+  if (!className || !term || !academicYear) {
+    throw new ApiError(
+      "className, term, and academicYear are required",
+      400,
+      "VALIDATION_ERROR"
+    );
+  }
+
+  const timetable = await Timetable.findOne({
+    schoolId,
+    className,
+    term,
+    academicYear,
+    deletedAt: null,
+  });
+
+  if (!timetable) {
+    throw new ApiError("Timetable not found", 404, "NOT_FOUND");
+  }
+
+  if (timetable.removalStatus !== "requested") {
+    throw new ApiError(
+      "Only a timetable with an active removal request can be withdrawn",
+      403,
+      "TIMETABLE_NOT_REQUESTED"
+    );
+  }
+
+  if (String(timetable.removalRequestedBy) !== String(userId)) {
+    throw new ApiError("Only the teacher who requested removal can withdraw it", 403, "FORBIDDEN");
+  }
+
+  timetable.removalStatus = null;
+  timetable.removalRequestedAt = null;
+  timetable.removalRequestedBy = null;
+  timetable.removalReason = "";
+  await timetable.save();
+
+  await auditLog({
+    action: AUDIT_ACTIONS.TIMETABLE_REMOVAL_WITHDRAW,
+    entity: "Timetable",
+    entityId: timetable._id,
+    userId,
+    schoolId,
+    meta: { className, term, academicYear },
+  });
+
+  return timetable.toObject();
 };
