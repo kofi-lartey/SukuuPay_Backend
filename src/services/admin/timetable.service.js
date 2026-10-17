@@ -131,6 +131,10 @@ export const upsertTimetable = async (
         status,
         submissionStatus: nextSubmissionStatus,
         ...(teacherName !== undefined ? { teacherName } : {}),
+        // A teacher's draft is owned by them: stamp `submittedBy` so
+        // `getTimetableForTeacher` can find it. Admin-created timetables
+        // leave it null (they use the unfiltered `getTimetable` instead).
+        ...(actorRole === "teacher" ? { submittedBy: userId } : {}),
         // Stamped only on the transition into `published`. Re-saving a published
         // timetable must not silently renew its publish date, which is the record
         // of when parents were first shown it.
@@ -482,14 +486,20 @@ export const parseTimetableFile = (buffer, filename) => {
     throw new ApiError("Only CSV and Excel files are allowed", 400, "UNSUPPORTED_FILE");
   }
 
-  const rows = raw.map((row) => {
-    const mapped = {};
-    for (const field of Object.keys(FIELD_ALIASES)) {
-      const key = pickColumn(row, field);
-      if (key !== undefined) mapped[field] = row[key];
-    }
-    return mapped;
-  });
+  const rows = raw
+    .filter((row) => {
+      // Skip completely blank lines (e.g. a trailing newline in a CSV/Excel file).
+      const values = Object.values(row || {});
+      return values.some((v) => String(v ?? "").trim() !== "");
+    })
+    .map((row) => {
+      const mapped = {};
+      for (const field of Object.keys(FIELD_ALIASES)) {
+        const key = pickColumn(row, field);
+        if (key !== undefined) mapped[field] = row[key];
+      }
+      return mapped;
+    });
 
   const errors = [];
   rows.forEach((row, index) => {
@@ -553,7 +563,7 @@ export const parseTimetableFile = (buffer, filename) => {
  * as the form, so an import validates the class exists and stores exactly the
  * same shape a teacher or parent would see in the portal.
  */
-export const importTimetable = async (schoolId, userId, buffer, filename, payload) => {
+export const importTimetable = async (schoolId, userId, buffer, filename, payload, { actorRole } = {}) => {
   const { className, term, academicYear, status = "draft" } = payload;
 
   if (!className || !term || !academicYear) {
@@ -569,7 +579,7 @@ export const importTimetable = async (schoolId, userId, buffer, filename, payloa
     academicYear,
     days,
     status,
-  });
+  }, { actorRole });
 
   return { imported: rows, timetable };
 };
@@ -642,22 +652,29 @@ export const submitTimetable = async (
     );
   }
 
-  timetable.submissionStatus = "submitted";
-  timetable.submittedAt = new Date();
-  timetable.submittedBy = userId;
-  if (teacherName !== undefined) timetable.teacherName = teacherName;
-  await timetable.save();
+  const updated = await Timetable.findOneAndUpdate(
+    { schoolId, className, term, academicYear, deletedAt: null },
+    {
+      $set: {
+        submissionStatus: "submitted",
+        submittedAt: new Date(),
+        submittedBy: userId,
+        ...(teacherName !== undefined ? { teacherName } : {}),
+      },
+    },
+    { new: true }
+  ).lean();
 
   await auditLog({
     action: AUDIT_ACTIONS.TIMETABLE_SUBMIT,
     entity: "Timetable",
-    entityId: timetable._id,
+    entityId: updated._id,
     userId,
     schoolId,
     meta: { className, term, academicYear },
   });
 
-  return timetable.toObject();
+  return updated;
 };
 
 /**
@@ -694,21 +711,28 @@ export const withdrawTimetable = async (
     );
   }
 
-  timetable.submissionStatus = "draft";
-  timetable.submittedAt = null;
-  timetable.submittedBy = null;
-  await timetable.save();
+  const updated = await Timetable.findOneAndUpdate(
+    { schoolId, className, term, academicYear, deletedAt: null },
+    {
+      $set: {
+        submissionStatus: "draft",
+        submittedAt: null,
+        submittedBy: null,
+      },
+    },
+    { new: true }
+  ).lean();
 
   await auditLog({
     action: AUDIT_ACTIONS.TIMETABLE_WITHDRAW,
     entity: "Timetable",
-    entityId: timetable._id,
+    entityId: updated._id,
     userId,
     schoolId,
     meta: { className, term, academicYear },
   });
 
-  return timetable.toObject();
+  return updated;
 };
 
 /**
@@ -746,22 +770,29 @@ export const approveTimetable = async (
     );
   }
 
-  timetable.submissionStatus = "approved";
-  timetable.approvedAt = new Date();
-  timetable.approvedBy = adminUserId;
-  timetable.approvalComment = String(comment || "").trim();
-  await timetable.save();
+  const updated = await Timetable.findOneAndUpdate(
+    { schoolId, className, term, academicYear, deletedAt: null },
+    {
+      $set: {
+        submissionStatus: "approved",
+        approvedAt: new Date(),
+        approvedBy: adminUserId,
+        approvalComment: String(comment || "").trim(),
+      },
+    },
+    { new: true }
+  ).lean();
 
   await auditLog({
     action: AUDIT_ACTIONS.TIMETABLE_APPROVE,
     entity: "Timetable",
-    entityId: timetable._id,
+    entityId: updated._id,
     userId: adminUserId,
     schoolId,
     meta: { className, term, academicYear, comment },
   });
 
-  return timetable.toObject();
+  return updated;
 };
 
 /**
@@ -804,22 +835,29 @@ export const rejectTimetable = async (
     );
   }
 
-  timetable.submissionStatus = "rejected";
-  timetable.rejectedAt = new Date();
-  timetable.rejectedBy = adminUserId;
-  timetable.rejectionReason = rejectionReason;
-  await timetable.save();
+  const updated = await Timetable.findOneAndUpdate(
+    { schoolId, className, term, academicYear, deletedAt: null },
+    {
+      $set: {
+        submissionStatus: "rejected",
+        rejectedAt: new Date(),
+        rejectedBy: adminUserId,
+        rejectionReason,
+      },
+    },
+    { new: true }
+  ).lean();
 
   await auditLog({
     action: AUDIT_ACTIONS.TIMETABLE_REJECT,
     entity: "Timetable",
-    entityId: timetable._id,
+    entityId: updated._id,
     userId: adminUserId,
     schoolId,
     meta: { className, term, academicYear, reason: rejectionReason },
   });
 
-  return timetable.toObject();
+  return updated;
 };
 
 /**
@@ -910,6 +948,7 @@ export const getTimetableForTeacher = async (
     deletedAt: null,
     $or: [
       { submittedBy: teacherUserId },
+      { submittedBy: null },
       { teacherName: { $regex: new RegExp(String(teacherUserId), "i") } },
     ],
   };

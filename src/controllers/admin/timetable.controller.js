@@ -143,7 +143,8 @@ export const importTimetableController = async (req, res) => {
         term: req.body.term,
         academicYear: req.body.academicYear,
         status: req.body.status || "draft",
-      }
+      },
+      { actorRole: req.user.role }
     );
 
     return res.status(200).json({
