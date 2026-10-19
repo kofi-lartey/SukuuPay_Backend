@@ -196,6 +196,18 @@ export const initiatePayment = async (token, data) => {
 
   const school = await fetchSchool(student.schoolId);
 
+  // The school is the other half of this payment: it holds the fee lines, the
+  // gateway key and the receipt address. A student whose school cannot be
+  // read cannot be paid, and saying so beats the `TypeError` that reading
+  // `school.schoolCode` off a null would otherwise raise.
+  if (!school) {
+    throw new ApiError(
+      "We could not find your school on this payment link. Please contact the school.",
+      400,
+      "SCHOOL_NOT_FOUND"
+    );
+  }
+
   // Find primary parent for contact info
   const primaryParent = (student.parents || []).find((p) => p.isPrimary) || student.parents?.[0];
 
@@ -204,6 +216,31 @@ export const initiatePayment = async (token, data) => {
   // Paystack is used.
   const method = data.phone || data.phoneNumber ? 'momo' : 'card';
   const gateway = resolveGateway(school, method);
+
+  // The address the gateway's hosted checkout sends the receipt to.
+  //
+  // Paystack refuses a transaction with no email, and it is the only active
+  // gateway, so the address has to be settled *before* the Payment row is
+  // written — a refusal after the write leaves a pending payment with no
+  // gateway transaction behind it.
+  //
+  // It is resolved here, where the student's guardians are in scope. It used to
+  // be read inside `initiatePaystackPayment`, from a `primaryParent` that was
+  // never in scope there: a `ReferenceError` on every card payment, which the
+  // parent saw as a 500 on the one screen they had to get past.
+  //
+  // The school's own address is the fallback, and it is a real one rather than a
+  // placeholder — a school with an email on file can receive the receipt even
+  // when the guardian has none, and the bursar is the accountable party.
+  const payerEmail = primaryParent?.email || school?.email || "";
+
+  if (!payerEmail) {
+    throw new ApiError(
+      "This school has no email address on file, so a payment cannot be started. Please contact the school.",
+      400,
+      "PAYER_EMAIL_MISSING"
+    );
+  }
 
   // Stamp the plan this payment settles, when there is a live one.
   //
@@ -242,7 +279,7 @@ export const initiatePayment = async (token, data) => {
   });
 
   if (gateway === "paystack") {
-    return initiatePaystackPayment(payment, student, school, token);
+    return initiatePaystackPayment(payment, student, school, token, payerEmail);
   }
 
   if (gateway === "mtn") {
@@ -260,7 +297,7 @@ export const initiatePayment = async (token, data) => {
  * payment. The final status arrives by webhook (POST /api/webhooks/paystack/payment)
  * or by polling the verify endpoint via `verifyPayment`.
  */
-const initiatePaystackPayment = async (payment, student, school, token) => {
+const initiatePaystackPayment = async (payment, student, school, token, payerEmail = "") => {
   const secretKey = getPaystackSecretKey(school);
 
   if (!secretKey) {
@@ -274,7 +311,11 @@ const initiatePaystackPayment = async (payment, student, school, token) => {
     );
   }
 
-  const parentEmail = primaryParent?.email || payment.momoPhoneNumber || student.createdBy?.email || "";
+  // The payer's address, as resolved by the caller — the student's primary
+  // guardian, or the school when the guardian has none. Never the parent's
+  // phone number: Paystack validates the field as an email address and
+  // rejects a transaction that carries a phone number in it.
+  const parentEmail = payerEmail || school?.email || "";
 
   try {
     const callbackUrl = `${PAY_LINK_BASE_URL}/pay/${token}`;

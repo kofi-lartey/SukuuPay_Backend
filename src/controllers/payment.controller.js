@@ -14,6 +14,9 @@ import {
 import {
   getPaymentHistory,
   requestPaymentPlan,
+  getPaymentPlan,
+  cancelPaymentPlan,
+  sendSupportMessage,
   notifySchool,
   verifyPaymentByReference,
   buildParentReceipt,
@@ -143,6 +146,7 @@ export const getPaymentHistoryController = async (req, res) => {
     const result = await getPaymentHistory(req.params.token, {
       page: Number(req.query.page) || 1,
       perPage: Number(req.query.perPage) || 20,
+      filter: req.query.filter || "all",
     });
 
     return res.status(200).json({
@@ -180,8 +184,106 @@ export const requestPaymentPlanController = async (req, res) => {
   }
 };
 
+// ──────────────────── Public: The parent's payment plan ────────────────────
+
+/**
+ * `GET /pay/:token/plan` — the live plan, or null.
+ *
+ * A student with no plan is a state the page renders, not an error: the empty
+ * state offers the request form, and answering 404 would turn "you have no
+ * plan" into "this link is broken".
+ */
+export const getPaymentPlanController = async (req, res) => {
+  try {
+    const result = await getPaymentPlan(req.params.token);
+
+    return res.status(200).json({
+      success: true,
+      message: "Payment plan retrieved",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+/**
+ * `POST /pay/:token/plan/cancel` — the parent cancels their own plan.
+ *
+ * The message in the body is the service's, not a fixed string here: a
+ * withdrawn request and a cancelled schedule are different events and the
+ * parent is told which one happened.
+ */
+export const cancelPaymentPlanController = async (req, res) => {
+  try {
+    const result = await cancelPaymentPlan(req.params.token, req.body);
+
+    return res.status(200).json({
+      success: true,
+      message: result.message,
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+// ──────────────────── Public: The support form ────────────────────
+
+/**
+ * `POST /pay/:token/support` — the parent's letter to the school office.
+ *
+ * It lands in the same inbox as the pay page's "contact the school" form,
+ * because it is that form, asked for in a place with room to type. The
+ * wording is chosen against what actually happened, for the same reason
+ * `notifySchoolController` chooses its own: a parent told "the school will be
+ * in touch" when no alert left the building is a message that costs a bursar
+ * a phone call.
+ */
+export const sendSupportMessageController = async (req, res) => {
+  try {
+    const result = await sendSupportMessage(req.params.token, {
+      ...req.body,
+      ip:
+        req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+        req.socket?.remoteAddress ||
+        null,
+    });
+
+    let message;
+    if (result.adminsNotified > 0) {
+      message = "Your message has been sent to the school.";
+    } else {
+      message = result.schoolPhone
+        ? "Your message has been saved. The school does not have an alert number set up, so please call them so they know to look."
+        : "Your message has been saved. The school does not have an alert number set up, so please contact them so they know to look.";
+    }
+
+    return res.status(200).json({
+      success: true,
+      message,
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
 // ──────────────────── Public: Notify the school ────────────────────
 export const notifySchoolController = async (req, res) => {
+
   try {
     const result = await notifySchool(req.params.token, {
       ...req.body,

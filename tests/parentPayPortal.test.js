@@ -31,7 +31,9 @@ import {
   payRequestPlanSchema,
   payNotifySchoolSchema,
   payReceiptParamSchema,
-  payHistoryQuerySchema,
+  payPaymentsQuerySchema,
+  payPlanCancelSchema,
+  paySupportSchema,
   PAY_TOKEN_PATTERN,
   PORTAL_NETWORK_ALIASES,
 } from '../src/validations/payment.validation.js';
@@ -692,19 +694,73 @@ describe('parent portal: contact-school validation', () => {
     assert.ok(error);
   });
 });
-
 describe('parent portal: history pagination', () => {
   test('defaults to the first page of twenty', () => {
-    const { value } = validate(payHistoryQuerySchema, {});
+    const { value } = validate(payPaymentsQuerySchema, {});
     assert.equal(value.page, 1);
     assert.equal(value.perPage, 20);
   });
 
   test('refuses a page size that would pull the whole table', () => {
-    assert.ok(validate(payHistoryQuerySchema, { perPage: 500 }).error);
-    assert.ok(validate(payHistoryQuerySchema, { page: 0 }).error);
+    assert.ok(validate(payPaymentsQuerySchema, { perPage: 500 }).error);
+    assert.ok(validate(payPaymentsQuerySchema, { page: 0 }).error);
+  });
+
+  test('the window filter is one of the three the page offers', () => {
+    // The filter reaches a Mongo date range, so it is validated rather than
+    // free text — and it defaults to the whole ledger.
+    const { value } = validate(payPaymentsQuerySchema, {});
+    assert.equal(value.filter, 'all');
+
+    for (const filter of ['all', 'year', 'term']) {
+      assert.ok(!validate(payPaymentsQuerySchema, { filter }).error);
+    }
+
+    assert.ok(validate(payPaymentsQuerySchema, { filter: 'lifetime' }).error);
   });
 });
+
+// ──────────────────── The plan and the support form ────────────────────
+
+describe('parent portal: cancelling a plan', () => {
+  test('the reason is optional', () => {
+    // A parent tapping "cancel" should not have to type an explanation first.
+    assert.ok(!validate(payPlanCancelSchema, {}).error);
+    assert.ok(!validate(payPlanCancelSchema, { reason: '' }).error);
+    assert.ok(!validate(payPlanCancelSchema, { reason: 'Changed our plans' }).error);
+  });
+
+  test('a reason longer than the model accepts is refused', () => {
+    assert.ok(validate(payPlanCancelSchema, { reason: 'x'.repeat(301) }).error);
+  });
+});
+
+describe('parent portal: the support form', () => {
+  test('the message is required, and has a floor', () => {
+    assert.ok(validate(paySupportSchema, {}).error);
+    assert.ok(validate(paySupportSchema, { body: '?' }).error);
+    assert.ok(!validate(paySupportSchema, { body: 'The balance on my child looks wrong.' }).error);
+  });
+
+  test('the category and the subject line are optional', () => {
+    const { value } = validate(paySupportSchema, { body: 'The balance on my child looks wrong.' });
+    assert.equal(value.category, undefined);
+    assert.equal(value.subject, undefined);
+  });
+
+  test('the guardian is not asked to retype their own number', () => {
+    // The name and the phone number come from the student's record, so a form
+    // that demanded them would only ever fail.
+    const { value } = validate(paySupportSchema, {
+      category: 'Fees & payments',
+      subject: 'Balance query',
+      body: 'The balance on my child looks wrong.',
+    });
+    assert.equal(value.parentName, undefined);
+    assert.equal(value.parentPhone, undefined);
+  });
+});
+
 
 // ──────────────────── The receipt ────────────────────
 

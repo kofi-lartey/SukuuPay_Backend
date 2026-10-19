@@ -302,7 +302,7 @@ const ghanaPhone = Joi.string()
   });
 
 /**
- * `POST /pay/:token/request-plan`.
+ * `POST /pay/:token/plan/request`.
  *
  * `interval` excludes `"custom"` even though `createPlanSchema` allows it: a
  * custom schedule needs per-installment amounts and dates, which a parent
@@ -409,8 +409,49 @@ export const payReferenceParamSchema = Joi.object({
     }),
 });
 
-/** `GET /pay/:token/history`. */
-export const payHistoryQuerySchema = Joi.object({
+/**
+ * `GET /pay/:token/payments`.
+ *
+ * `filter` narrows the ledger to a window — `all`, `year` or `term` — and it
+ * is validated rather than free text, because it reaches a Mongo date range.
+ * `term` resolves to the school's own current term where the school has
+ * configured one and to the calendar year where it has not; `pay.service.js`
+ * owns that rule and this schema only decides what a caller may ask for.
+ */
+export const payPaymentsQuerySchema = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   perPage: Joi.number().integer().min(1).max(50).default(20),
+  filter: Joi.string().trim().valid("all", "year", "term").default("all"),
+});
+
+/**
+ * `POST /pay/:token/plan/cancel`.
+ *
+ * The reason is optional — a parent tapping "cancel" should not have to type
+ * an explanation first — and it is capped at the model's own 300-character
+ * limit, so a long paste is truncated here rather than refused.
+ */
+export const payPlanCancelSchema = Joi.object({
+  reason: Joi.string().trim().max(300).optional().allow("", null),
+});
+
+/**
+ * `POST /pay/:token/support`.
+ *
+ * The support form's three fields. `body` is the parent's message and it has a
+ * floor for the same reason the pay page's message does: an inbox that accepts
+ * "?" is one that gets "?" four times.
+ *
+ * The guardian's name and number are *not* here. They come from the student's
+ * record — see `pay.service.js`'s `sendSupportMessage` — so a parent is never
+ * asked to retype a number the school already holds.
+ */
+export const paySupportSchema = Joi.object({
+  category: Joi.string().trim().max(60).optional().allow("", null),
+  subject: Joi.string().trim().max(120).optional().allow("", null),
+  body: Joi.string().trim().min(10).max(1000).required().messages({
+    "any.required": "Please write a message so the school can help",
+    "string.min": "Please write at least a short message so the school can help",
+    "string.max": "Please keep your message under 1000 characters",
+  }),
 });

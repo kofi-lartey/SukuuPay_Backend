@@ -25,6 +25,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { readFile } from 'node:fs/promises';
+
 import router from '../src/routes/index.js';
 
 /** Every layer in the tree, flattened, with the path it was registered on. */
@@ -141,6 +143,68 @@ describe('every registered route handler is callable', () => {
     assert.ok(
       create.every((l) => typeof l.handler === 'function'),
       'every layer on the ad request route must be callable'
+    );
+  });
+
+  test('the parent portal fee routes are the paths the portal calls', () => {
+    // The portal's service layer calls these paths by name, from a file that
+    // has no compiler to complain when one of them stops existing. A route
+    // that moves without the service moving with it is a 404 on a parent's
+    // screen, and nothing in the build catches it: the backend is green, the
+    // frontend is green, and the fee page is empty.
+    //
+    // This is the pair that broke — `GET /pay/:token/plan` and
+    // `GET /pay/:token/payments` were served under names the portal had never
+    // asked for, and the parent saw two failed requests in the console and a
+    // blank plan card.
+    const registered = new Set(layers.map((l) => `${l.method.toUpperCase()} ${l.path}`));
+
+    for (const expected of [
+      'GET /pay/:token',
+      'GET /pay/:token/payments',
+      'GET /pay/:token/plan',
+      'POST /pay/:token/plan/request',
+      'POST /pay/:token/plan/cancel',
+      'POST /pay/:token/support',
+      'POST /pay/:token/initiate',
+      'GET /pay/:token/verify/:reference',
+      'POST /pay/:token/verify',
+      'GET /pay/:token/receipt/:paymentId',
+    ]) {
+      assert.ok(registered.has(expected), `${expected} must be registered`);
+    }
+  });
+
+  test('the parent portal academic routes are still mounted', async () => {
+    // The other half of the portal's surface, mounted on the parent router
+    // rather than the payment one. Listed here so a router that stops being
+    // mounted takes the parent's records and attendance pages with it.
+    //
+    // **These paths are the router's own**, not the mounted ones: `parent.routes.js`
+    // is mounted at `/pay` by `routes/index.js`, and Express 5 keeps a mount
+    // prefix in the matcher closure rather than on the layer — so the walk
+    // cannot see it. The mount itself is asserted from the source below.
+    const registered = new Set(layers.map((l) => `${l.method.toUpperCase()} ${l.path}`));
+
+    for (const expected of [
+      'GET /:token/attendance',
+      'GET /:token/records',
+      'GET /:token/records.pdf',
+      'GET /:token/timetable',
+      'GET /:token/messages',
+      'GET /:token/notifications',
+    ]) {
+      assert.ok(registered.has(expected), `${expected} must be registered`);
+    }
+
+    const indexSource = await readFile(
+      new URL('../src/routes/index.js', import.meta.url),
+      'utf8'
+    );
+    assert.match(
+      indexSource,
+      /router\.use\(\s*['"]\/pay['"]\s*,\s*parentRoute\s*\)/,
+      'the parent portal router must stay mounted at /pay'
     );
   });
 });

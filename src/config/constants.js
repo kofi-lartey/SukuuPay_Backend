@@ -385,6 +385,8 @@ export const NOTIFICATION_TYPES = {
   SCHOOL_JOIN_REQUEST: "school.join_request",
   /** A parent asked to split a balance. The school's queue entry for manual work. */
   PLAN_REQUESTED: "plan.requested",
+  /** A parent cancelled their own payment plan. The school is told the balance is due again. */
+  PLAN_CANCELLED: "plan.cancelled",
   /** A parent wrote in about a balance, a payment or a schedule. */
   PARENT_MESSAGE: "parent.message",
   /** A parent attached a voice note to the pay portal. Carries `meta.audioUrl`. */

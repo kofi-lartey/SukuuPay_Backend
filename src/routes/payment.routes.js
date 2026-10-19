@@ -5,6 +5,9 @@ import {
   verifyPaymentController,
   verifyPaymentByReferenceController,
   getPaymentHistoryController,
+  getPaymentPlanController,
+  cancelPaymentPlanController,
+  sendSupportMessageController,
   requestPaymentPlanController,
   notifySchoolController,
   listPaymentsController,
@@ -28,12 +31,15 @@ import {
   payInitiateLimit,
   payVerifyLimit,
   payRequestPlanLimit,
+  payCancelPlanLimit,
 } from "../middleware/rateLimit.js";
 import {
   payTokenParamSchema,
   payReferenceParamSchema,
-  payHistoryQuerySchema,
+  payPaymentsQuerySchema,
   payRequestPlanSchema,
+  payPlanCancelSchema,
+  paySupportSchema,
   payNotifySchoolSchema,
   payReceiptParamSchema,
   paymentIdParamSchema,
@@ -75,12 +81,17 @@ paymentRoute.get(
   getStudentByPayTokenController
 );
 
-// GET /pay/:token/history - Full settled-payment history, paginated
+// GET /pay/:token/payments - Full settled-payment history, paginated
+//
+// The path is the one the portal's own service calls and the one its mock
+// contract records. It was `/history`, which the portal never asked for: the
+// ledger the parent sees is a list of *payments*, and the route that served
+// the old pay page is gone.
 paymentRoute.get(
-  "/pay/:token/history",
+  "/pay/:token/payments",
   payLinkViewLimit,
   validate(payTokenParamSchema, "params"),
-  validate(payHistoryQuerySchema, "query"),
+  validate(payPaymentsQuerySchema, "query"),
   getPaymentHistoryController
 );
 
@@ -110,13 +121,52 @@ paymentRoute.post(
   initiatePaymentController
 );
 
-// POST /pay/:token/request-plan - Parent asks the school to split the balance
+// GET /pay/:token/plan - The live payment plan, or null
+//
+// A student with no plan is a state the page renders, not a 404: the empty
+// state offers the request form. Answering 404 would tell a parent that the
+// link is broken.
+paymentRoute.get(
+  "/pay/:token/plan",
+  payLinkViewLimit,
+  validate(payTokenParamSchema, "params"),
+  getPaymentPlanController
+);
+
+// POST /pay/:token/plan/request - Parent asks the school to split the balance
 paymentRoute.post(
-  "/pay/:token/request-plan",
+  "/pay/:token/plan/request",
   payRequestPlanLimit,
   validate(payTokenParamSchema, "params"),
   validate(payRequestPlanSchema),
   requestPaymentPlanController
+);
+
+// POST /pay/:token/plan/cancel - Parent cancels their own plan
+//
+// The reason is optional and the plan is gone once this succeeds, so the
+// limiter here is a backstop against a retry loop rather than a budget a
+// parent spends.
+paymentRoute.post(
+  "/pay/:token/plan/cancel",
+  payCancelPlanLimit,
+  validate(payTokenParamSchema, "params"),
+  validate(payPlanCancelSchema),
+  cancelPaymentPlanController
+);
+
+// POST /pay/:token/support - The parent's letter to the school office
+//
+// **No rate limiter is mounted here**, for the same reason `notify-school` has
+// none: the budget is consumed inside `pay.service.js`, only after the
+// `ParentMessage` row is written. A message that was never recorded must never
+// cost the parent their allowance — and the support form and the pay page's
+// own message form share one budget, because they are one inbox.
+paymentRoute.post(
+  "/pay/:token/support",
+  validate(payTokenParamSchema, "params"),
+  validate(paySupportSchema),
+  sendSupportMessageController
 );
 
 // POST /pay/:token/notify-school - Parent sends a message, a voice note, or both

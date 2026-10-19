@@ -457,31 +457,142 @@ export const getPortalView = async (token) => {
 };
 
 /**
+ * September, zero-indexed.
+ *
+ * The month a Ghanaian academic year opens in, and the one number the term
+ * window below needs: the school year runs from September, so a term is a
+ * slice of the twelve months that follow it rather than a slice of the
+ * calendar year.
+ */
+const ACADEMIC_YEAR_START_MONTH = 8;
+
+/**
+ * The calendar year's window — the one filter every school can be given
+ * without inventing anything.
+ */
+const calendarYearWindow = (now = new Date()) => ({
+  $gte: new Date(Date.UTC(now.getUTCFullYear(), 0, 1)),
+});
+
+/**
+ * The school's own current term, as a window on `completedAt`.
+ *
+ * Derived from the school's configuration — `academic.currentYear`
+ * ("2025/2026"), `academic.currentTerm` ("Term 2") and `academic.termsPerYear`
+ * — and nothing else. The school knows which term it is in; the browser does
+ * not, and a parent reading "This term" on a phone in a term the school has
+ * not configured yet is better served by the calendar year than by a window
+ * this function invented.
+ *
+ * **Returns null when the school has not configured a term**, and the caller
+ * falls back to the calendar year. That is the same shape of fallback the
+ * payment summary uses: a term default would quietly become a calendar year
+ * for exactly the schools that had not configured one, and a term that opens
+ * mid-month would compare a part-week against a full term.
+ */
+const termWindow = (school, now = new Date()) => {
+  const academicYear = String(school?.academic?.currentYear || "").trim();
+  const currentTerm = String(school?.academic?.currentTerm || "").trim();
+
+  // "2025/2026". A bare "2026" names a year but not the year a term sits in,
+  // so it is not enough to place one.
+  const year = /^(\d{4})\/(\d{4})$/.exec(academicYear);
+  const term = Number(/term\s*(\d+)/i.exec(currentTerm)?.[1]);
+
+  if (!year || !term) return null;
+
+  const termsPerYear = Number(school?.academic?.termsPerYear) || 3;
+  const monthsPerTerm = Math.max(1, Math.round(12 / termsPerYear));
+
+  const yearStart = new Date(Date.UTC(Number(year[1]), ACADEMIC_YEAR_START_MONTH, 1));
+  const start = new Date(
+    Date.UTC(yearStart.getUTCFullYear(), yearStart.getUTCMonth() + (term - 1) * monthsPerTerm, 1)
+  );
+  const end = new Date(
+    Date.UTC(yearStart.getUTCFullYear(), yearStart.getUTCMonth() + term * monthsPerTerm, 1)
+  );
+
+  // A term that has not opened yet cannot contain a payment, and a term
+  // number the school has outgrown (four terms in a three-term year) would
+  // place the window outside the year it belongs to.
+  if (start > now) return null;
+
+  return { $gte: start, $lt: end };
+};
+
+/**
+ * The window a history filter narrows to, and the one the summary's
+ * "this term" figure is measured against.
+ *
+ * `all` narrows to nothing — the whole settled ledger.
+ */
+const historyWindow = (filter, school, now = new Date()) => {
+  if (filter === "year") return { window: calendarYearWindow(now), term: calendarYearWindow(now) };
+  if (filter === "term") {
+    const term = termWindow(school, now);
+    return {
+      window: term || calendarYearWindow(now),
+      term: term || calendarYearWindow(now),
+    };
+  }
+  return { window: null, term: calendarYearWindow(now) };
+};
+
+/**
  * The full settled-payment history for this student, paginated.
  *
  * Scoped by `studentId` *derived from the token*, never by a client-supplied id.
  * That is the single most important line in this module: a `studentId` in a query
  * string would let anyone holding one live pay token read another child's entire
  * payment history by editing a number.
+ *
+ * `filter` narrows the ledger to a window — `all`, `year` or `term` — and the
+ * `stats` block beside it carries the three figures the page's summary band
+ * reads. `totalPaid` is everything ever paid; `thisTerm` is what has been paid
+ * inside the same window the term filter uses, so the band and the list under
+ * it are always describing the same period.
  */
-export const getPaymentHistory = async (token, { page = 1, perPage = 20 } = {}) => {
+export const getPaymentHistory = async (
+  token,
+  { page = 1, perPage = 20, filter = "all" } = {}
+) => {
   const student = await requireStudentByToken(token);
+  const school = await fetchSchool(student.schoolId);
 
-  const filter = {
+  const settled = {
     studentId: student._id,
     status: "completed",
     deletedAt: null,
     $nor: [{ refundOfPaymentId: { $ne: null } }],
   };
 
-  const [rows, total] = await Promise.all([
-    Payment.find(filter)
+  const { window, term } = historyWindow(filter, school);
+  const scoped = window ? { ...settled, completedAt: window } : settled;
+
+  const [rows, total, sums] = await Promise.all([
+    Payment.find(scoped)
       .sort({ completedAt: -1, createdAt: -1 })
       .skip((page - 1) * perPage)
       .limit(perPage)
       .lean(),
-    Payment.countDocuments(filter),
+    Payment.countDocuments(scoped),
+    Payment.aggregate([
+      { $match: settled },
+      {
+        $group: {
+          _id: null,
+          totalPaid: { $sum: "$amount" },
+          thisTerm: {
+            $sum: {
+              $cond: [{ $gte: ["$completedAt", term.$gte] }, "$amount", 0],
+            },
+          },
+        },
+      },
+    ]),
   ]);
+
+  const summary = sums[0] || { totalPaid: 0, thisTerm: 0 };
 
   return {
     payments: rows.map(projectPayment),
@@ -491,6 +602,12 @@ export const getPaymentHistory = async (token, { page = 1, perPage = 20 } = {}) 
       total,
       totalPages: Math.max(1, Math.ceil(total / perPage)),
       hasMore: page * perPage < total,
+    },
+    // The three figures the page's summary band reads.
+    stats: {
+      totalPaid: summary.totalPaid || 0,
+      thisTerm: summary.thisTerm || 0,
+      balance: Math.max(student.balance || 0, 0),
     },
     student: {
       studentName: student.studentName,
@@ -757,6 +874,169 @@ export const requestPaymentPlan = async (token, data) => {
       dueDate: i.dueDate,
     })),
   };
+};
+
+/**
+ * The live plan, as a parent reads it.
+ *
+ * `plan` is null when there is no live plan, and that is a state the page
+ * renders — the empty state offers the request form — rather than an error.
+ * The student's figures ride along so the page does not need a second read to
+ * draw the balance it is asking about.
+ */
+export const getPaymentPlan = async (token) => {
+  const student = await requireStudentByToken(token);
+  const plan = await findLivePlan(student._id);
+
+  return {
+    plan: projectPlan(plan, new Date()),
+    student: {
+      studentName: student.studentName,
+      studentClass: student.studentClass,
+      totalOwed: student.totalOwed || 0,
+      totalPaid: student.totalPaid || 0,
+      balance: Math.max(student.balance || 0, 0),
+    },
+  };
+};
+
+/**
+ * A parent cancels their own plan.
+ *
+ * Two cases, and they are not the same act:
+ *
+ * - `pending_acceptance` is a request the parent sent and the school has not
+ *   answered. Withdrawing it is the parent retracting it, and the plan goes.
+ * - `active` is a schedule the school approved. Cancelling it stops the
+ *   schedule and puts the balance back in front of the family.
+ *
+ * **Cancelling never refunds**, and never touches the balance: no money moved
+ * when the plan was made, and none moves when it is cancelled. The linked
+ * payments stay exactly where they are — the same rule the school's own
+ * cancellation applies.
+ *
+ * The school is told in both cases. A bursar looking at a family that has
+ * stopped paying a schedule needs to know it was the family, not a system
+ * failure.
+ */
+export const cancelPaymentPlan = async (token, { reason } = {}) => {
+  const student = await requireStudentByToken(token);
+
+  const plan = await PaymentPlan.findOne({
+    studentId: student._id,
+    planStatus: { $in: LIVE_PLAN_STATUSES },
+    deletedAt: null,
+  });
+
+  if (!plan) {
+    throw new ApiError(
+      "There is no active payment plan to cancel.",
+      404,
+      "PLAN_NOT_FOUND"
+    );
+  }
+
+  const trimmedReason = String(reason || "").trim().slice(0, 300);
+  const previousStatus = plan.planStatus;
+
+  plan.planStatus = "cancelled";
+  plan.cancelledAt = new Date();
+  // No user behind a pay token. The parent is identified by the plan's own
+  // `requestedBy`, and `cancelledBy` is a reference to a User.
+  plan.cancelledBy = null;
+  plan.cancellationReason = trimmedReason;
+  plan.updatedBy = null;
+  // Soft-deleted, as the school's own cancellation is: the plan leaves the
+  // live schedules and stays readable in the school's history.
+  plan.deletedAt = new Date();
+  await plan.save();
+
+  const primaryParent =
+    (student.parents || []).find((p) => p.isPrimary) || (student.parents || [])[0];
+  const parentName = (primaryParent?.parentName || "").trim() || "A parent";
+
+  const recipients = await findSchoolRecipients(student.schoolId);
+  await notifyAdmins(recipients, {
+    type: NOTIFICATION_TYPES.PLAN_CANCELLED,
+    title: `Payment plan cancelled — ${student.studentName}`,
+    message: [
+      `${parentName} has cancelled the payment plan for ${student.studentName} (${student.studentClass}).`,
+      trimmedReason ? `Reason: ${trimmedReason}.` : null,
+      "Any payments already made are not affected.",
+    ]
+      .filter(Boolean)
+      .join(" "),
+    link: "/dashboard/installment-plans",
+    meta: {
+      planId: String(plan._id),
+      studentRef: student.studentId,
+      previousStatus,
+      reason: trimmedReason,
+    },
+  });
+
+  await auditService.log({
+    action: AUDIT_ACTIONS.PLAN_CANCEL,
+    entity: "PaymentPlan",
+    entityId: plan._id,
+    userId: null,
+    schoolId: student.schoolId,
+    details: {
+      studentRef: student.studentId,
+      reason: trimmedReason,
+      previousStatus,
+    },
+  });
+
+  return {
+    plan: null,
+    message:
+      previousStatus === "pending_acceptance"
+        ? "Your payment plan request has been withdrawn."
+        : "Your payment plan has been cancelled and the school has been notified.",
+  };
+};
+
+/**
+ * The support form's letter to the school office.
+ *
+ * It is the same record as the pay page's "contact the school" form and it
+ * goes through the same pipeline — one `ParentMessage` row, one notification
+ * per bursar, the same three-a-day budget — because it *is* that form, asked
+ * for in a place with room to type.
+ *
+ * The form collects a category, a subject and a message; the guardian's name
+ * and number come from the student's record, because a parent repeating their
+ * own phone number into a second form is a step that only ever fails.
+ */
+export const sendSupportMessage = async (token, { category, subject, body } = {}) => {
+  const student = await requireStudentByToken(token);
+
+  const primaryParent =
+    (student.parents || []).find((p) => p.isPrimary) || (student.parents || [])[0];
+
+  const parentPhone = (primaryParent?.phone || "").trim();
+
+  if (!parentPhone) {
+    throw new ApiError(
+      "The school has no phone number on file for you, so a message cannot be delivered. Please call the school instead.",
+      400,
+      "PARENT_PHONE_MISSING"
+    );
+  }
+
+  const parentName = (primaryParent?.parentName || "").trim() || "A parent";
+
+  const message = [
+    category ? `Category: ${category}` : null,
+    subject ? `Subject: ${subject}` : null,
+    String(body || "").trim(),
+  ]
+    .filter(Boolean)
+    .join("\n\n")
+    .slice(0, 1000);
+
+  return notifySchool(token, { parentName, parentPhone, message });
 };
 
 /**

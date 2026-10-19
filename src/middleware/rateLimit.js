@@ -41,8 +41,10 @@ export const PAY_PORTAL_LIMITS = {
   view: { windowMs: HOUR_MS, max: 60, message: 'Too many attempts. Please wait a few minutes and try again.' },
   /** `POST /pay/:token/initiate` — one per real payment, with room for a retry. */
   initiate: { windowMs: HOUR_MS, max: 5, message: 'Too many payment attempts from this link. Please try again later, or contact the school.' },
-  /** `POST /pay/:token/request-plan` — a day, because one is being worked on. */
+  /** `POST /pay/:token/plan/request` — a day, because one is being worked on. */
   requestPlan: { windowMs: DAY_MS, max: 3, message: 'You have already sent several requests from this link. The school will be in touch.' },
+  /** `POST /pay/:token/plan/cancel` — one plan at a time, but a parent may try again. */
+  cancelPlan: { windowMs: DAY_MS, max: 3, message: 'You have already sent several requests from this link. Please call the school instead.' },
   /** `POST /pay/:token/notify-school` — a support message, not a chat. */
   notifySchool: { windowMs: DAY_MS, max: 3, message: 'You have already sent several messages from this link. Please call the school instead.' },
   /** `GET /pay/:token/verify/:reference` — polled every few seconds while pending. */
@@ -146,6 +148,7 @@ export const payPortalLimit = (preset) =>
 export const payLinkViewLimit = payPortalLimit(PAY_PORTAL_LIMITS.view);
 export const payInitiateLimit = payPortalLimit(PAY_PORTAL_LIMITS.initiate);
 export const payRequestPlanLimit = payPortalLimit(PAY_PORTAL_LIMITS.requestPlan);
+export const payCancelPlanLimit = payPortalLimit(PAY_PORTAL_LIMITS.cancelPlan);
 export const payNotifySchoolLimit = payPortalLimit(PAY_PORTAL_LIMITS.notifySchool);
 export const payVerifyLimit = payPortalLimit(PAY_PORTAL_LIMITS.verify);
 
