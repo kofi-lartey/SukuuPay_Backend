@@ -514,6 +514,7 @@ export const resetPassword = async (req, res) => {
     user.passwordResetExpires = null;
     user.refreshToken = null;
     user.refreshTokenExpires = null;
+    user.passwordChangedAt = new Date();
     user.tokenVersion += 1;
     await user.save();
 
@@ -641,3 +642,4 @@ export const resendVerification = async (req, res) => {
     });
   }
 };
+
