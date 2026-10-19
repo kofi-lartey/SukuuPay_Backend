@@ -293,19 +293,19 @@ export const publishClassReports = async (schoolId, userId, payload) => {
     className,
     term,
     academicYear,
-    status: "review",
+    status: { $in: ["draft", "review"] },
     deletedAt: null,
   });
   if (ready === 0) {
     throw new ApiError(
-      "No reviewed report cards to publish",
+      "No report cards to publish",
       400,
       "NOTHING_TO_PUBLISH"
     );
   }
 
   const result = await ReportCard.updateMany(
-    { schoolId, className, term, academicYear, status: "review", deletedAt: null },
+    { schoolId, className, term, academicYear, status: { $in: ["draft", "review"] }, deletedAt: null },
     {
       $set: {
         status: "published",

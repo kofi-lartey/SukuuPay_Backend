@@ -6,6 +6,9 @@ import {
   compileClassReportCardsController,
   publishClassReportCardsController,
 } from "../controllers/admin/records.controller.js";
+import { markTeacherAttendanceController, listTeacherAttendanceController } from "../controllers/admin/teacherAttendance.controller.js";
+import { getTeacherAttendanceReportController } from "../controllers/admin/teacherAttendanceReport.controller.js";
+import { getAdminClassGradesController } from "../controllers/admin/classGrades.controller.js";
 import {
   compileReportCardsSchema,
   publishReportCardsSchema,
@@ -51,6 +54,19 @@ router.post(
   validate(publishReportCardsSchema),
   publishClassReportCardsController
 );
+
+router.get(
+  "/reports/teacher-attendance",
+  authenticate,
+  authorize("super_admin", "school_admin"),
+  requireSchool,
+  getTeacherAttendanceReportController
+);
+
+router.get("/teacher-attendance", authenticate, authorize("super_admin", "school_admin"), requireSchool, listTeacherAttendanceController);
+router.post("/teacher-attendance", authenticate, authorize("super_admin", "school_admin"), requireSchool, markTeacherAttendanceController);
+
+router.get("/class-grades", authenticate, authorize("super_admin", "school_admin"), requireSchool, getAdminClassGradesController);
 
 export const adminRecordsRoute = router;
 export default router;

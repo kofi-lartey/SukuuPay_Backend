@@ -45,8 +45,12 @@ const fold = (value) => String(value || "").trim().toLowerCase();
  * Chemistry they do not teach. An unnamed period with a subject nobody at the
  * school has assigned to this teacher belongs to nobody.
  */
-const isMyPeriod = (period, teacherName, mySubjects) => {
+const isMyPeriod = (period, teacherName, mySubjects, ownsTimetable) => {
   if (!period?.subject) return false;
+
+  // The teacher who submitted a timetable owns every period in it, so their
+  // schedule is not empty even when no individual period names them.
+  if (ownsTimetable) return true;
 
   if (period.teacher) return isSameName(period.teacher, teacherName);
 
@@ -120,10 +124,11 @@ export const getTeacherSchedule = async (user) => {
   const flat = [];
   for (const timetable of timetables) {
     const mySubjects = subjectsByClass.get(timetable.className) || [];
+    const ownsTimetable = isSameName(timetable.teacherName, teacherName);
     for (const day of DAY_KEYS) {
       const periods = timetable.days?.[day] || [];
       for (const p of periods) {
-        if (!isMyPeriod(p, teacherName, mySubjects)) continue;
+        if (!isMyPeriod(p, teacherName, mySubjects, ownsTimetable)) continue;
 
         const start = parsePeriodTime(p.startTime);
         const end = parsePeriodTime(p.endTime);

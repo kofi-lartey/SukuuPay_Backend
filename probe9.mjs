@@ -1,0 +1,13 @@
+import mongoose from 'mongoose';
+import { MONGODB_URI } from './src/config/env.js';
+import { saveBulkGrades } from './src/services/teacher/grades.service.js';
+import { User } from './src/models/userModel.js';
+import { Student } from './src/models/studentModel.js';
+await mongoose.connect(MONGODB_URI);
+const user = await User.findById('6ad228f86bbe9da6d38c2b04').lean();
+const students = await Student.find({ schoolId: user.schoolId, studentClass: 'JHS 1A', deletedAt: null }).select('_id').lean();
+console.log('students', students.length);
+const grades = students.slice(0,3).map(s => ({ studentId: s._id, score: 50 }));
+const res = await saveBulkGrades({ ...user, schoolId: user.schoolId }, { className: 'JHS 1A', subject: 'Mathematics', term: 'Term 1', maxScore: 100, grades });
+console.log(JSON.stringify(res));
+await mongoose.disconnect();
