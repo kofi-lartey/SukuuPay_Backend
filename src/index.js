@@ -14,6 +14,8 @@ import { recordRequestError } from './utils/errorBuffer.js';
 import { ensureSuperAdmin } from './boot/ensureSuperAdmin.js';
 import { migrateGateways } from './boot/migrateGateways.js';
 import { reconcileProviderIdIndex } from './boot/reconcileProviderIdIndex.js';
+import { reconcileNullableUniqueIndexes } from './boot/reconcileNullableUniqueIndexes.js';
+import { reconcileDeclaredIndexSpecs } from './boot/reconcileDeclaredIndexSpecs.js';
 
 const app = express();
 
@@ -120,6 +122,17 @@ mongoose.connect(MONGODB_URI)
     // `null`s, so only one password-only invite could ever succeed per
     // database) with the declared partial one. Idempotent — re-runs are a no-op.
     await reconcileProviderIdIndex();
+    // The same repair for the unique indexes over nullable fields: a unique
+    // index that admits an explicit `null` allows exactly one null row per
+    // collection, which is how a second unreceipted payment died on E11000
+    // and a parent could not pay at all.
+    await reconcileNullableUniqueIndexes();
+    // And the indexes whose *options* carry meaning — `sparse` and the
+    // `partialFilterExpression`s. Mongoose matches indexes by name and never
+    // rewrites one whose options have drifted, so a live index can keep the
+    // wrong spec indefinitely; the mismatch also blocks every index after it
+    // from being created at all.
+    await reconcileDeclaredIndexSpecs();
   })
   .catch((error) => {
     console.error('Database connection failed:', error);

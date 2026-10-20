@@ -361,6 +361,9 @@ export const inviteUser = async (req, res) => {
       //    under it. `boot/reconcileProviderIdIndex.js` drops it and recreates
       //    the declared partial index (which skips null), so this log line
       //    should not appear on a booted instance after this migration.
+      //
+      //    It also fires if the index is missing altogether, which is what a
+      //    database whose declared filter MongoDB refused to build looks like.
       if (conflict.providerId !== undefined) {
         console.warn(
           '[inviteUser] duplicate providerId on invite — the providerId index in this ' +

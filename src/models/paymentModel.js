@@ -1,5 +1,7 @@
 import mongoose from "mongoose";
 
+import { nextReceiptNumber } from "../utils/receiptNumber.js";
+
 const paymentSchema = new mongoose.Schema(
   {
     // ── Identity ──
@@ -284,11 +286,16 @@ const paymentSchema = new mongoose.Schema(
     },
 
     // ── Receipt ──
+    //
+    // **No `unique: true` here.** The uniqueness is declared once, in
+    // `schema.index()` below, because that is where the partial filter lives —
+    // and declaring both makes Mongoose keep the *first* definition and
+    // discard the second's options, which would throw the partial filter away
+    // and leave the broken index in place.
     receiptNumber: {
       type: String,
-      unique: true,
       trim: true,
-      index: true,
+      default: null,
     },
     receiptGeneratedAt: {
       type: Date,
@@ -326,9 +333,40 @@ paymentSchema.index({ paymentPlanId: 1, status: 1 });
  *
  * Unique, because two payments sharing a reference would make a parent's status
  * check resolve to an arbitrary one of them — and the parent is checking to find
- * out whether their money arrived. Sparse for the reason above.
+ * out whether their money arrived.
+ *
+ * **Partial, and it has to be.** A desk payment recorded in the admin console
+ * carries `reference: null`, and MongoDB's `sparse` option skips only a
+ * *missing* field — an explicit `null` is indexed, and indexed as null. A
+ * sparse unique index therefore means *one payment without a reference per
+ * database*, and the second desk payment a bursar records dies on E11000 with
+ * `keyValue: { reference: null }`. `partialFilterExpression` on the string type
+ * is the index-level guarantee that only payments which actually carry a
+ * reference take part in the uniqueness check.
  */
-paymentSchema.index({ reference: 1 }, { unique: true, sparse: true });
+paymentSchema.index(
+  { reference: 1 },
+  { unique: true, partialFilterExpression: { reference: { $type: "string" } } }
+);
+
+/**
+ * One receipt number per payment, and no two payments share one.
+ *
+ * **Partial, and it has to be.** `receiptNumber` is null for every payment that
+ * has not settled, and a plain unique index treats a missing field as null for
+ * uniqueness — so it means *one unreceipted payment per database*. The second
+ * one to be inserted dies on E11000 with `keyValue: { receiptNumber: null }`,
+ * which is what a parent's "Pay" button hit: a 500 on the one screen they had
+ * to get past, and no way for the family to pay at all.
+ *
+ * `partialFilterExpression: { receiptNumber: { $type: "string" } }` keeps the
+ * uniqueness guarantee for receipts and takes unreceipted payments out of it
+ * entirely.
+ */
+paymentSchema.index(
+  { receiptNumber: 1 },
+  { unique: true, partialFilterExpression: { receiptNumber: { $type: "string" } } }
+);
 
 /*
  * The payout worklist: "every completed payment for this school that no batch has
@@ -358,17 +396,14 @@ paymentSchema.pre("save", async function () {
   }
 
   // Auto-generate receipt number for completed payments
+  //
+  // From the atomic counter, not from a count of the school's receipts today.
+  // The count was a read-then-write race: two payments settling in the same
+  // moment read the same count, picked the same number, and one of them died
+  // on the unique index — with the money already taken and the payment left
+  // unsettled. `utils/receiptNumber.js` has the reasoning.
   if (this.status === "completed" && !this.receiptNumber) {
-    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-    const count = await mongoose.model("Payment").countDocuments({
-      schoolId: this.schoolId,
-      status: "completed",
-      createdAt: {
-        $gte: new Date(new Date().setHours(0, 0, 0, 0)),
-        $lt: new Date(new Date().setHours(23, 59, 59, 999)),
-      },
-    });
-    this.receiptNumber = `RCP-${dateStr}-${String(count + 1).padStart(4, "0")}`;
+    this.receiptNumber = await nextReceiptNumber(this.schoolId);
     this.receiptGeneratedAt = new Date();
   }
 

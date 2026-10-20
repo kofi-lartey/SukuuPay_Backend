@@ -34,7 +34,7 @@ const POOL_DIRECTION_VALUES = POOL_DIRECTIONS;
 const platformSmsPoolEntrySchema = new mongoose.Schema(
   {
     /** `POOL-YYYYMMDD-XXXXXX`. */
-    entryId: { type: String, unique: true, default: null },
+    entryId: { type: String, default: null },
 
     direction: {
       type: String,
@@ -99,14 +99,39 @@ const platformSmsPoolEntrySchema = new mongoose.Schema(
 platformSmsPoolEntrySchema.index({ createdAt: -1 });
 
 /**
- * One allocation per request. Sparse-unique, and load-bearing — see the class comment.
+ * One allocation per request. Partial-unique, and load-bearing — see the class comment.
  *
  * A `reversal` points at the request it reverses and therefore also collides, which is
  * correct: a request cannot be both allocated and reversed, because an allocation that
  * was reversed is represented by *two* rows with `requestId` null and a
  * `reversalOfEntryId` instead. See `reversePoolAllocation`.
+ *
+ * **That last sentence is why this cannot be a sparse index.** `requestId` defaults
+ * to null, and MongoDB's `sparse` skips only a *missing* field — an explicit
+ * `null` is indexed, and indexed as null. A sparse unique index here would
+ * allow exactly *one* row without a request, and the second of the two rows a
+ * reversal creates would die on E11000 with `keyValue: { requestId: null }`. The
+ * partial filter is what makes the two rows the design calls for possible.
  */
-platformSmsPoolEntrySchema.index({ requestId: 1 }, { unique: true, sparse: true });
+platformSmsPoolEntrySchema.index(
+  { requestId: 1 },
+  { unique: true, partialFilterExpression: { requestId: { $type: "objectId" } } }
+);
+
+/**
+ * One entry id per row, and the handle a pool entry is fetched by.
+ *
+ * **Partial, and it has to be.** `entryId` defaults to null and is minted in a
+ * pre-save hook, so a row that skipped the hook would carry an explicit null —
+ * and MongoDB's unique index treats that as a present value and indexes it as
+ * null. One such row and the collection can never hold another. The partial
+ * filter keeps the uniqueness for the rows that carry an id and takes the rest
+ * out of it.
+ */
+platformSmsPoolEntrySchema.index(
+  { entryId: 1 },
+  { unique: true, partialFilterExpression: { entryId: { $type: "string" } } }
+);
 
 /** Which school a pool entry moved units to, when listing per-school consumption. */
 platformSmsPoolEntrySchema.index({ schoolId: 1, createdAt: -1 });

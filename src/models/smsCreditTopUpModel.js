@@ -86,7 +86,19 @@ const smsCreditTopUpSchema = new mongoose.Schema(
 smsCreditTopUpSchema.index({ schoolId: 1, createdAt: -1 });
 // A reversal may only be applied once. Without this, double-submitting a
 // reversal silently double-refunds the school.
-smsCreditTopUpSchema.index({ reverses: 1 }, { unique: true, sparse: true });
+//
+// **Partial, not sparse.** `reverses` defaults to null, and MongoDB's `sparse`
+// skips only a *missing* field — an explicit `null` is indexed, and indexed as
+// null. A sparse unique index over this field therefore means *one top-up that
+// is not a reversal per database*: the second credit a bursar grants, or the
+// second purchase the platform records, dies on E11000 with
+// `keyValue: { reverses: null }`. The partial filter takes the non-reversals
+// out of the uniqueness check and leaves the guarantee where it belongs — on
+// the reversals.
+smsCreditTopUpSchema.index(
+  { reverses: 1 },
+  { unique: true, partialFilterExpression: { reverses: { $type: "objectId" } } }
+);
 
 smsCreditTopUpSchema.set('toJSON', {
   virtuals: true,

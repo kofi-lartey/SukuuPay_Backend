@@ -614,3 +614,73 @@ describe('student routes', () => {
     });
   });
 });
+
+// ── The fields the pre-save hook derives, and the import path that skips it ──
+describe('the derived name fields', () => {
+  test('splits a name the way the roster expects', async () => {
+    const { deriveNameParts } = await import('../src/models/studentModel.js');
+
+    assert.deepEqual(deriveNameParts('Kwame Mensah'), {
+      firstName: 'Kwame',
+      lastName: 'Mensah',
+    });
+
+    // A middle name is kept out of both fields: `lastName` is the *last* word,
+    // so the roster sorts by family name and not by "Mensah Jr".
+    assert.deepEqual(deriveNameParts('Kwame Kwadwo Mensah'), {
+      firstName: 'Kwame',
+      lastName: 'Mensah',
+    });
+
+    // One word is a first name and an empty last name — not the whole string
+    // repeated into both, which is what a naive split gives.
+    assert.deepEqual(deriveNameParts('Kwame'), {
+      firstName: 'Kwame',
+      lastName: '',
+    });
+
+    // Surrounding and repeated whitespace must not produce an empty field.
+    assert.deepEqual(deriveNameParts('  Kwame   Mensah  '), {
+      firstName: 'Kwame',
+      lastName: 'Mensah',
+    });
+
+    assert.deepEqual(deriveNameParts(''), { firstName: '', lastName: '' });
+    assert.deepEqual(deriveNameParts(null), { firstName: '', lastName: '' });
+  });
+
+  test('the bulk importer assigns every field the hook would have derived', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const source = await readFile(
+      new URL('../src/services/student.service.js', import.meta.url),
+      'utf8'
+    );
+
+    // `insertMany` does not run a pre-save hook. Everything the hook generates
+    // has to be assigned explicitly on the document, or a bulk-imported student
+    // reaches Mongo without it.
+    //
+    // `firstName`/`lastName` are the ones with a visible consequence: the
+    // roster sorts by `lastName` and searches on both, so a student imported
+    // without them is one the school cannot find by name.
+    assert.ok(
+      /deriveNameParts\(/.test(source),
+      'the importer must derive firstName/lastName itself'
+    );
+    assert.ok(
+      /value\.firstName\s*=/.test(source),
+      'the importer must assign firstName'
+    );
+    assert.ok(
+      /value\.lastName\s*=/.test(source),
+      'the importer must assign lastName'
+    );
+
+    // The rest of the hook's work, for the same reason.
+    assert.ok(/value\.uniquePayLinkToken\s*=/.test(source), 'no pay link token');
+    assert.ok(/value\.payLink\s*=/.test(source), 'no pay link');
+    assert.ok(/doc\.studentId\s*=/.test(source), 'no student id');
+    assert.ok(/normalizePrimaryParent\(/.test(source), 'no primary-parent normalisation');
+    assert.ok(/value\.balance\s*=/.test(source), 'no balance');
+  });
+});

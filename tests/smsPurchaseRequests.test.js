@@ -127,10 +127,15 @@ describe('SMS purchase: approval can only allocate once', () => {
 
     assert.ok(claim, 'a { requestId: 1 } index must exist on PlatformSmsPoolEntry');
     assert.equal(claim[1].unique, true, 'the requestId index must be unique');
-    assert.equal(
-      claim[1].sparse,
-      true,
-      'and sparse — a null requestId must not collide with every other null'
+    // **Partial, not sparse.** `requestId` defaults to null, and MongoDB's `sparse`
+    // skips only a *missing* field — an explicit null is indexed, and indexed as
+    // null. A sparse unique index here would allow exactly one row without a
+    // request, and the second of the two rows a reversal creates would die on
+    // E11000 with `keyValue: { requestId: null }`.
+    assert.deepEqual(
+      claim[1].partialFilterExpression,
+      { requestId: { $type: "objectId" } },
+      'a null requestId must not collide with every other null'
     );
   });
 
@@ -143,19 +148,25 @@ describe('SMS purchase: approval can only allocate once', () => {
 
     assert.ok(claim);
     assert.equal(claim[1].unique, true);
-    assert.equal(claim[1].sparse, true);
+    assert.deepEqual(claim[1].partialFilterExpression, {
+      poolEntryId: { $type: "objectId" },
+    });
   });
 
-  test('the payment reference is unique and sparse', () => {
-    // Null until the prompt is issued, and MongoDB treats nulls as equal — so a plain
-    // unique index would allow exactly one un-initiated request in the collection.
+  test('the payment reference is unique, and nulls are not values', () => {
+    // Null until the prompt is issued. MongoDB treats nulls as equal *and indexes
+    // them* — `sparse` does not skip an explicit null — so the partial filter is
+    // what keeps the guarantee on the requests that carry a reference without
+    // allowing exactly one un-initiated request in the collection.
     const ref = SmsPurchaseRequest.schema
       .indexes()
       .find(([fields]) => fields['payment.reference'] === 1);
 
     assert.ok(ref);
     assert.equal(ref[1].unique, true);
-    assert.equal(ref[1].sparse, true);
+    assert.deepEqual(ref[1].partialFilterExpression, {
+      'payment.reference': { $type: 'string' },
+    });
   });
 });
 

@@ -215,10 +215,13 @@ const studentModel = new mongoose.Schema(
     },
 
     // ── Pay link ──
+    //
+    // **No `unique: true` here** — the uniqueness is declared once, in
+    // `schema.index()` below, where the partial filter lives. Declaring both
+    // makes Mongoose keep the first definition and discard the second's
+    // options, which would leave the plain index in place.
     uniquePayLinkToken: {
       type: String,
-      unique: true,
-      index: true,
     },
     payLink: {
       type: String,
@@ -371,16 +374,48 @@ studentModel.index(
     partialFilterExpression: { certificateNumber: { $type: "string" } },
   }
 );
+// The pay-link token is what a parent's payment link resolves through, so two
+// students sharing one would send a payment to the wrong child. The pre-save
+// hook mints a token for every student that reaches it, but rows written by
+// an insert path that skips the hook would carry no token at all — and a plain
+// unique index treats a missing token as one shared null value, which is the
+// same E11000 trap the payments collection walked into. The partial filter
+// keeps the guarantee for real tokens and leaves the rest of the roster alone.
+studentModel.index(
+  { uniquePayLinkToken: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { uniquePayLinkToken: { $type: "string" } },
+  }
+);
+
+/**
+ * The derived name fields for a student's `studentName`.
+ *
+ * **Shared, because the bulk importer writes without the hook.** `insertMany`
+ * does not run a pre-save hook, so a student imported from a spreadsheet reaches
+ * Mongo without the fields the hook would have derived — and the roster sorts
+ * and searches on `firstName`/`lastName`, so that student is one the school
+ * cannot find by name. The importer calls this too; a second copy of the rule
+ * would be a second place for it to be right.
+ *
+ * Derived rather than accepted from a client so the two can never disagree — a
+ * payload that set `lastName: "Mensah"` on a student named "Kwame Mensah Jr"
+ * would otherwise sort and search under a name the school never entered.
+ */
+export const deriveNameParts = (studentName) => {
+  const nameParts = String(studentName || "").trim().split(/\s+/).filter(Boolean);
+  return {
+    firstName: nameParts[0] || "",
+    lastName: nameParts.length > 1 ? nameParts[nameParts.length - 1] : "",
+  };
+};
 
 // ── Pre-save hooks ──
 studentModel.pre("save", async function () {
-  // Derive firstName / lastName from studentName. Derived rather than accepted
-  // from a client so the two can never disagree — a payload that set
-  // `lastName: "Mensah"` on a student named "Kwame Mensah Jr" would otherwise
-  // sort and search under a name the school never entered.
-  const nameParts = String(this.studentName || "").trim().split(/\s+/).filter(Boolean);
-  this.firstName = nameParts[0] || "";
-  this.lastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : "";
+  const derived = deriveNameParts(this.studentName);
+  this.firstName = derived.firstName;
+  this.lastName = derived.lastName;
 
   // Auto-generate studentId if missing (safety net; the service normally
   // generates it so it can retry on rare collisions).

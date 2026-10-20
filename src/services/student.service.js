@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import { Student } from "../models/studentModel.js";
+import { Student, deriveNameParts } from "../models/studentModel.js";
 import { School } from "../models/schoolModel.js";
 import {
   generateStudentId,
@@ -441,6 +441,13 @@ export const bulkCreateStudents = async (file, meta, user) => {
     const payLinkToken = generatePayLinkToken();
     value.uniquePayLinkToken = payLinkToken;
     value.payLink = buildPayLink(payLinkToken);
+    // `insertMany` does not run the pre-save hook, so every field the hook would
+    // have derived has to be assigned here. `firstName`/`lastName` are the ones
+    // the roster sorts and searches on: a student imported without them is a
+    // student the school cannot find by name.
+    const derivedName = deriveNameParts(value.studentName);
+    value.firstName = derivedName.firstName;
+    value.lastName = derivedName.lastName;
     // Ids are assigned in one block *after* the loop (see below), so every row
     // that passed validation gets a number from the same atomic allocation
     // rather than racing the collection one query at a time.

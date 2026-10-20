@@ -51,7 +51,7 @@ const SMS_REQUEST_STATUS_VALUES = SMS_REQUEST_STATUSES;
 const smsPurchaseRequestSchema = new mongoose.Schema(
   {
     /** Quoted to the school and shown in the admin queue. `SMS-REQ-YYYYMMDD-XXXXXX`. */
-    requestId: { type: String, unique: true, default: null },
+    requestId: { type: String, default: null },
 
     schoolId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -100,7 +100,7 @@ const smsPurchaseRequestSchema = new mongoose.Schema(
      * meaningful to any given party.
      */
     payment: {
-      /** e.g. `SMS-PAY-20260918-7KQ2M1`. Unique and sparse, like `Payment.reference`. */
+      /** e.g. `SMS-PAY-20260918-7KQ2M1`. Unique, and partial so a null reference is not a value. */
       reference: { type: String, default: null, trim: true },
       provider: { type: String, enum: ["mtn", "hubtel"], default: "mtn" },
       status: {
@@ -167,11 +167,37 @@ smsPurchaseRequestSchema.index({ status: 1, createdAt: -1 });
 /**
  * At most one payment per request.
  *
- * Sparse rather than unique-non-sparse because `payment.reference` is null until the
- * gateway is called, and MongoDB treats nulls as equal — so a plain unique index would
- * allow exactly one un-initiated request in the entire collection.
+ * **Partial, and the comment that used to sit here was wrong about MongoDB.**
+ * It said a sparse index was enough because `payment.reference` is null until
+ * the gateway is called. Sparse skips a *missing* field; `payment.reference`
+ * defaults to null, so it is present, and it is indexed — as null. A sparse
+ * unique index therefore allows exactly one un-initiated request in the entire
+ * collection, and the second school's first request dies on E11000 with
+ * `keyValue: { 'payment.reference': null }`. The partial filter is what keeps
+ * the guarantee where it belongs — on the requests that carry a reference.
  */
-smsPurchaseRequestSchema.index({ "payment.reference": 1 }, { unique: true, sparse: true });
+smsPurchaseRequestSchema.index(
+  { "payment.reference": 1 },
+  {
+    unique: true,
+    partialFilterExpression: { "payment.reference": { $type: "string" } },
+  }
+);
+
+/**
+ * One request id per request — the handle it is quoted by.
+ *
+ * **Partial, and it has to be.** `requestId` defaults to null and is minted in
+ * a pre-save hook, so a row that skipped the hook would carry an explicit
+ * null — and MongoDB's unique index treats that as a present value and indexes
+ * it as null. One such row and the collection can never hold another. The
+ * partial filter keeps the uniqueness for the rows that carry an id and takes
+ * the rest out of it.
+ */
+smsPurchaseRequestSchema.index(
+  { requestId: 1 },
+  { unique: true, partialFilterExpression: { requestId: { $type: "string" } } }
+);
 
 /**
  * **At most one allocation per request.**
@@ -182,10 +208,18 @@ smsPurchaseRequestSchema.index({ "payment.reference": 1 }, { unique: true, spars
  * operators — collides on this index and is refused rather than allocating the units
  * twice.
  *
- * Sparse for the same reason as above: a request that has not been approved has no
- * entry, and there will be many of those.
+ * **Partial, not sparse.** `poolEntryId` defaults to null, and MongoDB's `sparse`
+ * skips only a *missing* field — an explicit `null` is indexed, and indexed as
+ * null. A sparse unique index over it therefore means *one request that has not
+ * been approved per database*, and the second unapproved request dies on E11000
+ * with `keyValue: { poolEntryId: null }`. The partial filter keeps the guarantee
+ * where it belongs — on the approvals — and lets the requests waiting for one
+ * exist.
  */
-smsPurchaseRequestSchema.index({ poolEntryId: 1 }, { unique: true, sparse: true });
+smsPurchaseRequestSchema.index(
+  { poolEntryId: 1 },
+  { unique: true, partialFilterExpression: { poolEntryId: { $type: "objectId" } } }
+);
 
 /**
  * Mints `requestId` before first write, in the shape used across the product.

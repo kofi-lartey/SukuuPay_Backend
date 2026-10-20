@@ -5,6 +5,7 @@ import { Student } from "../models/studentModel.js";
 import { School } from "../models/schoolModel.js";
 import { PaymentPlan } from "../models/paymentPlanModel.js";
 import { buildPayLink } from "../utils/generatePayLink.js";
+import { nextReceiptNumber } from "../utils/receiptNumber.js";
 import { applyCompletedPaymentToPlan } from "./paymentPlan.service.js";
 // The balance movement, the school stat and the platform ledger entry. Imported
 // from its own module so the two webhook paths below do not each grow their own
@@ -1236,17 +1237,12 @@ export const generateReceipt = async (paymentId, user) => {
   }
 
   // Generate receipt number if not exists
+  //
+  // From the atomic counter, like the model's own pre-save hook — the count of
+  // the school's receipts today was a read-then-write race, and two receipts
+  // requested at the same moment picked the same number.
   if (!payment.receiptNumber) {
-    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-    const count = await Payment.countDocuments({
-      schoolId: payment.schoolId._id,
-      status: "completed",
-      createdAt: {
-        $gte: new Date(new Date().setHours(0, 0, 0, 0)),
-        $lt: new Date(new Date().setHours(23, 59, 59, 999)),
-      },
-    });
-    payment.receiptNumber = `RCP-${dateStr}-${String(count + 1).padStart(4, "0")}`;
+    payment.receiptNumber = await nextReceiptNumber(payment.schoolId._id);
     payment.receiptGeneratedAt = new Date();
     await Payment.findByIdAndUpdate(payment._id, {
       receiptNumber: payment.receiptNumber,

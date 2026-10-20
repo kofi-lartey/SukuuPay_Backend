@@ -480,7 +480,23 @@ userModel.index(
   { providerId: 1 },
   {
     unique: true,
-    partialFilterExpression: { providerId: { $exists: true, $ne: null } },
+    /*
+     * `{ providerId: { $type: "string" } }`, and **not** `{ $ne: null }`.
+     *
+     * MongoDB does not support `$ne` in a `partialFilterExpression` — it answers
+     * `Expression not supported in partial index: $not` and creates nothing. The
+     * earlier `{ $exists: true, $ne: null }` was in that unsupported shape, so
+     * `providerId_1` was **never built on any deployment**: `User.createIndexes()`
+     * failed with code 67 on every boot and the database was left with no
+     * constraint on `providerId` at all, so two simultaneous first sign-ins on one
+     * Google identity could both create an account.
+     *
+     * `$type: "string"` is the filter MongoDB actually accepts, and it excludes
+     * nulls the same way: a password-only account carries `providerId: null`,
+     * which is not a string, so it is not in the index and cannot collide with
+     * another null. Every value that *is* a string is a real Google `sub`.
+     */
+    partialFilterExpression: { providerId: { $type: "string" } },
   }
 );
 userModel.index(

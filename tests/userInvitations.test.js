@@ -294,10 +294,27 @@ describe('the providerId unique index', () => {
     const [{ 1: options }] = await declared();
     assert.deepEqual(
       options.partialFilterExpression,
-      { providerId: { $exists: true, $ne: null } },
+      { providerId: { $type: 'string' } },
       'the index must exclude null, or two password-only invites collide'
     );
     assert.notEqual(options.sparse, true, 'sparse: true still indexes an explicit null');
+  });
+
+  test('declares a filter MongoDB can actually build', async () => {
+    // `$ne` is **not supported** inside a `partialFilterExpression`: MongoDB
+    // answers `Expression not supported in partial index: $not` (code 67) and
+    // creates nothing at all. A declaration in that shape looks correct and
+    // enforces nothing — which is exactly what happened to `providerId_1`,
+    // which was absent from the live database while the model declared it.
+    const [{ 1: options }] = await declared();
+
+    const condition = options.partialFilterExpression.providerId;
+    assert.equal(
+      condition.$ne,
+      undefined,
+      'MongoDB cannot build a partial filter with $ne — the index would never be created'
+    );
+    assert.equal(condition.$type, 'string', '$type is the filter MongoDB accepts');
   });
 });
 
@@ -317,18 +334,40 @@ describe('reconcileProviderIdIndex', () => {
     assert.match(boot, /reconcileProviderIdIndex\(\)/);
   });
 
-  test('drops a unique index over providerId with no partial filter', async () => {
-    // The legacy definition: unique, indexes `null`, collides on every second
-    // password-only invite.
+  test('reconciles the index by name against the declaration', async () => {
+    // The repair moved into the shared helper, because the same three steps
+    // (drop the drifted live index, create the declared one) apply to every
+    // index whose options carry meaning. What matters is that this migration
+    // still goes through it.
     const source = await read();
-    assert.match(source, /index\.unique/);
-    assert.match(source, /partialFilterExpression/);
+    assert.match(source, /ensureIndexMatchesDeclaration/);
+    assert.match(source, /providerId: 1/);
   });
 
-  test('leaves a non-unique index over the same key alone', async () => {
-    // A non-unique index breaks no inserts, so it must not be dropped.
-    const source = await read();
-    assert.match(source, /Boolean\(index\.unique\)/);
+  test('the shared helper drops a live index whose spec differs', async () => {
+    const { readFileSync } = await import('node:fs');
+    const helper = readFileSync(new URL('../src/boot/indexSpec.js', import.meta.url), 'utf8');
+
+    assert.match(helper, /dropIndex/, 'the drifted index has to be dropped');
+    assert.match(helper, /partialFilterExpression/, 'the declared spec has to be compared');
+    assert.match(helper, /Boolean\(liveIndex\.unique\)/, 'uniqueness has to be compared');
+  });
+
+  test('the shared helper never rebuilds the whole model', async () => {
+    // `model.createIndexes()` builds every index on the model and fails
+    // outright if any one of them conflicts with a live index of the same
+    // name. A repair that used it could not repair anything on a database
+    // that has a stale index — which is exactly the database it exists for.
+    //
+    // The check is on the *code*, not the prose: the helper's own comment
+    // explains why `createIndexes()` is the wrong call, and matching that
+    // would fail the test for saying the right thing.
+    const { readFileSync } = await import('node:fs');
+    const source = readFileSync(new URL('../src/boot/indexSpec.js', import.meta.url), 'utf8');
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+
+    assert.doesNotMatch(code, /createIndexes\(/);
+    assert.match(code, /collection\.createIndex\(/);
   });
 });
 

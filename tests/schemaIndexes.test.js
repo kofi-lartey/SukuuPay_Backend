@@ -26,6 +26,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { readdirSync } from 'node:fs';
+
 const MODELS = [
   '../src/models/paymentModel.js',
   '../src/models/userModel.js',
@@ -102,8 +104,42 @@ describe('the indexes whose options were being lost are intact', () => {
     assert.equal(index[1].unique, true, 'unique is what stops a second account claiming it');
     assert.deepEqual(
       index[1].partialFilterExpression,
-      { providerId: { $exists: true, $ne: null } },
+      { providerId: { $type: "string" } },
       'a sparse unique index still indexes null providerId values, which is what made the second password-only invite collide on E11000; the partial filter excludes nulls so only Google accounts are indexed'
+    );
+  });
+
+  test('no partial filter uses $ne, which MongoDB cannot build', async () => {
+    // MongoDB rejects `$ne` inside a `partialFilterExpression` with
+    // `Expression not supported in partial index: $not` (code 67) and creates
+    // nothing. A declaration in that shape looks right and enforces nothing —
+    // which is how `users.providerId_1` came to be missing from the live
+    // database entirely.
+    const modelDir = new URL('../src/models/', import.meta.url);
+    const files = readdirSync(modelDir).filter((file) => file.endsWith('.js'));
+
+    const offenders = [];
+
+    for (const file of files) {
+      const model = await loadModel(new URL(file, modelDir).href);
+
+      for (const [fields, options] of model.schema.indexes()) {
+        const filter = options?.partialFilterExpression;
+        if (!filter || typeof filter !== "object") continue;
+
+        for (const [field, condition] of Object.entries(filter)) {
+          if (!condition || typeof condition !== "object") continue;
+          if (condition.$ne === undefined) continue;
+
+          offenders.push(`${model.modelName}.${field}`);
+        }
+      }
+    }
+
+    assert.deepEqual(
+      offenders,
+      [],
+      'these partial filters declare $ne, which MongoDB refuses to build — the index would never exist'
     );
   });
 
@@ -130,4 +166,92 @@ describe('the indexes whose options were being lost are intact', () => {
     assert.ok(index, 'the live-session lookup needs this index');
     assert.deepEqual(index[1].partialFilterExpression, { endedAt: null });
   });
+});
+
+/**
+ * Does this partial filter keep nulls out of the index?
+ *
+ * Only two shapes do: a `$type` that null is not, and a `$ne: null`. Mirrors
+ * `boot/reconcileNullableUniqueIndexes.js`, which has to recognise the same
+ * thing in a live index it did not create.
+ *
+ * The `$ne` shape is recognisable but not *declarable* — MongoDB refuses to
+ * build it — which is why the declaration is always `$type: "string"`. The
+ * separate test above enforces that.
+ */
+const excludesNulls = (partialFilterExpression, field) => {
+  const condition = partialFilterExpression?.[field];
+  if (!condition || typeof condition !== "object") return false;
+  if (condition.$type !== undefined) return condition.$type !== "null";
+  if (condition.$ne !== undefined) return condition.$ne === null;
+  return false;
+};
+
+describe('no unique index is declared over a field that defaults to null', () => {
+  // The whole class of bug, in one assertion.
+  //
+  // A unique index over a field that defaults to null means **one null row per
+  // collection**. MongoDB's `sparse` does not save you: it skips a *missing*
+  // field, but an explicit `null` is a present value and is indexed — as null.
+  // So the second document to carry that null dies on E11000 with
+  // `keyValue: { <field>: null }`.
+  //
+  // Five of these were live at once, and one of them was the parent portal:
+  //
+  //   - `Payment.receiptNumber` — null for every payment that has not settled,
+  //     so the payments collection could hold exactly **one** pending payment.
+  //     Once it did, no family could pay: the "Pay" button answered 500.
+  //   - `Payment.reference` — null for every desk payment recorded in the
+  //     admin console, so the second one died.
+  //   - `SmsCreditTopUp.reverses`, `PlatformSmsPoolEntry.requestId` and
+  //     `SmsPurchaseRequest.poolEntryId` — the same shape, one insert away
+  //     from their own 500.
+  //
+  // `User.providerId` was the one already fixed, by hand, in
+  // `reconcileProviderIdIndex.js`. The rest were missed.
+  //
+  // The remedy is a `partialFilterExpression` that excludes nulls. `sparse` is
+  // not it, and `unique` on the field is not it.
+  const modelDir = new URL('../src/models/', import.meta.url);
+  const files = readdirSync(modelDir).filter((file) => file.endsWith('.js'));
+
+  for (const file of files) {
+    test(file, async () => {
+      const model = await loadModel(new URL(file, modelDir).href);
+
+      const offenders = [];
+
+      for (const [fields, options] of model.schema.indexes()) {
+        if (!options?.unique) continue;
+
+        const keyFields = Object.keys(fields);
+
+        // A compound unique index is a different animal: a null in one of its
+        // components is part of the key, so it does not poison the collection
+        // the way it does for a single-field index. `SmsTemplate`'s
+        // `{ schoolId, key }` is the shape this is: the null school is a
+        // platform-level template, and the key still keeps it unique.
+        if (keyFields.length !== 1) continue;
+
+        const field = keyFields[0];
+        const schemaPath = model.schema.path(field);
+        const defaultsToNull =
+          schemaPath?.defaultValue === null || schemaPath?.options?.default === null;
+
+        if (!defaultsToNull) continue;
+
+        if (excludesNulls(options.partialFilterExpression, field)) continue;
+
+        offenders.push(
+          `${field} → ${JSON.stringify({ unique: true, ...options, partialFilterExpression: options.partialFilterExpression ?? null })}`
+        );
+      }
+
+      assert.deepEqual(
+        offenders,
+        [],
+        `${model.modelName} declares a unique index over a field that defaults to null, with no partial filter excluding nulls — one null row per collection, and the second insert dies on E11000`
+      );
+    });
+  }
 });

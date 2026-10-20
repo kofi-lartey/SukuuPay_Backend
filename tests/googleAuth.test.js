@@ -241,7 +241,7 @@ describe('lifecycle, audit and record-keeping', () => {
     assert.equal(providerIndex[1].unique, true, 'otherwise two accounts can claim one Google identity');
     assert.deepEqual(
       providerIndex[1].partialFilterExpression,
-      { providerId: { $exists: true, $ne: null } },
+      { providerId: { $type: 'string' } },
       'a sparse index still indexes null providerId, which collides on the second password-only invite; the partial filter excludes nulls so only Google accounts are indexed'
     );
   });

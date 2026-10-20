@@ -60,10 +60,15 @@ const parentMessageSchema = new mongoose.Schema(
      * Stable public identifier. Minted in a pre-save hook in the same shape as
      * `Payment.paymentId` and `IdCardBatch` would want one, so a bursar reading this
      * over the phone can quote it back without exposing a Mongo ObjectId.
+     *
+     * **No `unique: true` here** — the uniqueness is declared once, in
+     * `schema.index()` below, where the partial filter lives. Declaring both
+     * makes Mongoose keep the first definition and discard the second's
+     * options, which would leave the plain index in place and the null in it
+     * with it.
      */
     messageId: {
       type: String,
-      unique: true,
       default: null,
     },
 
@@ -196,6 +201,22 @@ parentMessageSchema.index({ schoolId: 1, status: 1, createdAt: -1 });
 
 /** The thread shown when a bursar opens a student from the roster. */
 parentMessageSchema.index({ studentId: 1, createdAt: -1 });
+
+/**
+ * One message id per message — the handle a bursar quotes over the phone.
+ *
+ * **Partial, and it has to be.** `messageId` defaults to null and is minted in a
+ * pre-save hook, so a row that skipped the hook would carry an explicit null —
+ * and MongoDB's unique index treats that as a present value and indexes it as
+ * null. One such row and the collection can never hold another, and the parent
+ * writing in again would get a duplicate-key error on a public, unauthenticated
+ * endpoint. The partial filter keeps the uniqueness for the rows that carry an
+ * id and takes the rest out of it.
+ */
+parentMessageSchema.index(
+  { messageId: 1 },
+  { unique: true, partialFilterExpression: { messageId: { $type: "string" } } }
+);
 
 /**
  * No second, partial index on `{ studentId, createdAt }`.
