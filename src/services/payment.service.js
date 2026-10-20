@@ -1,5 +1,4 @@
 import mongoose from "mongoose";
-import crypto from "crypto";
 import { Payment } from "../models/paymentModel.js";
 import { Student } from "../models/studentModel.js";
 import { School } from "../models/schoolModel.js";
@@ -22,17 +21,20 @@ import {
   isAccountActive as mtnIsAccountActive,
   MtnTransportError,
 } from "../utils/mtnApi.js";
-import { resolveGateway, getPaystackSecretKey } from "../utils/paymentGateway.js";
+import { resolveGateway } from "../utils/paymentGateway.js";
 import {
-  initializeTransaction as paystackInitializeTransaction,
-  verifyTransaction as paystackVerifyTransaction,
-  mapPaystackStatus,
-  isPaystackSuccessful,
-  PaystackTransportError,
-} from "../utils/paystackApi.js";
+  initiatePayment as moolreInitiatePayment,
+  verifyTransaction as moolreVerifyTransaction,
+  createCheckoutSession as moolreCreateCheckoutSession,
+  normaliseChannel as moolreNormaliseChannel,
+  channelLabel as moolreChannelLabel,
+  MoolreTransportError,
+} from "../utils/moolreClient.js";
 import { escapeRegExp } from "../utils/generateStudentId.js";
+import { generatePaymentReference } from "../utils/paymentReference.js";
+import { PORTAL_NETWORK_ALIASES } from "../validations/payment.validation.js";
 import { startOfDayAccra, endOfDayAccra } from "../utils/dateHelpers.js";
-import { WEBHOOK_BASE_URL, PAY_LINK_BASE_URL } from "../config/env.js";
+import { PAY_LINK_BASE_URL, MOOLRE_CALLBACK_URL, MOOLRE_CALLBACK_SECRET } from "../config/env.js";
 
 class ApiError extends Error {
   constructor(message, status = 500, code = "INTERNAL_ERROR") {
@@ -51,47 +53,32 @@ const auditService = {
 
 const fetchSchool = async (schoolId) => {
   const school = await School.findById(schoolId)
-    .select("schoolCode slug name payment hubtelClientId hubtelClientSecret hubtelApiKey")
+    // `email` is the school's business address, which Moolre requires on a
+    // hosted checkout page. It is the receipt address there too.
+    .select("schoolCode slug name email payment")
     .lean();
   if (!school) throw new ApiError("School not found", 404, "NOT_FOUND");
   return school;
 };
 
 // ──────────────────── Gateway selection ────────────────────
-// MTN is the primary gateway for v1; Hubtel is the fallback. Selection lives in
-// utils/paymentGateway.js so the plan-prepay path can share it without importing
-// this module (the two already import each other).
-const hubtelIsConfigured = (school) =>
-  Boolean(
-    school?.payment?.hubtelClientId &&
-    school?.payment?.hubtelClientSecret &&
-    school?.payment?.hubtelApiKey
-  );
+// Moolre is the primary gateway. Selection lives in utils/paymentGateway.js so
+// the plan-prepay path can share it without importing this module (the two
+// already import each other).
 
-// ──────────────────── Helper: Generate Hubtel payment request ────────────────────
-const buildHubtelPaymentRequest = (school, payment, callbackUrl) => {
-  const clientId = school.payment?.hubtelClientId || school.payment?.hubtelClientId;
-  const clientSecret = school.payment?.hubtelClientSecret || school.payment?.hubtelClientSecret;
-  const apiKey = school.payment?.hubtelApiKey;
-
-  if (!clientId || !clientSecret || !apiKey) {
-    throw new ApiError("School payment credentials not configured", 400, "PAYMENT_CONFIG_MISSING");
-  }
-
-  return {
-    clientId,
-    clientSecret,
-    apiKey,
-    amount: payment.amount / 100, // Hubtel expects amount in cedis, we store in pesewas
-    customerPhone: payment.momoPhoneNumber,
-    customerEmail: payment.parentEmail || "",
-    customerName: payment.studentName || "Parent",
-    callbackUrl,
-    returnUrl: `${callbackUrl}/return`,
-    description: payment.description || `Payment for ${payment.studentName}`,
-    clientReference: payment.paymentId,
-  };
-};
+/**
+ * Maps a portal network name onto the payment model's `momoNetwork` enum.
+ *
+ * The same lookup `pay.service.resolveNetwork` applies, so there is one
+ * implementation: a parent who picked "Telecel Cash" and an admin who picked
+ * "VODAFONE" end up as the same stored value, and the gateway is handed a
+ * network it can route.
+ *
+ * An unrecognised name becomes `UNKNOWN` rather than throwing, because the
+ * gateway can still resolve the real operator from the number's prefix.
+ */
+const resolveNetwork = (network) =>
+  PORTAL_NETWORK_ALIASES[String(network || "UNKNOWN").toUpperCase()] || "UNKNOWN";
 
 // ──────────────────── Public: Get student by pay token ────────────────────
 /**
@@ -138,16 +125,7 @@ export const getStudentByPayToken = async (token) => {
  * exact shape and a lowercase generator would produce a reference the portal's own
  * verify endpoint then rejects.
  */
-export const generatePaymentReference = () => {
-  const suffix = crypto
-    .randomBytes(4)
-    .toString("base64url")
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, "")
-    .padEnd(6, "X")
-    .slice(0, 6);
-  return `SUK-${Date.now()}-${suffix}`;
-};
+export { generatePaymentReference } from "../utils/paymentReference.js";
 
 /**
  * Starts a Mobile Money payment against a pay token.
@@ -214,34 +192,9 @@ export const initiatePayment = async (token, data) => {
 
   // Resolve which gateway handles this payment. When the parent provides a
   // MoMo phone number, MTN is preferred; when they don't (card payment),
-  // Paystack is used.
+  // the hosted checkout rail is used.
   const method = data.phone || data.phoneNumber ? 'momo' : 'card';
   const gateway = resolveGateway(school, method);
-
-  // The address the gateway's hosted checkout sends the receipt to.
-  //
-  // Paystack refuses a transaction with no email, and it is the only active
-  // gateway, so the address has to be settled *before* the Payment row is
-  // written — a refusal after the write leaves a pending payment with no
-  // gateway transaction behind it.
-  //
-  // It is resolved here, where the student's guardians are in scope. It used to
-  // be read inside `initiatePaystackPayment`, from a `primaryParent` that was
-  // never in scope there: a `ReferenceError` on every card payment, which the
-  // parent saw as a 500 on the one screen they had to get past.
-  //
-  // The school's own address is the fallback, and it is a real one rather than a
-  // placeholder — a school with an email on file can receive the receipt even
-  // when the guardian has none, and the bursar is the accountable party.
-  const payerEmail = primaryParent?.email || school?.email || "";
-
-  if (!payerEmail) {
-    throw new ApiError(
-      "This school has no email address on file, so a payment cannot be started. Please contact the school.",
-      400,
-      "PAYER_EMAIL_MISSING"
-    );
-  }
 
   // Stamp the plan this payment settles, when there is a live one.
   //
@@ -266,8 +219,17 @@ export const initiatePayment = async (token, data) => {
     status: "pending",
     paymentMethod: method,
     provider: gateway,
-    momoPhoneNumber: data.phoneNumber || primaryParent?.phone,
-    momoNetwork: data.momoNetwork || "UNKNOWN",
+    // The portal sends `phone`/`network`; the admin flow sends
+    // `phoneNumber`/`momoNetwork`. The route's schema accepts either, and this
+    // is where the two are read — reading only the admin spelling meant the
+    // parent's chosen network was dropped to `UNKNOWN` and the payer's number
+    // silently fell back to the guardian on file, so the prompt went to the
+    // wrong handset.
+    momoPhoneNumber: data.phone || data.phoneNumber || primaryParent?.phone,
+    // `resolveNetwork` maps the parent-facing spellings (`Telecel`,
+    // `AirtelTigo`) onto the model's enum, so the network that reaches the
+    // gateway is one it can route.
+    momoNetwork: resolveNetwork(data.network || data.momoNetwork),
     description: data.description || `School fees payment for ${student.studentName}`,
     feesBreakdown: data.feesBreakdown || [],
     paymentPlanId: livePlan?._id || null,
@@ -279,104 +241,21 @@ export const initiatePayment = async (token, data) => {
     createdBy: student.createdBy,
   });
 
-  if (gateway === "paystack") {
-    return initiatePaystackPayment(payment, student, school, token, payerEmail);
-  }
-
-  if (gateway === "mtn") {
-    return initiateMtnPayment(payment, student, school, token);
-  }
-
-  return initiateHubtelPayment(payment, student, school, token);
-};
-
-// ──────────────────── Paystack: initiate ────────────────────
-/**
- * Initializes a Paystack transaction (redirect-based checkout).
- *
- * The parent is redirected to Paystack's hosted checkout page to complete the
- * payment. The final status arrives by webhook (POST /api/webhooks/paystack/payment)
- * or by polling the verify endpoint via `verifyPayment`.
- */
-const initiatePaystackPayment = async (payment, student, school, token, payerEmail = "") => {
-  const secretKey = getPaystackSecretKey(school);
-
-  if (!secretKey) {
-    payment.status = "failed";
-    payment.failureReason = "No Paystack secret key configured for this school";
-    await payment.save();
-    throw new ApiError(
-      "Paystack is not configured for this school",
-      500,
-      "PAYSTACK_NOT_CONFIGURED"
-    );
-  }
-
-  // The payer's address, as resolved by the caller — the student's primary
-  // guardian, or the school when the guardian has none. Never the parent's
-  // phone number: Paystack validates the field as an email address and
-  // rejects a transaction that carries a phone number in it.
-  const parentEmail = payerEmail || school?.email || "";
-
-  try {
-    const callbackUrl = `${PAY_LINK_BASE_URL}/pay/${token}`;
-    const result = await paystackInitializeTransaction({
-      secretKey,
-      email: parentEmail,
-      amount: payment.amount,
-      reference: payment.paymentId,
-      callbackUrl,
-      metadata: {
-        studentId: student.studentId,
-        studentName: student.studentName,
-        schoolId: school.schoolCode,
-        paymentId: payment.paymentId,
-      },
-    });
-
-    payment.status = "processing";
-    payment.paystackReference = payment.paymentId;
-    payment.paystackAccessCode = result.accessCode;
-    payment.paystackStatus = "pending";
-    await payment.save();
-
-    await auditService.log({
-      action: "payment.initiate",
-      entity: "Payment",
-      entityId: payment._id,
-      userId: student.createdBy,
-      details: {
-        paymentId: payment.paymentId,
-        amount: payment.amount,
-        studentId: student.studentId,
-        provider: "paystack",
-        reference: result.reference,
-      },
-    });
-
-    return {
-      payment: payment.toJSON(),
-      provider: "paystack",
-      requiresPayerApproval: true,
-      paystack: {
-        authorizationUrl: result.authorizationUrl,
-        accessCode: result.accessCode,
-        reference: result.reference,
-        publicKey: result.publicKey,
-      },
-      payLink: buildPayLink(token),
-    };
-  } catch (error) {
-    payment.status = "failed";
-    payment.paymentMethod = "card";
-    payment.failureReason = error.message?.slice(0, 500) || "Paystack initialization failed";
-    await payment.save();
-
-    if (error instanceof PaystackTransportError) {
-      throw new ApiError(error.message, error.status, error.code);
+  if (gateway === "moolre") {
+    // A card payment has no USSD prompt to send: the parent completes it on
+    // Moolre's own hosted checkout page, which is the one place card, bank
+    // transfer and mobile money are all offered. The reference is still
+    // unclaimed at this point, so it can be used as the checkout's
+    // `externalref` — which the lazy fallback in `createMoolreCheckout` cannot
+    // do, because the push has already claimed it by then.
+    if (method === "card") {
+      return initiateMoolreCheckout(payment, student, school, token);
     }
-    throw error;
+
+    return initiateMoolrePayment(payment, student, school, token, data.otpCode);
   }
+
+  return initiateMtnPayment(payment, student, school, token);
 };
 
 // ──────────────────── MTN: initiate ────────────────────
@@ -458,45 +337,280 @@ const initiateMtnPayment = async (payment, student, school, token) => {
   }
 };
 
-// ──────────────────── Hubtel: initiate (fallback) ────────────────────
+// ──────────────────── Moolre: initiate ────────────────────
 /**
- * Builds the Hubtel request and moves the payment to `processing`.
+ * Starts a Moolre USSD push payment.
  *
- * Retained unchanged as the fallback path: the Hubtel callback
- * (POST /pay/webhook/hubtel) and its settlement handler are untouched.
+ * The payer is prompted on their handset and authorises the debit; the money
+ * only moves once they do, so the Payment stays `processing` until the
+ * callback or a status poll settles it.
+ *
+ * The hosted-checkout URL is returned alongside the push, because the push can
+ * fail to arrive: a parent on a handset that cannot receive a USSD prompt, or
+ * one who dismisses it, has no way to pay. The fallback is one click away
+ * rather than a support call.
  */
-const initiateHubtelPayment = async (payment, student, school, token) => {
-  // Backend origin, not PAY_LINK_BASE_URL: this is a server-to-server POST from
-  // Hubtel, and the route is mounted at /api/webhooks/... (plural). Building this
-  // from the frontend base produced a URL Hubtel could never reach.
-  const callbackUrl = `${WEBHOOK_BASE_URL}/api/webhooks/hubtel/payment`;
-  const hubtelRequest = buildHubtelPaymentRequest(school, payment, callbackUrl);
+const initiateMoolrePayment = async (payment, student, school, token, otpCode) => {
+  const phone = payment.momoPhoneNumber;
 
-  // TODO: replace with the live Hubtel initialize-payment call. The request
-  // payload is assembled here so the integration point is explicit; the
-  // webhook drives the actual application of the payment.
-  payment.status = "processing";
-  payment.hubtelOrderId = `ORDER-${payment.paymentId}`;
-  await payment.save();
+  if (!phone) {
+    payment.status = "failed";
+    payment.failureReason = "No phone number on file for the payer";
+    await payment.save();
+    throw new ApiError(
+      "No phone number on file for this payer",
+      400,
+      "PAYER_PHONE_MISSING"
+    );
+  }
 
-  await auditService.log({
-    action: "payment.initiate",
-    entity: "Payment",
-    entityId: payment._id,
-    userId: student.createdBy,
-    details: {
-      paymentId: payment.paymentId,
-      amount: payment.amount,
-      studentId: student.studentId,
-      provider: "hubtel",
-    },
+  // The network is stored on the Payment in this platform's vocabulary
+  // (MTN / VODAFONE / AIRTELTELIGO / UNKNOWN). An UNKNOWN network cannot be
+  // routed — Moolre would accept the request and then fail to deliver it to
+  // any carrier — so it is refused here, where the parent can be told why.
+  if (!payment.momoNetwork || payment.momoNetwork === "UNKNOWN") {
+    payment.status = "failed";
+    payment.failureReason = "No mobile money network selected for the payment";
+    await payment.save();
+    throw new ApiError(
+      "Please choose the mobile money network you are paying from",
+      400,
+      "MOMO_NETWORK_REQUIRED"
+    );
+  }
+
+  // The callback is where Moolre posts the transaction result. It comes from
+  // the config rather than being built here, so a deployment behind a proxy
+  // or a custom domain can point it at the right address with one env var.
+  const callbackUrl = MOOLRE_CALLBACK_URL;
+
+  try {
+    const result = await moolreInitiatePayment({
+      // Moolre takes cedis; this platform stores pesewas.
+      amount: payment.amount / 100,
+      phone,
+      network: payment.momoNetwork,
+      reference: payment.reference,
+      description: payment.description || `Payment for ${student.studentName}`,
+      otpCode,
+    });
+
+    // Moolre wants the payer's phone number verified before it will send the
+    // prompt — it answers `TP14` and sends the parent an OTP by SMS. The
+    // payment is **not** failed here: it is waiting for the parent to type
+    // that code in. Marking it failed would tell the parent their payment
+    // was declined when nothing has even been attempted yet.
+    if (result?.status === "otp_required") {
+      payment.status = "pending";
+      payment.moolreReference = payment.reference;
+      payment.moolreChannel = moolreNormaliseChannel(payment.momoNetwork);
+      payment.moolreResponseMessage =
+        result?.message?.slice(0, 500) || "Phone number verification required";
+      await payment.save();
+
+      return {
+        payment: payment.toJSON(),
+        provider: "moolre",
+        // The parent has to enter the code Moolre sent them before the prompt
+        // can be sent at all.
+        requiresOtp: true,
+        otpRequired: true,
+        moolre: {
+          reference: payment.reference,
+          channel: payment.moolreChannel,
+          payerPhone: phone,
+        },
+        payLink: buildPayLink(token),
+      };
+    }
+
+    payment.status = "processing";
+    payment.moolreReference = payment.reference;
+    payment.moolreTransactionId = result?.transactionId || result?.transactionid || null;
+    payment.moolreChannel = moolreNormaliseChannel(payment.momoNetwork);
+    await payment.save();
+
+    await auditService.log({
+      action: "payment.initiate",
+      entity: "Payment",
+      entityId: payment._id,
+      userId: student.createdBy,
+      details: {
+        paymentId: payment.paymentId,
+        amount: payment.amount,
+        studentId: student.studentId,
+        provider: "moolre",
+        reference: payment.reference,
+        // The channel code Moolre was given, and the network it means — an
+        // audit line is read by a person, and "13" is not a network.
+        channel: payment.moolreChannel,
+        network: moolreChannelLabel(payment.momoNetwork),
+      },
+    });
+
+    return {
+      payment: payment.toJSON(),
+      provider: "moolre",
+      // The parent must authorise on their handset; there is no server-side
+      // confirmation to wait for.
+      requiresPayerApproval: true,
+      moolre: {
+        reference: payment.reference,
+        channel: payment.moolreChannel,
+        payerPhone: phone,
+      },
+      payLink: buildPayLink(token),
+    };
+  } catch (error) {
+    // A rejected initiation is terminal: no prompt was issued, so the payment
+    // must not be left pending for a callback that will never arrive.
+    payment.status = "failed";
+    payment.moolreResponseMessage = error.message?.slice(0, 500) || "Moolre request failed";
+    await payment.save();
+
+    if (error instanceof MoolreTransportError) {
+      throw new ApiError(error.message, error.status, error.code);
+    }
+    throw error;
+  }
+};
+
+// ──────────────────── Moolre: hosted checkout ────────────────────
+/**
+ * Opens Moolre's hosted checkout for a payment that is not a USSD push.
+ *
+ * The hosted page belongs to Moolre: the parent picks a card, a bank transfer
+ * or a mobile money network on it, and the money settles through the same
+ * wallet the USSD push settles through. It is the only payment page this
+ * platform offers, so it is what the card path runs on.
+ *
+ * **The reference is free here.** Moolre requires `externalref` to be unique,
+ * and the USSD push claims the payment's reference by sending it to the
+ * carrier. A checkout opened at initiation has not done that, so the payment's
+ * own reference can be used — which means the checkout settles the same
+ * Payment record that the callback will post to.
+ *
+ * The payment goes to `processing` rather than `pending`: the page is open and
+ * the parent is on it, so there is nothing left to send. It settles when
+ * Moolre's callback arrives, or when the parent's browser polls.
+ */
+const initiateMoolreCheckout = async (payment, student, school, token) => {
+  try {
+    const session = await moolreCreateCheckoutSession({
+      // Moolre takes cedis; this platform stores pesewas.
+      amount: payment.amount / 100,
+      reference: payment.reference,
+      redirectUrl: `${PAY_LINK_BASE_URL}/pay/${token}`,
+      // Moolre requires a business address on the link. The school's is the
+      // right one; the platform address is the fallback for a school that has
+      // none on file.
+      email: school?.email || undefined,
+      // The hosted checkout settles the same payment the push would have, so it
+      // posts to the same callback.
+      callbackUrl: MOOLRE_CALLBACK_URL,
+    });
+
+    payment.status = "processing";
+    payment.moolreReference = payment.reference;
+    await payment.save();
+
+    await auditService.log({
+      action: "payment.initiate",
+      entity: "Payment",
+      entityId: payment._id,
+      userId: student.createdBy,
+      details: {
+        paymentId: payment.paymentId,
+        amount: payment.amount,
+        studentId: student.studentId,
+        provider: "moolre",
+        method: "card",
+        reference: payment.reference,
+      },
+    });
+
+    return {
+      payment: payment.toJSON(),
+      provider: "moolre",
+      // The parent still has to approve the payment — on Moolre's page this
+      // time, not on their handset.
+      requiresPayerApproval: true,
+      checkoutUrl: session.checkoutUrl,
+      moolre: {
+        reference: payment.reference,
+        checkoutUrl: session.checkoutUrl,
+      },
+      payLink: buildPayLink(token),
+    };
+  } catch (error) {
+    // No checkout page was opened, so nothing is in flight: the payment must
+    // not be left pending for a callback that will never arrive.
+    payment.status = "failed";
+    payment.moolreResponseMessage = error.message?.slice(0, 500) || "Moolre checkout failed";
+    await payment.save();
+
+    if (error instanceof MoolreTransportError) {
+      throw new ApiError(error.message, error.status, error.code);
+    }
+    throw error;
+  }
+};
+
+/**
+ * Creates the hosted-checkout URL for a payment that is already in flight.
+ *
+ * This is the fallback for a parent whose handset never received the USSD
+ * prompt — the phone is off, out of credit, or on a network that does not
+ * carry the prompt. Without it, that parent has no way to pay at all.
+ *
+ * **It is a separate call, not part of initiation, for a concrete reason:**
+ * Moolre requires `externalref` to be unique, and the USSD push has already
+ * consumed this payment's reference. Creating the link during initiation
+ * would be rejected as a duplicate — and doing it lazily, only when the parent
+ * asks for it, means no payment pays for a checkout link it never uses.
+ *
+ * The link is created against the same payment, so the callback it produces
+ * settles the same Payment record.
+ */
+export const createMoolreCheckout = async (token, reference) => {
+  const student = await Student.findOne({ uniquePayLinkToken: token, deletedAt: null });
+  if (!student) {
+    throw new ApiError("Invalid or expired payment link", 404, "INVALID_TOKEN");
+  }
+
+  const payment = await Payment.findOne({
+    reference: String(reference || ""),
+    studentId: student._id,
+    deletedAt: null,
+  });
+
+  if (!payment) {
+    throw new ApiError("We could not find that payment on this link.", 404, "PAYMENT_NOT_FOUND");
+  }
+
+  if (payment.status === "completed") {
+    throw new ApiError("That payment has already been completed.", 409, "PAYMENT_ALREADY_COMPLETED");
+  }
+
+  const school = await School.findById(student.schoolId).lean();
+
+  const session = await moolreCreateCheckoutSession({
+    amount: payment.amount / 100,
+    reference: payment.reference,
+    redirectUrl: `${PAY_LINK_BASE_URL}/pay/${token}`,
+    // Moolre requires a business address on the link. The school's is the
+    // right one; the platform address is the fallback for a school that has
+    // none on file.
+    email: school?.email || undefined,
+    // The hosted checkout settles the same payment the push would have, so it
+    // posts to the same callback.
+    callbackUrl: MOOLRE_CALLBACK_URL,
   });
 
   return {
-    payment: payment.toJSON(),
-    provider: "hubtel",
-    hubtelRequest,
-    payLink: buildPayLink(token),
+    checkoutUrl: session.checkoutUrl,
+    reference: session.reference || payment.reference,
+    expiresInMinutes: 60,
   };
 };
 
@@ -513,15 +627,13 @@ export const verifyPayment = async (token, data) => {
     status: { $in: ["pending", "processing"] },
   };
 
-  if (data.hubtelTransactionId) filter.hubtelTransactionId = data.hubtelTransactionId;
-  if (data.hubtelOrderId) filter.hubtelOrderId = data.hubtelOrderId;
+  // The portal polls on the reference it was given at initiation. Pinning the
+  // poll to it matters once a parent has two payments in flight — the "most
+  // recent" rule would otherwise answer for the wrong one, and the sheet would
+  // report on a payment that is not the one being waited on.
+  if (data.reference) filter.reference = String(data.reference);
+
   if (data.mtnReferenceId) filter.mtnReferenceId = data.mtnReferenceId;
-  if (data.paystackReference) {
-    filter.$or = [
-      { paystackReference: data.paystackReference },
-      { paymentId: data.paystackReference },
-    ];
-  }
 
   const payment = await Payment.findOne(filter).sort({ createdAt: -1 });
   if (!payment) {
@@ -546,26 +658,92 @@ export const verifyPayment = async (token, data) => {
     return payment.toJSON();
   }
 
-  // A Paystack payment is settled by polling the provider's verify endpoint.
-  if (payment.provider === "paystack" && payment.paystackReference) {
-    const school = await fetchSchool(student.schoolId);
-    const secretKey = getPaystackSecretKey(school);
-    if (secretKey) {
-      try {
-        const tx = await paystackVerifyTransaction({ secretKey, reference: payment.paystackReference });
-        const mapped = mapPaystackStatus(tx?.status);
-        if (mapped && mapped !== payment.status) {
-          await applyPaystackStatus(payment, tx, mapped);
-          return payment.toJSON();
-        }
-      } catch (error) {
-        console.error(`[PAYSTACK] Verify failed for ${payment.paymentId}:`, error.message);
+  // A Moolre payment is settled by polling Moolre's status endpoint, which is
+  // the system of record — the callback is only a notification. Polling here
+  // lets the parent's browser confirm a prompt they have already approved,
+  // even when the callback was lost.
+  if (payment.provider === "moolre") {
+    try {
+      const verification = await moolreVerifyTransaction({
+        reference: payment.reference || payment.moolreReference,
+      });
+      const mapped = mapMoolreStatus(verification.status);
+      if (mapped && mapped !== payment.status) {
+        await applyMoolreStatus(payment, verification, mapped);
+        return payment.toJSON();
       }
+    } catch (error) {
+      console.error(`[MOOLRE] Verify failed for ${payment.paymentId}:`, error.message);
     }
     return payment.toJSON();
   }
 
   return payment.toJSON();
+};
+
+/**
+ * Polls the gateway for a pending payment and applies the result.
+ *
+ * **The callback is a notification; the gateway is the system of record.**
+ * A parent's browser polls while they approve a prompt on their handset, and
+ * the portal's own poll window is short. If the callback is late — or lost —
+ * the parent sees a failure for a payment that actually succeeded, which is
+ * the worst possible outcome: they pay again, and the school collects twice.
+ *
+ * So the poller asks the gateway directly, and settles on a confirmed success.
+ * The settlement goes through the same claim-and-settle path the callback
+ * uses, so a payment that settles by poll and then by callback is still
+ * credited exactly once.
+ *
+ * Returns `true` when the payment's status changed, so the caller can re-read
+ * it.
+ */
+export const refreshPendingPayment = async (token, reference) => {
+  const student = await Student.findOne({ uniquePayLinkToken: token, deletedAt: null });
+  if (!student) return false;
+
+  const payment = await Payment.findOne({
+    reference: String(reference || ""),
+    studentId: student._id,
+    deletedAt: null,
+  });
+
+  if (!payment) return false;
+  if (payment.status !== "pending" && payment.status !== "processing") return false;
+
+  if (payment.provider === "moolre") {
+    try {
+      const verification = await moolreVerifyTransaction({
+        reference: payment.reference || payment.moolreReference,
+      });
+      const mapped = mapMoolreStatus(verification.status);
+      if (mapped && mapped !== payment.status) {
+        await applyMoolreStatus(payment, verification, mapped);
+        return true;
+      }
+    } catch (error) {
+      // A failed poll is not a failed payment. The callback may still arrive.
+      console.error(`[MOOLRE] Status poll failed for ${payment.paymentId}:`, error.message);
+    }
+    return false;
+  }
+
+  if (payment.provider === "mtn" && payment.mtnReferenceId) {
+    try {
+      const raw = await mtnGetTransactionStatus(payment.mtnReferenceId);
+      const transaction = normaliseTransaction(raw);
+      const mapped = mapMtnStatus(transaction?.status);
+      if (mapped && mapped !== payment.status) {
+        await applyMtnStatus(payment, transaction, mapped);
+        return true;
+      }
+    } catch (error) {
+      console.error(`[MTN] Status poll failed for ${payment.paymentId}:`, error.message);
+    }
+    return false;
+  }
+
+  return false;
 };
 
 // ──────────────────── Public: Get receipt ────────────────────
@@ -773,7 +951,6 @@ const orClauses = [];
     // nothing.
     orClauses.push(
       { paymentId: { $regex: searchTerm, $options: "i" } },
-      { hubtelTransactionId: { $regex: searchTerm, $options: "i" } },
       { receiptNumber: { $regex: searchTerm, $options: "i" } },
       { studentId: { $in: studentIds || [] } }
     );
@@ -1298,7 +1475,7 @@ export const generateReceipt = async (paymentId, user) => {
   };
 };
 
-// ──────────────────── Hubtel Webhook Handler ────────────────────
+// ──────────────────── Settlement claim ────────────────────
 // Settlement is claimed before the balance moves. `Payment.settlement.appliedAt`
 // is set with a conditional update, so of N retries of the same "Success"
 // callback exactly one proceeds to the $inc below; the rest return a duplicate
@@ -1330,7 +1507,7 @@ export const releasePaymentSettlement = async (paymentId) => {
  * only on settlement.
  *
  * The settlement claim is taken before the balance moves, exactly as in the
- * Hubtel path: MTN delivers the same "SUCCESSFUL" callback more than once, and
+ * Moolre path: MTN delivers the same "SUCCESSFUL" callback more than once, and
  * without the claim each delivery would re-run the `$inc` and credit the parent
  * several times over.
  */
@@ -1366,7 +1543,7 @@ const applyMtnStatus = async (payment, transaction, mappedStatus) => {
     payment.status = "processing";
   }
 
-  // Saved before the money moves — see the Hubtel path for why.
+  // Saved before the money moves — see the Moolre path for why.
   await payment.save();
 
   if (isSettlement) {
@@ -1388,11 +1565,30 @@ const applyMtnStatus = async (payment, transaction, mappedStatus) => {
   return { duplicate: false, payment };
 };
 
+// ──────────────────── Moolre: settlement ────────────────────
+
 /**
- * Applies a Paystack transaction status to the payment record, including
- * settlement when the status is a success. The claim logic mirrors the MTN path.
+ * Maps Moolre's normalised status onto this platform's Payment statuses.
+ *
+ * `success` settles the payment, `failed` is terminal, and everything else —
+ * including a status Moolre has not finished deciding — stays `processing`.
  */
-const applyPaystackStatus = async (payment, tx, mappedStatus) => {
+const mapMoolreStatus = (status) => {
+  if (status === "success") return "completed";
+  if (status === "failed") return "failed";
+  return "processing";
+};
+
+/**
+ * Applies a Moolre transaction status to a payment, moving the student's
+ * balance only on settlement.
+ *
+ * The settlement claim is taken before the balance moves, exactly as in the
+ * MTN path: Moolre delivers the same "successful" callback more than once, and
+ * without the claim each delivery would re-run the `$inc` and credit the parent
+ * several times over.
+ */
+const applyMoolreStatus = async (payment, verification, mappedStatus) => {
   const isSettlement = mappedStatus === "completed";
 
   if (isSettlement) {
@@ -1402,27 +1598,38 @@ const applyPaystackStatus = async (payment, tx, mappedStatus) => {
     }
   }
 
-  payment.paystackTransactionId = tx?.id || payment.paystackTransactionId;
-  payment.paystackStatus = tx?.status || payment.paystackStatus;
+  if (verification?.transactionId) {
+    payment.moolreTransactionId = verification.transactionId;
+  }
+  if (verification?.channel) {
+    payment.moolreChannel = String(verification.channel);
+  }
 
   if (isSettlement) {
     payment.status = "completed";
     payment.completedAt = new Date();
-    payment.settlement.reference = payment.paymentId;
+    payment.settlement.reference =
+      verification?.transactionId || payment.settlement?.reference || payment.reference || null;
   } else if (mappedStatus === "failed") {
     payment.status = "failed";
     payment.failedAt = new Date();
-    payment.failureReason = tx?.failure_reason || "Reported failed by Paystack";
+    payment.failureReason =
+      verification?.raw?.message?.slice(0, 500) || "Reported failed by Moolre";
   } else {
     payment.status = "processing";
   }
 
+  // Saved before the money moves — see the Moolre path for why.
   await payment.save();
 
   if (isSettlement) {
     try {
+      // Balance, school stat and platform ledger — see `settlePayment`'s
+      // docstring for why only the balance is allowed to throw.
       await settlePayment(payment);
     } catch (error) {
+      // The claim is released so a provider retry settles this payment instead
+      // of leaving it stuck as completed-but-uncounted.
       await releasePaymentSettlement(payment._id);
       throw error;
     }
@@ -1433,6 +1640,160 @@ const applyPaystackStatus = async (payment, tx, mappedStatus) => {
   }
 
   return { duplicate: false, payment };
+};
+
+/**
+ * Handles a Moolre callback.
+ *
+ * **The callback is a notification, not proof of payment.** Moolre posts it
+ * when it has a result, but a callback is an unauthenticated HTTP request
+ * from the internet: it can be replayed, forged, or delivered for a
+ * transaction that failed. So the payload is never trusted on its own — the
+ * transaction is re-verified against Moolre's own status endpoint, and only a
+ * confirmed success settles the payment.
+ *
+ * The amount is checked against what the local record expects. A mismatch is
+ * logged and the payment is left unsettled rather than credited: the money
+ * that arrived is not the money that was owed, and guessing which one is right
+ * is how a school's ledger stops matching its bank.
+ */
+export const handleMoolreWebhook = async (payload) => {
+  const body = payload?.data || payload || {};
+
+  // Moolre's callback carries a `secret` in `data`, and the docs are explicit
+  // that it must be validated before any payment record changes. This is a
+  // second line of defence *behind* the re-verification below — a callback
+  // that fails the secret check is still re-verified rather than trusted, and
+  // one that passes it is still re-verified.
+  if (MOOLRE_CALLBACK_SECRET) {
+    const presented = String(body.secret || "");
+    const expected = String(MOOLRE_CALLBACK_SECRET);
+    const matches =
+      presented.length === expected.length &&
+      presented.length > 0 &&
+      // Constant-time: a length-and-content comparison that does not leak
+      // where the first differing character is.
+      (() => {
+        let diff = 0;
+        for (let i = 0; i < presented.length; i += 1) {
+          diff |= presented.charCodeAt(i) ^ expected.charCodeAt(i);
+        }
+        return diff === 0;
+      })();
+
+    if (!matches) {
+      console.error("[MOOLRE WEBHOOK] Callback secret mismatch — refused", {
+        reference: body.externalref,
+      });
+      throw new ApiError(
+        "Callback secret mismatch",
+        403,
+        "MOOLRE_CALLBACK_SECRET_MISMATCH"
+      );
+    }
+  }
+
+  const reference =
+    body.externalref ||
+    body.reference ||
+    payload?.externalref ||
+    payload?.reference ||
+    body.transactionid ||
+    payload?.transactionid;
+
+  if (!reference) {
+    throw new ApiError("No valid payment reference in payload", 400, "INVALID_WEBHOOK_PAYLOAD");
+  }
+
+  const payment = await Payment.findOne({
+    $or: [{ reference }, { moolreReference: reference }, { paymentId: reference }],
+    deletedAt: null,
+  });
+
+  if (!payment) {
+    console.warn(`[MOOLRE WEBHOOK] Payment not found for reference:`, reference);
+    // Acknowledged so Moolre does not retry a callback for a payment that is
+    // not ours — or not yet ours.
+    return { success: true, message: "Payment not found in system" };
+  }
+
+  // An already-settled payment is acknowledged without touching the balance.
+  // The claim inside `applyMoolreStatus` would catch this too, but checking
+  // first avoids a pointless verification call on every retry.
+  if (payment.status === "completed") {
+    return { success: true, duplicate: true, message: "Payment already settled" };
+  }
+
+  // Re-verify with Moolre. A failure here is not a settlement failure: it
+  // means we could not reach Moolre to find out, so the caller must be told
+  // to retry rather than being handed a definitive "failed".
+  let verification;
+  try {
+    verification = await moolreVerifyTransaction({ reference: payment.reference || reference });
+  } catch (error) {
+    console.error(`[MOOLRE WEBHOOK] Verification failed for ${reference}:`, error.message);
+    const err = new ApiError(
+      "Could not verify the transaction with Moolre. The callback will be retried.",
+      502,
+      "MOOLRE_VERIFICATION_FAILED"
+    );
+    err.retryable = true;
+    throw err;
+  }
+
+  if (verification.status !== "success") {
+    const mapped = mapMoolreStatus(verification.status);
+    if (mapped === "failed" && payment.status !== "failed") {
+      payment.status = "failed";
+      payment.failedAt = new Date();
+      payment.failureReason =
+        verification?.raw?.message?.slice(0, 500) || "Reported failed by Moolre";
+      await payment.save();
+    }
+    return { success: true, status: mapped, payment: payment.toJSON() };
+  }
+
+  // The amount Moolre confirms must cover what this record expects.
+  // `payment.amount` is in pesewas; Moolre reports cedis.
+  const expected = Number(payment.amount) / 100;
+  const received = Number(verification.amount);
+
+  if (Number.isFinite(expected) && Number.isFinite(received) && received + 0.01 < expected) {
+    console.error("[MOOLRE WEBHOOK] Amount mismatch", {
+      expected,
+      received,
+      reference,
+      paymentId: payment.paymentId,
+    });
+    // Not settled, and not marked failed either: the payment may be
+    // short-paid rather than unpaid, and a human has to look at it.
+    return { success: true, message: "Amount mismatch", mismatch: true };
+  }
+
+  const result = await applyMoolreStatus(payment, verification, "completed");
+
+  payment.webhookPayload = payload;
+  payment.webhookReceivedAt = new Date();
+  await payment.save();
+
+  await auditService.log({
+    action: "webhook.received",
+    entity: "Payment",
+    entityId: payment._id,
+    userId: payment.createdBy,
+    details: {
+      status: "success",
+      provider: "moolre",
+      reference,
+      amount: received,
+      // The channel code Moolre reported, and the network it means — an audit
+      // line is read by a person, and "13" is not a network.
+      channel: verification.channel,
+      network: verification.channel ? moolreChannelLabel(verification.channel) : null,
+    },
+  });
+
+  return { success: true, duplicate: false, payment: payment.toJSON(), ...result };
 };
 
 /**
@@ -1557,200 +1918,6 @@ export const checkMtnPayerActive = async (phone) => {
     }
     throw error;
   }
-};
-
-export const handleHubtelWebhook = async (payload) => {
-  const { Status, TransactionId, OrderId, Amount, Currency, MobileNumber, Network, ClientReference } = payload;
-
-  // Find payment by hubtelTransactionId or hubtelOrderId or paymentId (ClientReference)
-  const filter = { deletedAt: null };
-  if (TransactionId) filter.hubtelTransactionId = TransactionId;
-  else if (OrderId) filter.hubtelOrderId = OrderId;
-  else if (ClientReference) filter.paymentId = ClientReference;
-  else {
-    throw new ApiError("No valid payment reference in webhook", 400, "INVALID_WEBHOOK_PAYLOAD");
-  }
-
-  const payment = await Payment.findOne(filter);
-  if (!payment) {
-    console.warn(`[WEBHOOK] Payment not found for payload:`, payload);
-    // Return success to prevent Hubtel retries for unknown payments
-    return { success: true, message: "Payment not found in system" };
-  }
-
-  if (Status === "Success") {
-    // Claim first. A second delivery of a callback we already settled finds the
-    // claim taken and stops here, so the student's totalPaid is never
-    // incremented twice for one payment.
-    const claim = await claimPaymentSettlement(payment);
-    if (!claim) {
-      return { success: true, duplicate: true, message: "Payment already settled", payment: payment.toJSON() };
-    }
-  }
-
-  // Update payment with webhook data
-  payment.webhookPayload = payload;
-  payment.webhookReceivedAt = new Date();
-  payment.hubtelTransactionId = TransactionId || payment.hubtelTransactionId;
-  payment.hubtelOrderId = OrderId || payment.hubtelOrderId;
-  payment.hubtelResponseMessage = payload.Message;
-
-  if (Status === "Success") {
-    payment.status = "completed";
-    payment.completedAt = new Date();
-    payment.momoPhoneNumber = MobileNumber || payment.momoPhoneNumber;
-    payment.momoNetwork = Network || payment.momoNetwork;
-    payment.settlement.reference = TransactionId || payment.settlement?.reference || null;
-
-    // Saved before the money moves. `applyCompletedPaymentToPlan` and the ledger
-    // write both read the document, and `completedAt` has to be on it for the
-    // receipt number the pre-save hook mints to mean anything.
-    await payment.save();
-
-    try {
-      // Balance, school stat and platform ledger — see `settlePayment`'s docstring
-      // for why only the balance is allowed to throw.
-      await settlePayment(payment);
-    } catch (error) {
-      // The claim is released so a provider retry settles this payment instead of
-      // leaving it stuck as completed-but-uncounted. Both of the above are safe to
-      // repeat: the balance clamps rather than double-counting, and the ledger
-      // write is guarded by the claim that was just given back.
-      await releasePaymentSettlement(payment._id);
-      throw error;
-    }
-  } else if (Status === "Failed") {
-    payment.status = "failed";
-    payment.failedAt = new Date();
-    await payment.save();
-  } else if (Status === "Pending") {
-    payment.status = "processing";
-    await payment.save();
-  }
-
-  // Payments that settle a payment-plan installment are applied to the plan
-  // (oldest installment first, with overflow rolling onto the next). Outside the
-  // `Success` branch because a plan can be prepaid and settled by a later, larger
-  // payment that names it.
-  if (payment.paymentPlanId && payment.status === "completed") {
-    await applyCompletedPaymentToPlan(payment);
-  }
-
-  await auditService.log({
-    action: "webhook.received",
-    entity: "Payment",
-    entityId: payment._id,
-    userId: payment.createdBy,
-    details: { status: Status, transactionId: TransactionId, amount: Amount },
-  });
-
-  return { success: true, payment: payment.toJSON() };
-};
-
-// ──────────────────── Paystack: webhook settlement ────────────────────
-/**
- * Settles a payment from a Paystack webhook.
- *
- * Paystack sends a `charge.success` event when a transaction completes. The
- * payload references the payment by the `reference` metadata we attached at
- * initialization (which equals `paymentId`).
- *
- * Delegates to `settlePayment` for the balance/ledger write so the MTN and
- * Paystack paths cannot diverge. The settlement claim runs before the balance
- * updates, so a gateway that delivers the same event twice credits the parent
- * once.
- */
-export const handlePaystackWebhook = async (payload) => {
-  const event = payload?.event;
-  const data = payload?.data;
-
-  if (!event || !data) {
-    return { success: true, message: "Webhook event or data missing — acknowledged" };
-  }
-
-  // Paystack events: charge.success, charge.failed, transfer.* ...
-  // Only `charge.success` and `charge.failed` are relevant for payment settlement.
-  if (event !== 'charge.success' && event !== 'charge.failed') {
-    return { success: true, message: `Event ${event} acknowledged — not relevant for payment settlement` };
-  }
-
-  const reference = data.reference;
-  const status = data.status;
-
-  // Find payment by paystackReference or reference (both equal paymentId)
-  const filter = { deletedAt: null };
-  if (reference) {
-    filter.$or = [
-      { paystackReference: reference },
-      { paymentId: reference },
-    ];
-  }
-
-  const payment = await Payment.findOne(filter);
-  if (!payment) {
-    console.warn(`[WEBHOOK-PAYSTACK] Payment not found for reference: ${reference}`);
-    return { success: true, message: "Payment not found in system" };
-  }
-
-  // Map Paystack status to our internal states
-  const mappedStatus = mapPaystackStatus(status);
-
-  // Store the webhook payload
-  payment.webhookPayload = payload;
-  payment.webhookReceivedAt = new Date();
-  payment.paystackTransactionId = data.id || payment.paystackTransactionId;
-  payment.paystackStatus = status || payment.paystackStatus;
-
-  if (isPaystackSuccessful(status)) {
-    // Claim first — a second delivery of the same event finds the claim taken
-    // and stops here, so the student's totalPaid is never incremented twice.
-    const claim = await claimPaymentSettlement(payment);
-    if (!claim) {
-      return { success: true, duplicate: true, message: "Payment already settled", payment: payment.toJSON() };
-    }
-
-    payment.status = "completed";
-    payment.completedAt = new Date();
-    payment.settlement.reference = payment.paymentId;
-    await payment.save();
-
-    try {
-      await settlePayment(payment);
-    } catch (error) {
-      // Release the claim so a retry settles this payment instead of leaving
-      // it stuck as completed-but-uncounted.
-      await releasePaymentSettlement(payment._id);
-      throw error;
-    }
-  } else if (mappedStatus === 'failed') {
-    payment.status = "failed";
-    payment.failedAt = new Date();
-    await payment.save();
-  } else {
-    payment.status = "processing";
-    await payment.save();
-  }
-
-  // Payments that settle a payment-plan installment are applied to the plan
-  if (payment.paymentPlanId && payment.status === "completed") {
-    await applyCompletedPaymentToPlan(payment);
-  }
-
-  await auditService.log({
-    action: "webhook.received",
-    entity: "Payment",
-    entityId: payment._id,
-    userId: payment.createdBy,
-    details: {
-      provider: "paystack",
-      event,
-      reference,
-      status,
-      amount: data.amount,
-    },
-  });
-
-  return { success: true, payment: payment.toJSON() };
 };
 
 // ──────────────────── Admin: Refund payment ────────────────────

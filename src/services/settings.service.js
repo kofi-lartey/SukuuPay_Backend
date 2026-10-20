@@ -23,7 +23,7 @@ export const getSchoolSettings = async (schoolId, requester) => {
   }
 
   const school = await School.findOne({ _id: scopedSchoolId, deletedAt: null })
-    .select("-payment.hubtelClientId -payment.hubtelClientSecret -payment.hubtelApiKey -payment.momoMerchantId -payment.bankAccount -sms.apiKey")
+    .select("-payment.momoMerchantId -payment.bankAccount -sms.apiKey")
     .lean();
 
   if (!school) throw new ApiError("School not found", 404, "NOT_FOUND");
@@ -53,12 +53,12 @@ export const getSchoolSettings = async (schoolId, requester) => {
       gradingSystem: school.academic?.gradingSystem || "WAEC",
     },
     sms: {
-      provider: school.sms?.provider || "hubtel",
+      provider: school.sms?.provider || "moolre",
       senderId: school.sms?.senderId || "",
       balance: school.sms?.balance || 0,
     },
     payment: {
-      gatewayMode: school.payment?.gatewayMode || "paystack",
+      gatewayMode: school.payment?.gatewayMode || "moolre",
       platformMarkupPercent: school.payment?.platformMarkupPercent || 0,
       networksEnabled: {
         mtn: school.payment?.networksEnabled?.mtn !== false,
@@ -242,7 +242,7 @@ export const getSchoolBilling = async (schoolId, query, requester) => {
     Payment.countDocuments({
       schoolId: scopedSchoolId,
       status: "completed",
-      provider: "hubtel",
+      provider: "moolre",
       createdAt: {
         $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
       },

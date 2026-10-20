@@ -8,7 +8,9 @@ import {
   exportPayments,
   getPaymentDetail,
   generateReceipt,
-  handleHubtelWebhook,
+  handleMoolreWebhook,
+  refreshPendingPayment,
+  createMoolreCheckout,
   refundPayment,
 } from "../services/payment.service.js";
 import {
@@ -61,6 +63,31 @@ export const initiatePaymentController = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Payment initiated successfully",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+    });
+  }
+};
+
+// ──────────────────── Public: Hosted checkout ────────────────────
+/**
+ * Creates a hosted-checkout URL for a payment in flight.
+ *
+ * The fallback for a parent whose handset never received the USSD prompt. It
+ * is created on demand rather than during initiation, because Moolre requires
+ * the reference to be unique and the prompt has already claimed it.
+ */
+export const createCheckoutController = async (req, res) => {
+  try {
+    const result = await createMoolreCheckout(req.params.token, req.body?.reference);
+
+    return res.status(200).json({
+      success: true,
+      message: "Checkout link created",
       data: result,
     });
   } catch (error) {
@@ -125,6 +152,17 @@ export const getReceiptController = async (req, res) => {
  */
 export const verifyPaymentByReferenceController = async (req, res) => {
   try {
+    // The gateway is the system of record and the callback is only a
+    // notification, so the poller asks the gateway directly before reading the
+    // local record. Without this, a parent whose callback was delayed sees a
+    // failure for a payment that succeeded — and pays again.
+    //
+    // The two service calls are composed here rather than in either service:
+    // `pay.service` owns the parent-facing view and `payment.service` owns the
+    // settlement, and `payment.service` already imports `pay.service`, so
+    // letting `pay.service` import back would close a cycle.
+    await refreshPendingPayment(req.params.token, req.params.reference);
+
     const result = await verifyPaymentByReference(req.params.token, req.params.reference);
 
     return res.status(200).json({
@@ -484,23 +522,6 @@ export const getPaymentReceiptController = async (req, res) => {
   }
 };
 
-// ──────────────────── Webhook: Hubtel callback ────────────────────
-export const hubtelWebhookController = async (req, res) => {
-  try {
-    const result = await handleHubtelWebhook(req.body);
-
-    // Always return 200 to Hubtel to acknowledge receipt
-    return res.status(200).json(result);
-  } catch (error) {
-    console.error("Hubtel webhook error:", error);
-    // Still return 200 to prevent Hubtel retries for processing errors
-    return res.status(200).json({
-      success: false,
-      message: resolveErrorMessage(error),
-    });
-  }
-};
-
 // ──────────────────── Admin: Refund payment ────────────────────
 export const refundPaymentController = async (req, res) => {
   try {
@@ -839,3 +860,44 @@ export const whatsappReceiptController = async (req, res) => {
     });
   }
 };
+
+/**
+ * Moolre callback.
+ *
+ * Moolre posts here when a transaction reaches a result. The payload is a
+ * notification, never proof of payment — `handleMoolreWebhook` re-verifies
+ * with Moolre's own status endpoint before any money moves.
+ *
+ * The status code is the one thing the callback controls, so it is used
+ * honestly:
+ *
+ *   200 — the callback was processed, including the "we do not know this
+ *         reference" and "already settled" cases. Moolre must not retry
+ *         those; retrying them cannot change the answer.
+ *   502 — Moolre could not be reached to verify the transaction. The
+ *         transaction may well have succeeded, so the callback must be
+ *         retried rather than treated as settled.
+ */
+export const moolreWebhookController = async (req, res) => {
+  try {
+    const result = await handleMoolreWebhook(req.body);
+
+    return res.status(200).json({
+      received: true,
+      status: result?.status || (result?.duplicate ? "duplicate" : "processed"),
+      note: result?.message || null,
+    });
+  } catch (error) {
+    // A verification failure is retryable: we do not yet know whether the
+    // money arrived, and answering 200 would lose the only notification we
+    // are going to get.
+    if (error?.retryable) {
+      console.error("[MOOLRE WEBHOOK] Verification unavailable, asking Moolre to retry:", error.message);
+      return res.status(502).json({ received: false, message: error.message });
+    }
+
+    console.error("[MOOLRE WEBHOOK] Unhandled error:", error);
+    return res.status(200).json({ received: true, error: error.message });
+  }
+};
+

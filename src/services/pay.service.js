@@ -1650,7 +1650,7 @@ export const verifyPaymentByReference = async (token, reference) => {
       // A reason a parent can act on. The gateway's own text where there is one —
       // "insufficient balance" tells them to top up, which "payment failed" does not.
       reason:
-        payment.hubtelResponseMessage ||
+        payment.moolreResponseMessage ||
         payment.mtnStatusReason ||
         'The payment was not approved. No money has left your account.',
     };

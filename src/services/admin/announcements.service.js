@@ -33,7 +33,7 @@ import {
  *     and a school that acted on it — told a parent the system would be down —
  *     has been actively misled by an operator's tidy-up.
  *   - **The published history is the audit trail.** "Was this notice about the
- *     Hubtel outage ever published, to whom, and who took it down?" is a question
+ *     gateway outage ever published, to whom, and who took it down?" is a question
  *     support will ask during the *next* outage. A hard delete destroys the only
  *     record that it was ever live, at exactly the moment somebody needs it.
  *

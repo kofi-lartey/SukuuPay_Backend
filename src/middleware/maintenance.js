@@ -19,7 +19,7 @@ import { getCachedPlatformSettings } from "../services/platformSettings.service.
  * It is mounted on the `/api` router, never globally, because payment and WhatsApp
  * callbacks are mounted at the *root* in `index.js` (lines 48–49) before
  * `/api` (line 51). A global `app.use(maintenanceGuard)` above those lines would
- * refuse a Hubtel settlement callback mid-migration — turning a planned outage into
+ * refuse a settlement callback mid-migration — turning a planned outage into
  * lost money, and doing it silently, because the provider's retry would also be
  * refused. Nothing about maintenance may touch a webhook.
  *

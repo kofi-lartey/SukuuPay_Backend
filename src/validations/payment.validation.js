@@ -3,7 +3,7 @@ import Joi from "joi";
 // ──────────────────── Enums ────────────────────
 const PAYMENT_STATUS_ENUM = ["pending", "processing", "completed", "failed", "cancelled", "refunded"];
 const PAYMENT_METHOD_ENUM = ["momo", "card", "bank_transfer", "cash"];
-const PAYMENT_PROVIDER_ENUM = ["paystack", "hubtel", "arke", "mnotify", "manual"];
+const PAYMENT_PROVIDER_ENUM = ["arke", "mnotify", "manual", "mtn", "moolre"];
 
 /**
  * The payment model's `momoNetwork` enum.
@@ -131,8 +131,8 @@ export const initiatePaymentSchema = Joi.object({
       "number.min": "The minimum payment is GH₵ 1.00",
       "any.required": "Amount is required",
     }),
-  // 'momo' routes to MTN and needs a MoMo number; 'card' routes to Paystack
-  // and enters card details on the provider's hosted checkout.
+  // 'momo' routes to a mobile money prompt and needs a MoMo number; 'card'
+  // routes to the hosted checkout.
   paymentMethod: Joi.string().valid("momo", "card").default("momo"),
   // Either spelling, but not neither — checked after the fields are known.
   phoneNumber: Joi.string().trim().pattern(/^(0|233|\+233)[2-57][0-9]{8}$/).optional()
@@ -146,13 +146,21 @@ export const initiatePaymentSchema = Joi.object({
     .valid(...Object.keys(PORTAL_NETWORK_ALIASES))
     .optional(),
   description: Joi.string().trim().max(500).optional().allow("", null),
+  // The OTP Moolre sent to the payer's phone.
+  //
+  // Moolre verifies the payer's number before it will send the approval
+  // prompt: it answers `TP14` and sends the parent a code by SMS. The parent
+  // types it here and the request is repeated, which is what actually puts
+  // the prompt on their handset. Without this field the payment can never
+  // leave the "waiting for a code" state.
+  otpCode: Joi.string().trim().max(12).optional().allow("", null),
   feesBreakdown: Joi.array().items(Joi.object({
     label: Joi.string().trim().max(100).required(),
     amount: Joi.number().integer().min(0).required(),
   })).optional(),
   metadata: Joi.object().optional(),
-  // When the gateway is Paystack (card), no MoMo phone number is needed — the
-  // parent enters their card details on Paystack's hosted checkout instead.
+  // When the gateway takes the payment on its hosted checkout (card), no MoMo
+  // phone number is needed — the parent enters their card details there instead.
   // For MoMo (the default method), a Ghana phone number is required.
 }).custom((value, helpers) => {
   if (value.paymentMethod === "momo") {
@@ -165,23 +173,53 @@ export const initiatePaymentSchema = Joi.object({
 });
 
 export const verifyPaymentSchema = Joi.object({
-  hubtelTransactionId: Joi.string().trim().max(100).optional(),
-  hubtelOrderId: Joi.string().trim().max(100).optional(),
-  paystackReference: Joi.string().trim().max(100).optional(),
+  // The reference the portal was handed when the payment was started. Pinning
+  // the poll to it keeps the answer about the payment being waited on, even
+  // when the parent has more than one in flight.
+  reference: Joi.string().trim().max(100).optional(),
+  mtnReferenceId: Joi.string().trim().max(100).optional(),
 });
 
-export const hubtelWebhookSchema = Joi.object({
-  Status: Joi.string().valid("Success", "Failed", "Pending").required(),
-  Message: Joi.string().optional(),
-  ClientReference: Joi.string().optional(),
-  TransactionId: Joi.string().optional(),
-  OrderId: Joi.string().optional(),
-  Amount: Joi.number().optional(),
-  Currency: Joi.string().optional(),
-  MobileNumber: Joi.string().optional(),
-  Network: Joi.string().optional(),
-  PaymentToken: Joi.string().optional(),
+/**
+ * The hosted-checkout request.
+ *
+ * Only the reference is needed: the amount, the currency and the redirect are
+ * read from the payment record rather than from the request, so a caller
+ * cannot ask for a checkout page for a different amount than the one they
+ * were charged.
+ */
+export const checkoutSchema = Joi.object({
+  reference: Joi.string().trim().max(100).required(),
 }).unknown(true);
+
+/**
+ * The Moolre callback payload.
+ *
+ * Every field is optional and the object allows unknown keys, because Moolre's
+ * callback shape has changed across account configurations and the *payload*
+ * is never trusted: `handleMoolreWebhook` re-verifies the transaction against
+ * Moolre's own status endpoint before any money moves. A schema that rejected
+ * an unfamiliar shape would turn a callback we could still have verified into
+ * a 422 and a lost settlement.
+ *
+ * The reference is still required, because without one there is nothing to
+ * verify — that is a payload we genuinely cannot act on, and it is a 400.
+ */
+export const moolreWebhookSchema = Joi.object({
+  status: Joi.alternatives().try(Joi.number(), Joi.string()).optional(),
+  message: Joi.string().optional(),
+  reference: Joi.string().optional(),
+  externalref: Joi.string().optional(),
+  transactionid: Joi.alternatives().try(Joi.number(), Joi.string()).optional(),
+  amount: Joi.number().optional(),
+  channel: Joi.alternatives().try(Joi.number(), Joi.string()).optional(),
+  currency: Joi.string().optional(),
+  payer: Joi.string().optional(),
+  accountnumber: Joi.string().optional(),
+  data: Joi.object().unknown(true).optional(),
+})
+  .or("reference", "externalref", "transactionid", "data")
+  .unknown(true);
 
 export const paymentsQuerySchema = Joi.object({
   schoolId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).optional(),

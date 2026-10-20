@@ -1,7 +1,7 @@
 # SukuuPay — SMS & Bulk Messaging API Specification
 
 **Module:** SMS & Bulk Messaging
-**Base URL:** `https://api.sukuupay.com/api`
+**Base URL:** `https://sukuupay-backend.onrender.com/api`
 **Version:** `1.0`
 **Last updated:** 2026-09-28
 
@@ -234,15 +234,15 @@ Idempotency-Key: 8f14e45f-ea4c-4f9b-9b2a-1c3d5e7f9a11
 
 ```bash
 # 1. Check the credit balance before doing anything else
-curl -X GET https://api.sukuupay.com/api/sms/credits \
+curl -X GET https://sukuupay-backend.onrender.com/api/sms/credits \
   -H "Authorization: Bearer $TOKEN"
 
 # 2. Reuse an existing template — its `placeholders` tell you what to supply
-curl -X GET "https://api.sukuupay.com/api/sms/templates?category=balance" \
+curl -X GET "https://sukuupay-backend.onrender.com/api/sms/templates?category=balance" \
   -H "Authorization: Bearer $TOKEN"
 
 # 3. Send one reminder to one parent
-curl -X POST https://api.sukuupay.com/api/sms/single/65f3b2c4d5e6f7g8h9i0j1k2 \
+curl -X POST https://sukuupay-backend.onrender.com/api/sms/single/65f3b2c4d5e6f7g8h9i0j1k2 \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: 8f14e45f-ea4c-4f9b-9b2a-1c3d5e7f9a11" \
@@ -257,7 +257,7 @@ curl -X POST https://api.sukuupay.com/api/sms/single/65f3b2c4d5e6f7g8h9i0j1k2 \
       }'
 
 # 4. Broadcast to one class, then watch it
-curl -X POST https://api.sukuupay.com/api/sms/bulk/65f2a1b3c4d5e6f7g8h9i0j1 \
+curl -X POST https://sukuupay-backend.onrender.com/api/sms/bulk/65f2a1b3c4d5e6f7g8h9i0j1 \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{
         "templateId": "65a1b2c3d4e5f6a7b8c9d0e3",
@@ -266,7 +266,7 @@ curl -X POST https://api.sukuupay.com/api/sms/bulk/65f2a1b3c4d5e6f7g8h9i0j1 \
         "confirmBroadscope": true
       }'
 # → 202 with data.jobId
-curl -X GET https://api.sukuupay.com/api/sms/jobs/65f9b2c3d4e5f6a7b8c9d0e1 \
+curl -X GET https://sukuupay-backend.onrender.com/api/sms/jobs/65f9b2c3d4e5f6a7b8c9d0e1 \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -327,7 +327,7 @@ from the school's point of view.
 
 ```http
 POST /api/sms/single/65f3b2c4d5e6f7g8h9i0j1k2 HTTP/1.1
-Host: api.sukuupay.com
+Host: sukuupay-backend.onrender.com
 Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 Content-Type: application/json
 Idempotency-Key: 8f14e45f-ea4c-4f9b-9b2a-1c3d5e7f9a11
@@ -361,7 +361,7 @@ Idempotency-Key: 8f14e45f-ea4c-4f9b-9b2a-1c3d5e7f9a11
     "message": "Dear Kwabena Mensah, Ama Serwaa Mensah (Basic 7) has an outstanding balance of GHS 550.00 payable by 15 Oct 2026. Pay via SukuuPay: https://pay.sukuupay.com/abc123",
     "type": "balance",
     "templateId": "65a1b2c3d4e5f6a7b8c9d0e1",
-    "provider": "hubtel",
+    "provider": "moolre",
     "status": "queued",
     "segments": 2,
     "creditsCharged": 2,
@@ -497,7 +497,7 @@ fail; per-message outcomes are in the job's `result` breakdown and in
 
 ```http
 POST /api/sms/bulk/65f2a1b3c4d5e6f7g8h9i0j1 HTTP/1.1
-Host: api.sukuupay.com
+Host: sukuupay-backend.onrender.com
 Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 Content-Type: application/json
 Idempotency-Key: 3c9a7f21-55be-4d0e-9c11-7b2e4a6d8f30
@@ -605,7 +605,7 @@ re-run; submit a new `POST /sms/bulk/:schoolId` instead.
 
 ```http
 GET /api/sms/jobs/65f9b2c3d4e5f6a7b8c9d0e1 HTTP/1.1
-Host: api.sukuupay.com
+Host: sukuupay-backend.onrender.com
 Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 ```
 
@@ -644,7 +644,7 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
       "failed": 6,
       "undelivered": 2
     },
-    "provider": "hubtel",
+    "provider": "moolre",
     "failureReason": null,
     "scheduledAt": null,
     "createdBy": "65a0f1e2d3c4b5a697887766",
@@ -709,7 +709,7 @@ already delivered are not.
 
 ```http
 POST /api/sms/jobs/65f9b2c3d4e5f6a7b8c9d0e1/cancel HTTP/1.1
-Host: api.sukuupay.com
+Host: sukuupay-backend.onrender.com
 Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 Content-Type: application/json
 ```
@@ -788,7 +788,7 @@ history view unless explicitly requested via `isTest`.
 
 ```http
 POST /api/sms/test HTTP/1.1
-Host: api.sukuupay.com
+Host: sukuupay-backend.onrender.com
 Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 Content-Type: application/json
 ```
@@ -811,7 +811,7 @@ Content-Type: application/json
     "schoolId": "65f2a1b3c4d5e6f7g8h9i0j1",
     "phone": "0241234567",
     "message": "SukuuPay SMS test from Accra International School. If you received this, your gateway is configured correctly.",
-    "provider": "hubtel",
+    "provider": "moolre",
     "senderId": "AccraIntlSch",
     "status": "sent",
     "segments": 1,
@@ -842,7 +842,7 @@ Content-Type: application/json
 ```json
 {
   "success": false,
-  "message": "Sender ID \"SCHOOL-1\" is not registered with Hubtel. Update school.sms.senderId or switch provider."
+  "message": "Sender ID \"SCHOOL-1\" is not registered with the provider. Update school.sms.senderId or switch provider."
 }
 ```
 
@@ -899,7 +899,7 @@ The callback must respond within 5 seconds. Process the event asynchronously.
 
 ```http
 POST /api/sms/webhooks/provider HTTP/1.1
-Host: api.sukuupay.com
+Host: sukuupay-backend.onrender.com
 X-Sms-Signature: t=1780048800,v1=6f8a1c9d2b4e7f0a3c5d8e1b4a7f0c3d6e9b2a5f8c1d4e7b0a3f6c9d2e5b8a1f
 Content-Type: application/json
 ```
@@ -988,7 +988,7 @@ template never rewrites what a parent received.
 
 ```http
 GET /api/sms/history?status=failed&from=2026-09-01T00:00:00.000Z&perPage=5 HTTP/1.1
-Host: api.sukuupay.com
+Host: sukuupay-backend.onrender.com
 Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 ```
 
@@ -1009,8 +1009,8 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
       "type": "balance",
       "templateId": "65a1b2c3d4e5f6a7b8c9d0e1",
       "jobId": null,
-      "provider": "hubtel",
-      "providerReference": "HTL-88423011",
+      "provider": "moolre",
+      "providerReference": "MOL-88423011",
       "network": "MTN",
       "status": "failed",
       "segments": 2,
@@ -1088,7 +1088,7 @@ Test messages are excluded from every figure here.
 
 ```http
 GET /api/sms/credits HTTP/1.1
-Host: api.sukuupay.com
+Host: sukuupay-backend.onrender.com
 Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 ```
 
@@ -1100,7 +1100,7 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
   "message": "SMS credit balance retrieved successfully",
   "data": {
     "schoolId": "65f2a1b3c4d5e6f7g8h9i0j1",
-    "provider": "hubtel",
+    "provider": "moolre",
     "balance": 1742,
     "unit": "credits",
     "unitDescription": "SMS segments",
@@ -1175,7 +1175,7 @@ keys are honoured on this endpoint too (§1.7).
 
 ```http
 POST /api/sms/credits/topup HTTP/1.1
-Host: api.sukuupay.com
+Host: sukuupay-backend.onrender.com
 Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 Content-Type: application/json
 Idempotency-Key: b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e
@@ -1207,8 +1207,8 @@ Idempotency-Key: b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e
     "paymentId": "PAY-20260928-QK7T2M",
     "status": "pending",
     "creditsBalance": 1742,
-    "provider": "hubtel",
-    "providerReference": "HTL-88424550",
+    "provider": "moolre",
+    "providerReference": "MOL-88424550",
     "createdAt": "2026-09-28T09:45:12.000Z",
     "settledAt": null
   }
@@ -1281,7 +1281,7 @@ a write.
 
 ```http
 GET /api/sms/templates?category=balance HTTP/1.1
-Host: api.sukuupay.com
+Host: sukuupay-backend.onrender.com
 Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 ```
 
@@ -1375,7 +1375,7 @@ A `super_admin` may read any school's template by passing that template's
 
 ```http
 GET /api/sms/templates/65a1b2c3d4e5f6a7b8c9d0e1 HTTP/1.1
-Host: api.sukuupay.com
+Host: sukuupay-backend.onrender.com
 Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 ```
 
@@ -1459,7 +1459,7 @@ returns `409`.
 
 ```http
 POST /api/sms/templates HTTP/1.1
-Host: api.sukuupay.com
+Host: sukuupay-backend.onrender.com
 Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 Content-Type: application/json
 ```
@@ -1572,7 +1572,7 @@ All fields optional; at least one is required.
 
 ```http
 PUT /api/sms/templates/65f9f6a7b8c9d0e1f2a3b4c5 HTTP/1.1
-Host: api.sukuupay.com
+Host: sukuupay-backend.onrender.com
 Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 Content-Type: application/json
 ```
@@ -1674,7 +1674,7 @@ refundable and is not covered by idempotency keys — a repeat call returns
 
 ```http
 DELETE /api/sms/templates/65f9f6a7b8c9d0e1f2a3b4c5 HTTP/1.1
-Host: api.sukuupay.com
+Host: sukuupay-backend.onrender.com
 Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 Content-Type: application/json
 ```
@@ -1745,7 +1745,7 @@ and is never returned by any endpoint.
 ```json
 {
   "sms": {
-    "provider": "hubtel",
+    "provider": "moolre",
     "senderId": "AccraIntlSch",
     "balance": 1742,
     "lowBalanceThreshold": 250,
@@ -1756,7 +1756,7 @@ and is never returned by any endpoint.
 
 | Field | Type | Description |
 |:--|:--|:--|
-| `provider` | enum | `hubtel` (default), `arke`, `mnotify`. |
+| `provider` | enum | `moolre` (default), `arke`, `mnotify`. |
 | `senderId` | string | Registered alphanumeric sender ID. A rejected sender ID is the most common send failure. |
 | `apiKey` | string | Provider credential. Write-only; never returned. |
 | `balance` | number | Cached credit balance, in segments. |

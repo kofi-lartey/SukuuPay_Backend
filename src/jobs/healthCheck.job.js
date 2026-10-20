@@ -2,7 +2,7 @@ import cron from "cron";
 import mongoose from "mongoose";
 import { log } from "../utils/auditService.js";
 import { getArkeselConfigStatus, isArkeselSendConfigured } from "../utils/arkeselApi.js";
-import { isPaystackConfigured } from "../utils/paystackApi.js";
+import { isMoolreConfigured } from "../utils/moolreClient.js";
 import { isPlaceholder } from "../utils/placeholder.js";
 import { School } from "../models/schoolModel.js";
 import { getCachedPlatformSettings } from "../services/platformSettings.service.js";
@@ -122,39 +122,33 @@ const probeMongo = async () => {
 /**
  * Payment gateway health — **configuration presence only.**
  *
- * Paystack is the sole active gateway. There is no per-gateway API client that
+ * Moolre is the only active gateway. There is no per-gateway API client that
  * pings a payment provider endpoint on a schedule; readiness is determined by
- * whether `PAYSTACK_SECRET_KEY` (platform-level) is present and whether school-
- * level keys exist. Hubtel, Arke, Mnotify and MTN are disabled: their code paths
- * remain in the system but `resolveGateway` will never route to them.
+ * whether Moolre's four credentials are present at the platform level. MTN,
+ * Arke and Mnotify are disabled: their code paths remain in the system but
+ * `resolveGateway` will never route to them.
  */
 const probePayments = async () => {
   const [row] = await School.aggregate([
     { $match: { deletedAt: null } },
-    { $project: { hasPaystackKey: { $ne: [{ $ifNull: ["$payment.paystackSecretKey", ""] }, ""] } } },
-    { $group: { _id: null, totalSchools: { $sum: 1 }, paystackSchools: { $sum: { $cond: ["$hasPaystackKey", 1, 0] } } } },
+    { $group: { _id: null, totalSchools: { $sum: 1 } } },
   ]);
 
-  const paystackPlatformReady = isPaystackConfigured({});
-  const paystackSchools = row?.paystackSchools || 0;
+  const moolrePlatformReady = isMoolreConfigured();
   const totalSchools = row?.totalSchools || 0;
 
-  const anyRouteWorks = paystackPlatformReady || paystackSchools > 0;
-
   return {
-    status: anyRouteWorks ? "ok" : "down",
-    detail: anyRouteWorks
-      ? "Paystack is the active gateway and is configured"
-      : "No payment gateway is usable — Paystack is the only active gateway but no PAYSTACK_SECRET_KEY is set at the platform level and no school has a key",
-    paystackConfigured: anyRouteWorks,
-    paystackPlatformConfigured: paystackPlatformReady,
-    paystackSchools,
+    status: moolrePlatformReady ? "ok" : "down",
+    detail: moolrePlatformReady
+      ? "Moolre is the active gateway and is configured"
+      : "No payment gateway is usable — the Moolre credentials are not set at the platform level",
+    moolreConfigured: moolrePlatformReady,
     totalSchools,
-    activeGateways: ["paystack"],
-    disabledGateways: ["hubtel", "arke", "mnotify", "mtn"],
+    activeGateways: moolrePlatformReady ? ["moolre"] : [],
+    disabledGateways: ["mtn", "arke", "mnotify"],
     networkProbe: false,
     networkProbeReason:
-      "Paystack readiness is determined by PAYSTACK_SECRET_KEY presence, not a network probe. Other gateways are disabled.",
+      "Moolre readiness is determined by credential presence, not a network probe. Other gateways are disabled.",
   };
 };
 
@@ -186,12 +180,7 @@ const probeSms = async () => {
   let status = "ok";
   let detail = "Configured and funded";
 
-  if (provider === "hubtel") {
-    // Selectable in settings, but `utils/smsService.js` registers it with
-    // `send: null` — so every outbound SMS fails. Reported, not worked around.
-    status = "degraded";
-    detail = 'Platform provider is "hubtel", which has no send integration wired';
-  } else if (!isArkeselSendConfigured() || isPlaceholder(config.apiKey)) {
+  if (!isArkeselSendConfigured() || isPlaceholder(config.apiKey)) {
     status = "degraded";
     detail = "Arkesel is not configured";
   } else if (balance <= 0) {

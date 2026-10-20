@@ -131,30 +131,6 @@ const schoolModel = new mongoose.Schema(
       trim: true,
     },
     payment: {
-      hubtelClientId: {
-        type: String,
-        select: false,
-        default: null,
-      },
-      hubtelClientSecret: {
-        type: String,
-        select: false,
-        default: null,
-      },
-      hubtelApiKey: {
-        type: String,
-        select: false,
-        default: null,
-      },
-      paystackSecretKey: {
-        type: String,
-        select: false,
-        default: null,
-      },
-      paystackPublicKey: {
-        type: String,
-        default: null,
-      },
       momoMerchantId: {
         type: String,
         default: null,
@@ -167,8 +143,8 @@ const schoolModel = new mongoose.Schema(
       },
       gatewayMode: {
         type: String,
-        enum: ["paystack", "hubtel", "arke", "mnotify", "manual"],
-        default: "paystack",
+        enum: ["moolre", "arke", "mnotify", "manual"],
+        default: "moolre",
       },
       platformMarkupPercent: {
         type: Number,
@@ -185,10 +161,11 @@ const schoolModel = new mongoose.Schema(
     sms: {
       provider: {
         type: String,
-        enum: ["hubtel", "arke", "mnotify"],
-        // Arkesel is the primary gateway. A school that has chosen a different
+        enum: ["moolre", "arke", "mnotify"],
+        // Moolre is the primary gateway: it collects the payments and carries
+        // the SMS on the same wallet. A school that has chosen a different
         // provider keeps it; this only governs schools that never set one.
-        default: "arke",
+        default: "moolre",
       },
       senderId: { type: String, default: "" },
       apiKey: { type: String, select: false, default: null },
@@ -227,7 +204,7 @@ const schoolModel = new mongoose.Schema(
      * Separate from `payment.platformMarkupPercent` because the two are charged on
      * different things at different moments: markup is skimmed from each parent
      * payment as it arrives, while a platform fee is what a school running its own
-     * Hubtel account owes SukuuPay for using SukuuPay to talk to those parents.
+     * gateway account owes SukuuPay for using SukuuPay to talk to those parents.
      * Conflating them would make one school's gateway choice change its per-payment
      * rate.
      *
@@ -453,11 +430,6 @@ schoolModel.index({ onboardingCompletedAt: 1 });
 schoolModel.set("toJSON", {
   virtuals: true,
   transform: (_doc, ret) => {
-    if (ret.payment) {
-      delete ret.payment.hubtelApiKey;
-      delete ret.payment.hubtelClientSecret;
-      delete ret.payment.paystackSecretKey;
-    }
     if (ret.sms) {
       delete ret.sms.apiKey;
     }

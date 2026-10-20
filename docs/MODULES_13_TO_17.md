@@ -928,12 +928,12 @@ Centralizes all school-level configuration that isn't part of the core profile. 
       "gradingSystem": "WAEC"
     },
     "sms": {
-      "provider": "hubtel",
+      "provider": "moolre",
       "senderId": "PBS-SCHOOL",
       "balance": 5000
     },
     "payment": {
-      "gatewayMode": "hubtel",
+      "gatewayMode": "moolre",
       "platformMarkupPercent": 5,
       "networksEnabled": {
         "mtn": true,
@@ -963,7 +963,7 @@ Centralizes all school-level configuration that isn't part of the core profile. 
 **Rate Limit:** 60 requests / minute per user
 
 **Notes / Edge Cases:**
-- Secret fields (`hubtelClientId`, `hubtelClientSecret`, `hubtelApiKey`, `sms.apiKey`) are **never** returned.
+- Secret fields (`sms.apiKey`) are **never** returned.
 - The response groups fields into logical sections even though they live in different parts of the School document.
 
 ---
@@ -1238,7 +1238,7 @@ At least one field must be provided.
 - **Related validators:** `validations/settings.validation.js`
 - **Audit:** All `PUT` endpoints write an audit log entry.
 - **Protected fields:** `slug`, `schoolCode`, `createdBy`, `subscription`, `status`, `suspendedAt/Reason`, `deletedAt` cannot be modified via settings.
-- **Secrets:** `hubtelClientId`, `hubtelClientSecret`, `hubtelApiKey`, and `sms.apiKey` are always excluded from responses.
+- **Secrets:** `sms.apiKey` is always excluded from responses.
 - **Rate limiting:** Settings endpoints are protected by a custom rate limiter (30–60 req/min depending on the endpoint).
 - **Timezone:** All dates in responses are ISO-8601 UTC. Accra is GMT+0, so UTC timestamps display correctly in local time.
 
@@ -1465,7 +1465,7 @@ Platform-level operations available exclusively to `super_admin` users. Covers s
       "schoolCode": "SUN-001",
       "status": "active",
       "subscription": { "plan": "standard", "status": "active", "currentPeriodEnd": "2025-03-01T00:00:00.000Z" },
-      "sms": { "provider": "hubtel", "balance": 1500, "senderId": "SUNSCHOOL" }
+      "sms": { "provider": "moolre", "balance": 1500, "senderId": "SUNSCHOOL" }
     },
     "counts": {
       "students": 450,
@@ -1714,7 +1714,7 @@ each field is enforced somewhere specific:
 - Webhooks are exempt by *placement*, not by rule. `webhookRoute` and `whatsappRoute`
   are mounted at the root in `index.js` before `/api`, so a guard on `/api` cannot
   reach them. **Never mount it globally** — a guard above the root webhook mounts
-  would refuse a Hubtel settlement callback mid-migration, turning a planned outage
+  would refuse a Moolre settlement callback mid-migration, turning a planned outage
   into lost money, silently, because the provider's own retry would be refused too.
 
 Settings reads go through `services/platformSettings.service.js`, which caches for 30

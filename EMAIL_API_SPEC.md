@@ -1,7 +1,7 @@
 # SukuuPay — Email API Specification
 
 **Module:** Email (parent communication)
-**Base URL:** `https://api.sukuupay.com/api`
+**Base URL:** `https://sukuupay-backend.onrender.com/api`
 **Version:** `1.0`
 **Last updated:** 2026-09-28
 **Related:** [`SMS_API_SPEC.md`](./SMS_API_SPEC.md)
@@ -203,7 +203,7 @@ See Appendix E for the catalogue of recurring errors.
 
 ```bash
 # 1. Send a balance statement to one parent's verified address
-curl -X POST https://api.sukuupay.com/api/email/single \
+curl -X POST https://sukuupay-backend.onrender.com/api/email/single \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: 8f14e45f-ea4c-4f9b-9b2a-1c3d5e7f9a11" \
@@ -216,7 +216,7 @@ curl -X POST https://api.sukuupay.com/api/email/single \
       }'
 
 # 2. Email a term report to every parent of one class who has an address
-curl -X POST https://api.sukuupay.com/api/email/bulk/65f2a1b3c4d5e6f7g8h9i0j1 \
+curl -X POST https://sukuupay-backend.onrender.com/api/email/bulk/65f2a1b3c4d5e6f7g8h9i0j1 \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{
         "template": "term_report_notice",
@@ -295,7 +295,7 @@ transactional templates already do.
 
 ```http
 POST /api/email/single HTTP/1.1
-Host: api.sukuupay.com
+Host: sukuupay-backend.onrender.com
 Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 Content-Type: application/json
 Idempotency-Key: 8f14e45f-ea4c-4f9b-9b2a-1c3d5e7f9a11
@@ -483,7 +483,7 @@ not optional for bulk send — see Appendix F.
 
 ```http
 POST /api/email/bulk/65f2a1b3c4d5e6f7g8h9i0j1 HTTP/1.1
-Host: api.sukuupay.com
+Host: sukuupay-backend.onrender.com
 Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 Content-Type: application/json
 Idempotency-Key: 3c9a7f21-55be-4d0e-9c11-7b2e4a6d8f30
@@ -633,7 +633,7 @@ them. `perPage` caps at 100; page further for more.
 
 ```http
 GET /api/email/history?hasBounce=true&perPage=5 HTTP/1.1
-Host: api.sukuupay.com
+Host: sukuupay-backend.onrender.com
 Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 ```
 
@@ -761,7 +761,7 @@ The handler must respond within 5 seconds; process events asynchronously.
 
 ```http
 POST /api/email/webhooks/brevo HTTP/1.1
-Host: api.sukuupay.com
+Host: sukuupay-backend.onrender.com
 X-Brevo-Event-Secret: whsec_3f9a1c9d2b4e7f0a3c5d8e1b
 Content-Type: application/json
 ```

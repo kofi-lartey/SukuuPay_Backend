@@ -452,7 +452,11 @@ export const ID_CARD_BATCH_STATUS_VALUES = Object.values(ID_CARD_BATCH_STATUS);
 export const MOMO_NETWORKS = ["MTN", "VODAFONE", "AIRTELTELIGO"];
 
 // SMS providers
-export const SMS_PROVIDERS = ["hubtel", "arke", "mnotify"];
+//
+// `moolre` is first because it is the platform default: Moolre carries both
+// payments and SMS on one wallet, so a school on Moolre needs one vendor and
+// one balance. The others remain for schools that have not migrated.
+export const SMS_PROVIDERS = ["moolre", "arke", "mnotify"];
 
 // ── WhatsApp ──
 // Message categories, shared by single sends, bulk jobs and the conversation log.
@@ -522,7 +526,7 @@ export const SMS_DELIVERY_STATUSES = [
 ];
 
 // ── Inbound webhook providers ──
-export const WEBHOOK_PROVIDERS = ["hubtel", "arkesel"];
+export const WEBHOOK_PROVIDERS = ["arkesel"];
 
 // ── SMS reminders ──
 // Business category of a fee-reminder SMS. `custom` is the free-form bucket; the

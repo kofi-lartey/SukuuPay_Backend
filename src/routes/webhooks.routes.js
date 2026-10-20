@@ -1,10 +1,7 @@
 import { Router } from 'express';
 import {
-  hubtelPaymentWebhookController,
-  hubtelSmsWebhookController,
   arkeselSmsWebhookController,
   mtnPaymentWebhookController,
-  paystackPaymentWebhookController,
 } from '../controllers/webhooks.controller.js';
 
 export const webhookRoute = Router();
@@ -21,17 +18,8 @@ export const webhookRoute = Router();
 // validations/webhooks.validation.js for why: a provider changing a field name
 // must not turn into dropped payment confirmations or lost delivery reports.
 
-// POST /webhooks/mtn/payment — MTN transaction result (primary gateway)
+// POST /webhooks/mtn/payment — MTN transaction result (secondary gateway)
 webhookRoute.post('/webhooks/mtn/payment', mtnPaymentWebhookController);
-
-// POST /webhooks/hubtel/payment — Hubtel payment confirmation (fallback)
-webhookRoute.post('/webhooks/hubtel/payment', hubtelPaymentWebhookController);
-
-// POST /webhooks/hubtel/sms — Hubtel SMS delivery report
-webhookRoute.post('/webhooks/hubtel/sms', hubtelSmsWebhookController);
 
 // POST /webhooks/arkesel/sms — Arkesel SMS delivery report
 webhookRoute.post('/webhooks/arkesel/sms', arkeselSmsWebhookController);
-
-// POST /webhooks/paystack/payment — Paystack charge confirmation (primary card gateway)
-webhookRoute.post('/webhooks/paystack/payment', paystackPaymentWebhookController);

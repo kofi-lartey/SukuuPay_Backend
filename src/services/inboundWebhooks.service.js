@@ -1,29 +1,26 @@
 import { SmsMessage } from '../models/smsMessageModel.js';
 import { School } from '../models/schoolModel.js';
-import { handleHubtelWebhook, handleMtnResult, handlePaystackWebhook } from './payment.service.js';
+import { handleMtnResult } from './payment.service.js';
 import { log as auditLog } from '../utils/auditService.js';
-import { verifyHubtelSignature, verifyArkeselAuth } from '../utils/signatures.js';
-import { verifyPaystackSignature as verifyPaystackSig } from '../utils/paystackApi.js';
+import { verifyArkeselAuth } from '../utils/signatures.js';
 import { phoneSearchCandidates } from '../utils/phoneNumbers.js';
 import ApiError from '../utils/ApiError.js';
 import {
-  HUBTEL_WEBHOOK_SECRET,
   ARKESEL_WEBHOOK_SECRET,
   ARKESEL_API_KEY,
   WEBHOOK_AUTH_ENFORCED,
   MTN_WEBHOOK_SECRET,
-  PAYSTACK_WEBHOOK_SECRET,
 } from '../config/env.js';
 
 // ─────────────────────────────────────────────
 // Inbound third-party webhooks
 // ─────────────────────────────────────────────
-// Meta, Hubtel and Arkesel all call back over the public internet with no
-// session. Each therefore authenticates with a keyed MAC over the exact bytes it
+// Meta and Arkesel both call back over the public internet with no session.
+// Each therefore authenticates with a keyed MAC over the exact bytes it
 // sent, and the raw body is what must be verified — a parsed-and-restringified
 // body does not reproduce the provider's bytes.
 //
-// Two rules hold across all three:
+// Two rules hold across both:
 //
 //   1. A report that cannot be authenticated is rejected. These endpoints move
 //      money and delivery state; a guessed payload must not be able to credit a
@@ -41,37 +38,6 @@ const DLR_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 // ──────────────────── Authentication ────────────────────
 
 const isEnforced = () => WEBHOOK_AUTH_ENFORCED === 'true';
-
-/**
- * Verifies a Hubtel callback (X-Hubtel-Signature, HMAC-SHA512 over the raw body).
- *
- * A missing HUBTEL_WEBHOOK_SECRET is a deployment error, not grounds for
- * accepting unsigned traffic: this endpoint settles payments.
- */
-export const authenticateHubtel = ({ header, rawBody } = {}) => {
-  const { valid, reason } = verifyHubtelSignature({
-    header,
-    secret: HUBTEL_WEBHOOK_SECRET,
-    rawBody,
-  });
-
-  if (valid) return { valid: true, enforced: true, method: 'hmac-sha512' };
-
-  if (reason === 'no_shared_secret_configured' && !isEnforced()) {
-    console.warn(
-      '[WEBHOOK-HUBTEL] HUBTEL_WEBHOOK_SECRET is not set; accepting an unsigned callback. Set it before going to production.'
-    );
-    return { valid: true, enforced: false, method: 'none' };
-  }
-
-  throw new ApiError(
-    reason === 'no_shared_secret_configured'
-      ? 'Hubtel webhook secret is not configured'
-      : 'Invalid or missing Hubtel webhook signature',
-    401,
-    'INVALID_WEBHOOK_SIGNATURE'
-  );
-};
 
 /**
  * Verifies an Arkesel callback. Arkesel either echoes the account key in
@@ -106,44 +72,12 @@ export const authenticateArkesel = ({ signatureHeader, providedApiKey, rawBody }
   );
 };
 
-// ──────────────────── Hubtel: payment confirmation ────────────────────
-
-/**
- * Settles a payment from a Hubtel confirmation.
- *
- * Delegates to the existing handler so the parent-facing callback at
- * POST /pay/webhook/hubtel and this one cannot diverge. That handler claims the
- * settlement before moving any balance, so a gateway that delivers the same
- * confirmation three times credits the parent once.
- */
-export const handleHubtelPaymentWebhook = async (payload, context = {}) => {
-  const result = await handleHubtelWebhook(payload);
-
-  if (!result.duplicate) {
-    await auditLog({
-      action: 'webhook.received',
-      entity: 'Payment',
-      entityId: result.payment?._id,
-      schoolId: result.payment?.schoolId,
-      meta: {
-        provider: 'hubtel',
-        channel: 'payment',
-        endpoint: 'webhooks/hubtel/payment',
-        status: payload?.Status || null,
-        ...context,
-      },
-    });
-  }
-
-  return result;
-};
-
 // ──────────────────── MTN: transaction result ────────────────────
 
 /**
  * Authenticates an MTN callback.
  *
- * MTN does not sign the body with a keyed MAC the way Hubtel and Meta do: the
+ * MTN does not sign the body with a keyed MAC the way Meta does: the
  * Collections callback is a plain POST that carries no verifiable signature.
  * Authentication therefore rests on a shared secret the integration *configures*
  * on MTN's side, echoed back by us on the callback URL path — combined with the
@@ -203,71 +137,6 @@ export const handleMtnPaymentWebhook = async (payload, context = {}) => {
   return result;
 };
 
-// ──────────────────── Paystack: payment confirmation ────────────────────
-
-/**
- * Authenticates a Paystack callback.
- *
- * Paystack signs the webhook body with HMAC-SHA512 using the webhook secret,
- * and sends it in the `X-Paystack-Signature` header. Like the other
- * webhooks, authentication must succeed before any settlement path runs.
- *
- * When no `PAYSTACK_WEBHOOK_SECRET` is configured the endpoint warns-and-allows
- * in development but rejects in production — this endpoint settles payments.
- */
-export const authenticatePaystack = ({ signature, rawBody } = {}) => {
-  const { valid, reason } = verifyPaystackSig({
-    signature,
-    secret: PAYSTACK_WEBHOOK_SECRET,
-    rawBody,
-  });
-
-  if (valid) return { valid: true, enforced: true, method: 'hmac-sha512' };
-
-  if (reason === 'no_shared_secret_configured' && !isEnforced()) {
-    console.warn(
-      '[WEBHOOK-PAYSTACK] PAYSTACK_WEBHOOK_SECRET is not set; accepting an unsigned callback. Set it before going to production.'
-    );
-    return { valid: true, enforced: false, method: 'none' };
-  }
-
-  throw new ApiError(
-    reason === 'no_shared_secret_configured'
-      ? 'Paystack webhook secret is not configured'
-      : 'Invalid or missing Paystack webhook signature',
-    401,
-    'INVALID_WEBHOOK_SIGNATURE'
-  );
-};
-
-/**
- * Settles a payment from a Paystack webhook.
- *
- * Delegates to `handlePaystackWebhook` so the settlement logic is shared
- * (the same handler is reachable from future polling paths).
- */
-export const handlePaystackPaymentWebhook = async (payload, context = {}) => {
-  const result = await handlePaystackWebhook(payload);
-
-  if (!result.duplicate) {
-    await auditLog({
-      action: 'webhook.received',
-      entity: 'Payment',
-      entityId: result.payment?._id,
-      schoolId: result.payment?.schoolId,
-      meta: {
-        provider: 'paystack',
-        channel: 'payment',
-        endpoint: 'webhooks/paystack/payment',
-        status: payload?.data?.status || payload?.status || null,
-        ...context,
-      },
-    });
-  }
-
-  return result;
-};
-
 // ──────────────────── SMS delivery reports ────────────────────
 
 /**
@@ -299,15 +168,6 @@ const normaliseStatus = ({ status, code, statusCode }) => {
 
 /** Field names each provider uses for the pieces of a delivery report. */
 const REPORT_FIELDS = {
-  hubtel: {
-    messageId: ['MessageId', 'messageId', 'message_id', 'MessageID', 'SmsId', 'smsId'],
-    status: ['Status', 'status', 'DeliveryStatus', 'delivery_status'],
-    code: ['ResponseCode', 'responseCode', 'response_code', 'StatusCode', 'code'],
-    description: ['StatusDescription', 'statusDescription', 'Description', 'description', 'Message'],
-    network: ['Network', 'network', 'NetworkName'],
-    to: ['Recipient', 'recipient', 'PhoneNumber', 'phoneNumber', 'MobileNumber', 'msisdn', 'To'],
-    sentAt: ['SentTimestamp', 'sentTimestamp', 'sent_timestamp', 'Timestamp', 'timestamp'],
-  },
   arkesel: {
     messageId: ['message_id', 'messageId', 'sms_id', 'id', 'MessageId'],
     status: ['status', 'Status', 'delivery_status', 'DeliveryStatus'],
@@ -330,7 +190,7 @@ const pick = (payload, names) => {
 
 /** Folds one provider payload into the internal report shape. */
 export const normaliseDeliveryReport = (provider, payload) => {
-  const fields = REPORT_FIELDS[provider] || REPORT_FIELDS.hubtel;
+  const fields = REPORT_FIELDS[provider] || REPORT_FIELDS.arkesel;
   const status = pick(payload, fields.status);
   const code = pick(payload, fields.code);
   const description = pick(payload, fields.description);
@@ -366,7 +226,7 @@ const extractReports = (payload) => {
   if (Array.isArray(payload)) return payload.filter((entry) => entry && typeof entry === 'object');
   if (!payload || typeof payload !== 'object') return [];
 
-  // Batch wrappers the two providers use.
+  // Batch wrappers providers use.
   for (const key of ['Data', 'data', 'reports', 'Reports', 'messages', 'Messages', 'results']) {
     if (Array.isArray(payload[key])) {
       return payload[key].filter((entry) => entry && typeof entry === 'object');

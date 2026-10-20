@@ -89,11 +89,11 @@ describe('WhatsApp channel: Version 2 placeholder', () => {
   });
 });
 
-// ── SMS: Arkesel primary, honestly blocked ──
+// ── SMS: Moolre primary, Arkesel retained ──
 describe('SMS gateway', () => {
-  test('Arkesel is the default provider', async () => {
+  test('Moolre is the default provider', async () => {
     const { SMS_DEFAULT_PROVIDER } = await import('../src/config/env.js');
-    assert.equal(SMS_DEFAULT_PROVIDER, 'arke');
+    assert.equal(SMS_DEFAULT_PROVIDER, 'moolre');
   });
 
   test('Arkesel send is wired to the V2 API', async () => {
@@ -177,13 +177,9 @@ describe('SMS gateway', () => {
 // Hoisted to module scope because `describe` takes a synchronous callback, so an
 // `await` inside its body is a syntax error.
 //
-// The invariant being protected is that `resolveGateway` only routes to Paystack
-// (the sole active gateway). Other gateways (MTN, Hubbel) remain importable but
-// disabled, so a school with no Paystack credentials gets a 400 throw — not a
-// silent downgrade.
-const hubtelSchool = {
-  payment: { hubtelClientId: 'a', hubtelClientSecret: 'b', hubtelApiKey: 'c' },
-};
+// The invariant being protected is that `resolveGateway` only routes to Moolre
+// (the sole active gateway). MTN remains importable but disabled, so a school
+// with no Moolre credentials gets a 400 throw — not a silent downgrade.
 const noCredsSchool = { payment: {} };
 
 describe('MTN gateway', () => {
@@ -209,14 +205,15 @@ describe('MTN gateway', () => {
     assert.equal(mapMtnStatus(null), null);
   });
 
-  test('a school with Hubtel creds resolves to Paystack when available', async () => {
-    const { resolveGateway, paystackIsConfigured } = await import('../src/utils/paymentGateway.js');
-    // Paystack is the sole active gateway. A school carrying only Hubbel creds
-    // resolves to Paystack if the platform key is set, or throws if it is not.
-    if (paystackIsConfigured({})) {
-      assert.equal(resolveGateway(hubtelSchool), 'paystack');
+  test('a school with no credentials resolves to the configured gateway', async () => {
+    const { resolveGateway, moolreIsConfigured } = await import('../src/utils/paymentGateway.js');
+    // Moolre is the only rail. A school carrying no credentials of its own still
+    // resolves, because Moolre's wallet is platform-level, and throws only when
+    // Moolre itself is not configured.
+    if (moolreIsConfigured()) {
+      assert.equal(resolveGateway(noCredsSchool), 'moolre');
     } else {
-      assert.throws(() => resolveGateway(hubtelSchool), (e) => {
+      assert.throws(() => resolveGateway(noCredsSchool), (e) => {
         assert.equal(e.code, 'PAYMENT_CONFIG_MISSING');
         return true;
       });
@@ -224,11 +221,11 @@ describe('MTN gateway', () => {
   });
 
   test('the no-credentials error is reachable, not dead code', async () => {
-    const { resolveGateway, paystackIsConfigured } = await import('../src/utils/paymentGateway.js');
-    // With Paystack configured, even a school with zero credentials resolves.
-    if (paystackIsConfigured({})) {
-      assert.equal(resolveGateway(noCredsSchool), 'paystack',
-        'with Paystack configured, any school resolves to paystack');
+    const { resolveGateway, moolreIsConfigured } = await import('../src/utils/paymentGateway.js');
+    // With a gateway configured, even a school with zero credentials resolves.
+    if (moolreIsConfigured()) {
+      assert.equal(resolveGateway(noCredsSchool), 'moolre',
+        'with Moolre configured, any school resolves to moolre');
       return;
     }
     // Without any platform-level gateway, the throw must be reachable.
@@ -239,12 +236,11 @@ describe('MTN gateway', () => {
     });
   });
 
-  test('hubtel is selectable but has no send integration', async () => {
-    // The provider enum accepts all three; only arke can actually transmit.
-    // Selecting hubtel must fail loudly rather than silently no-op.
+  test('mnotify is selectable but has no send integration', async () => {
+    // The provider enum accepts it; only arke can actually transmit.
+    // Selecting mnotify must fail loudly rather than silently no-op.
     const { availableSmsProviders } = await import('../src/utils/smsService.js');
     const available = availableSmsProviders();
-    assert.ok(!available.includes('hubtel'), 'hubtel must not claim a working send');
     assert.ok(!available.includes('mnotify'), 'mnotify must not claim a working send');
   });
 
@@ -304,7 +300,7 @@ describe('deployment config', () => {
   });
 
   test('webhook base URL is not borrowed from the frontend pay-link origin', async () => {
-    // The Hubtel callback was built from PAY_LINK_BASE_URL, which points at the
+    // A settlement callback built from PAY_LINK_BASE_URL points at the
     // frontend. A server-to-server POST cannot land on a static host, so payment
     // settlement would never arrive — silently, because the send still succeeds.
     const { WEBHOOK_BASE_URL } = await import('../src/config/env.js');
@@ -323,13 +319,33 @@ describe('GET /version reports honestly', () => {
     assert.equal(v.integrations.whatsapp.configured, false);
     assert.equal(v.integrations.whatsapp.hasPlaceholderCredentials, true);
 
-    assert.equal(v.integrations.sms.defaultProvider, 'arke');
-    assert.deepEqual(v.integrations.sms.sendProviders, ['arke'],
-      'Arkesel is the only provider with a confirmed send integration');
+    assert.equal(v.integrations.sms.defaultProvider, 'moolre');
+    // Only a provider with a working *and configured* send integration is
+    // listed. Which ones those are depends on the deployment's credentials, so
+    // this asserts the property rather than a fixed list — a fixed list breaks
+    // the moment a credential is added, and the moment one is removed.
+    assert.ok(Array.isArray(v.integrations.sms.sendProviders));
+    assert.ok(
+      v.integrations.sms.sendProviders.includes('arke'),
+      'Arkesel is configured and has a send integration'
+    );
+    for (const provider of v.integrations.sms.sendProviders) {
+      assert.ok(
+        ['moolre', 'arke', 'mnotify'].includes(provider),
+        `${provider} is a known provider id`
+      );
+    }
     assert.equal(v.integrations.sms.arkesel.configured, true);
     assert.equal(v.integrations.sms.arkesel.senderIdValid, true,
       'a bad sender ID is silently dropped by MTN, so it is surfaced here');
 
     assert.ok(v.integrations.payments.mtn, 'MTN block must be present');
+    assert.ok(v.integrations.payments.moolre, 'Moolre block must be present');
+    // The credential *presence* is reported; the credential *values* are not.
+    // A report that gets pasted into a ticket must not carry the merchant
+    // wallet's API key with it.
+    assert.equal(typeof v.integrations.payments.moolre.configured, 'boolean');
+    assert.equal(typeof v.integrations.payments.moolre.hasApiKey, 'boolean');
+    assert.equal(typeof v.integrations.payments.moolre.smsConfigured, 'boolean');
   });
 });

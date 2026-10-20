@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────
 // Webhook signature verification
 // ─────────────────────────────────────────────
-// Every inbound webhook in this platform (Meta, Hubtel, Arkesel) authenticates
+// Every inbound webhook in this platform (Meta, Arkesel) authenticates
 // itself with a keyed MAC over the exact bytes it sent. That means two things
 // this module exists to enforce:
 //
@@ -77,17 +77,6 @@ export const verifyHmacSignature = ({
  */
 export const verifyMetaSignature = ({ header, secret, rawBody } = {}) =>
   verifyHmacSignature({ header, secret, rawBody, algorithm: 'sha256', prefix: 'sha256=' });
-
-/**
- * Hubtel signs the raw body with HMAC-SHA512 using the account API key and
- * sends the bare hex digest in `X-Hubtel-Signature`. Some gateway
- * configurations prefix it with the algorithm name, so both forms are accepted.
- */
-export const verifyHubtelSignature = ({ header, secret, rawBody } = {}) => {
-  const provided = String(header ?? '').trim();
-  const stripped = provided.replace(/^sha512=/i, '');
-  return verifyHmacSignature({ header: stripped, secret, rawBody, algorithm: 'sha512', prefix: '' });
-};
 
 /**
  * Arkesel authenticates the delivery callback either by echoing the account

@@ -271,7 +271,7 @@ describe('gateway mode is mapped onto the two rails, explicitly', () => {
 
   test('manual is the school\'s own rail and the gateways are the platform\'s', () => {
     assert.equal(analytics.GATEWAY_RAIL_BY_MODE.manual, 'school_own');
-    for (const mode of ['paystack', 'hubtel', 'arke', 'mnotify']) {
+    for (const mode of ['moolre', 'arke', 'mnotify']) {
       assert.equal(analytics.GATEWAY_RAIL_BY_MODE[mode], 'sukuupay');
     }
   });

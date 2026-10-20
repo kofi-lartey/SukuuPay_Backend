@@ -270,8 +270,8 @@ const refundCredits = async (schoolId, units) => {
  * Submits one rendered message.
  *
  * Arkesel is the only transmit path wired, because it is the only one the
- * codebase has a client for (`utils/arkeselApi.js`). A school on `hubtel` or
- * `mnotify` is refused with an explanation rather than silently routed through
+ * codebase has a client for (`utils/arkeselApi.js`). A school on `mnotify`
+ * is refused with an explanation rather than silently routed through
  * Arkesel: the sender ID is registered with a specific operator, so a message
  * sent through the wrong gateway is dropped by the handset with no report, and
  * the school would be billed for messages nobody received.

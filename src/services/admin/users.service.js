@@ -63,7 +63,7 @@ const SAFE_USER_SELECT =
  * Credentials stripped from the school summary embedded in a user read.
  *
  * The same four as everywhere else. A user detail view shows a school's name and
- * region; it has no reason to carry that school's Hubtel credentials.
+ * region; it has no reason to carry that school's gateway credentials.
  */
 const SAFE_SCHOOL_SELECT = "name region status schoolCode subscription.status";
 

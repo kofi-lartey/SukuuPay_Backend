@@ -26,7 +26,7 @@ export const log = async ({
 }) => {
   try {
     // Accept either an explicit `req` or individual context fields.  This keeps
-    // the call-site simple for webhook-driven flows (e.g. Hubtel callbacks)
+    // the call-site simple for webhook-driven flows (e.g. Moolre callbacks)
     // that have no request object.
     if (req && !ip) {
       ip = req.ip || req.headers?.["x-forwarded-for"] || req.socket?.remoteAddress || null;

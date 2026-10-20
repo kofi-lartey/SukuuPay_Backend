@@ -654,7 +654,7 @@ rather than raw row-level data:
 | `overdue` | 30 s | `analytics:overdue:{schoolId}:{hash(query)}` | In-process (time-sensitive) |
 
 **Cache invalidation triggers**: When a `Payment` transitions to `completed`
-(via the Hubtel webhook at `payment.service.js:390`), invalidate the school's
+(via the Moolre callback), invalidate the school's
 cache for `overview`, `revenue`, `paid-owed`, `persons`, and `class-performance`
 (vary by ±0 TTL). The webhook handler is the single mutation chokepoint for
 completed payments; plan status changes (via `sweepPlanStatuses` in

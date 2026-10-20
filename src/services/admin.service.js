@@ -71,11 +71,11 @@ export const listAllSchools = async (query) => {
       // Explicit projections rather than "everything but". The console's schools
       // table needs the commercial terms on every row — what this school pays the
       // platform, what is switched on, when it onboarded — so they are named here.
-      // `hubtelClientId` is `select: false` on the model and therefore absent
+      // `sms.apiKey` is `select: false` on the model and therefore absent
       // already; it is listed so that a reader can verify the console returns no
-      // gateway credential from *any* of the three, rather than having to know
+      // gateway credential from *any* of them, rather than having to know
       // which one happens to be flagged today.
-      .select("-payment.hubtelClientId -payment.hubtelClientSecret -payment.hubtelApiKey -sms.apiKey")
+      .select("-sms.apiKey")
       .lean(),
     School.countDocuments(filter),
   ]);

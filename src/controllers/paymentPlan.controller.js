@@ -161,7 +161,11 @@ export const prepayPlanController = async (req, res) => {
         paymentRef: result.paymentRef,
         planId: result.planId,
         amount: result.amount,
-        hubtelRequest: result.hubtelRequest,
+        provider: result.provider,
+        requiresPayerApproval: result.requiresPayerApproval ?? false,
+        requiresOtp: result.requiresOtp ?? false,
+        moolre: result.moolre,
+        mtn: result.mtn,
       },
     });
   } catch (error) {

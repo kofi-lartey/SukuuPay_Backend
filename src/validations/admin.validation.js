@@ -126,7 +126,7 @@ const updatePlatformSettingsSchema = Joi.object({
     autoApprove: Joi.boolean(),
   }).min(1),
   sms: Joi.object({
-    provider: Joi.string().valid("arke", "hubtel"),
+    provider: Joi.string().valid("arke", "moolre"),
     ratePesewas: Joi.number().integer().min(0),
   }).min(1),
   support: Joi.object({

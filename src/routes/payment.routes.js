@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   getStudentByPayTokenController,
   initiatePaymentController,
+  createCheckoutController,
   verifyPaymentController,
   verifyPaymentByReferenceController,
   getPaymentHistoryController,
@@ -19,7 +20,7 @@ import {
   getParentReceiptPdfController,
   emailReceiptController,
   whatsappReceiptController,
-  hubtelWebhookController,
+  moolreWebhookController,
   refundPaymentController,
 } from "../controllers/payment.controller.js";
 import { recordManualPaymentController } from "../controllers/manualPayment.controller.js";
@@ -46,8 +47,9 @@ import {
   receiptEmailSchema,
   receiptWhatsappSchema,
   initiatePaymentSchema,
+  checkoutSchema,
   verifyPaymentSchema,
-  hubtelWebhookSchema,
+  moolreWebhookSchema,
   paymentsQuerySchema,
   paymentExportQuerySchema,
   paymentDetailQuerySchema,
@@ -119,6 +121,19 @@ paymentRoute.post(
   validate(payTokenParamSchema, "params"),
   validate(initiatePaymentSchema),
   initiatePaymentController
+);
+
+// POST /pay/:token/checkout - Hosted-checkout fallback
+//
+// The escape hatch for a parent whose handset never received the USSD prompt.
+// The link is created on demand, not during initiation: Moolre requires the
+// reference to be unique and the prompt has already claimed it.
+paymentRoute.post(
+  "/pay/:token/checkout",
+  payInitiateLimit,
+  validate(payTokenParamSchema, "params"),
+  validate(checkoutSchema),
+  createCheckoutController
 );
 
 // GET /pay/:token/plan - The live payment plan, or null
@@ -258,11 +273,19 @@ paymentRoute.post(
 );
 
 // ──────────────────── Webhook (no auth, but validated) ────────────────────
-// POST /pay/webhook/hubtel - Hubtel webhook
+// POST /pay/webhook/moolre - Moolre callback
+//
+// Moolre posts here when a transaction reaches a result. The handler
+// re-verifies the transaction against Moolre's own status endpoint before any
+// money moves, so the callback payload is only ever a notification.
+//
+// Registered below `/pay/:token/...` on purpose: Express matches `/pay/:token`
+// as a single segment, and `/pay/webhook/moolre` is three, so the literal
+// route cannot be shadowed by the token routes above.
 paymentRoute.post(
-  "/pay/webhook/hubtel",
-  validate(hubtelWebhookSchema),
-  hubtelWebhookController
+  "/pay/webhook/moolre",
+  validate(moolreWebhookSchema),
+  moolreWebhookController
 );
 
 // ──────────────────── Admin endpoints (auth required) ────────────────────

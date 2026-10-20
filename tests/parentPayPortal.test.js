@@ -378,7 +378,7 @@ describe('parent portal: school projection', () => {
     email: 'info@pramprambasic.edu.gh',
     // None of these may cross: payment credentials and configuration are the most
     // damaging thing on the model to publish through a shared link.
-    payment: { hubtelClientSecret: 'super-secret' },
+    payment: { gatewayMode: 'moolre' },
     sms: { arkeselApiKey: 'super-secret' },
     featureFlags: { beta: true },
     internalNotes: 'do not publish',
@@ -395,7 +395,7 @@ describe('parent portal: school projection', () => {
 
   test('carries no gateway credentials or configuration', () => {
     const serialised = JSON.stringify(school);
-    for (const secret of ['super-secret', 'hubtelClientSecret', 'arkeselApiKey', 'internalNotes']) {
+    for (const secret of ['super-secret', 'arkeselApiKey', 'internalNotes']) {
       assert.equal(serialised.includes(secret), false, `school payload leaked "${secret}"`);
     }
     assert.equal('payment' in school, false);
@@ -499,7 +499,7 @@ describe('parent portal: initiate validation', () => {
   });
 
   test('requires a phone number only for MoMo, not card payments', () => {
-    // Card payments (Paystack) do not need a phone number.
+    // Card payments (the hosted checkout) do not need a phone number.
     const { error: cardError } = validate(initiatePaymentSchema, {
       amount: 5000,
       paymentMethod: 'card',

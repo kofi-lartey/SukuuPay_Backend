@@ -19,12 +19,13 @@ import {
   requestToPay as mtnRequestToPay,
   MtnTransportError,
 } from "../utils/mtnApi.js";
-import { resolveGateway, getPaystackSecretKey } from "../utils/paymentGateway.js";
+import { resolveGateway } from "../utils/paymentGateway.js";
 import {
-  initializeTransaction as paystackInitializeTransaction,
-  PaystackTransportError,
-} from "../utils/paystackApi.js";
-import { WEBHOOK_BASE_URL } from "../config/env.js";
+  initiatePayment as moolreInitiatePayment,
+  normaliseChannel as moolreNormaliseChannel,
+  MoolreTransportError,
+} from "../utils/moolreClient.js";
+import { generatePaymentReference } from "../utils/paymentReference.js";
 
 class ApiError extends Error {
   constructor(message, status = 500, code = "INTERNAL_ERROR") {
@@ -715,8 +716,7 @@ export const prepayPlan = async (planId, data) => {
 
   // The gateway is resolved before the Payment record is created, so a
   // misconfigured deployment never leaves an orphaned pending payment behind.
-  // Paystack is the sole active gateway; MTN, Hubtel, Arke and Mnotify remain
-  // in the codebase but are disabled at the resolver level.
+  // Moolre is the sole active gateway; MTN remains wired but is off by default.
   const gateway = resolveGateway(school);
 
   const payment = await Payment.create({
@@ -732,6 +732,9 @@ export const prepayPlan = async (planId, data) => {
     momoPhoneNumber: data.phoneNumber || primaryParent?.phone || null,
     momoNetwork: data.momoNetwork || "UNKNOWN",
     description: `Payment plan installment for ${student.studentName}`,
+    // The reference the parent polls on, and the external reference Moolre
+    // echoes back on the callback.
+    reference: generatePaymentReference(),
     feesBreakdown: [
       {
         type: "payment_plan",
@@ -758,61 +761,94 @@ export const prepayPlan = async (planId, data) => {
     },
   });
 
-  // MTN, Hubtel, Arke and Mnotify branches are retained as dead code — they
-  // cannot be reached while `resolveGateway` only returns 'paystack', and they
-  // exist so re-enabling a gateway needs only the resolver change, not a
-  // rewrite of the dispatch table.
-  if (gateway === "paystack") {
-    return prepayViaPaystack(payment, plan, student);
-  }
-
+  // The MTN branch is retained as dead code — it cannot be reached while
+  // `resolveGateway` only returns 'moolre', and it exists so re-enabling that
+  // gateway needs only the resolver change, not a rewrite of the dispatch table.
   if (gateway === "mtn") {
     return prepayViaMtn(payment, plan, student, primaryParent, amount, targetInstallment);
   }
 
-  return prepayViaHubtel(payment, plan, primaryParent, amount);
+  return prepayViaMoolre(payment, plan, student, amount);
 };
 
 /**
- * Prepares a Paystack card payment for an installment.
+ * Starts a Moolre USSD push for an installment.
  *
- * The parent is redirected to Paystack's hosted checkout; the webhook settles
- * the payment when they complete it.
+ * The parent authorises the prompt on their handset; the installment is applied
+ * when the callback or a status poll settles the payment.
+ *
+ * The payment's `reference` is the join key: it is handed to Moolre as the
+ * external reference and echoed back on the callback, so the settlement can be
+ * matched to this payment without a transaction id.
  */
-const prepayViaPaystack = async (payment, plan, student) => {
-  const school = await School.findById(plan.schoolId).lean();
-  const secretKey = getPaystackSecretKey(school);
+const prepayViaMoolre = async (payment, plan, student, amount) => {
+  const phone = payment.momoPhoneNumber;
 
-  if (!secretKey) {
+  if (!phone) {
     payment.status = "failed";
-    payment.failureReason = "No Paystack secret key configured for this school";
+    payment.failureReason = "No phone number on file for the payer";
     await payment.save();
-    throw new ApiError("Paystack is not configured for this school", 500, "PAYSTACK_NOT_CONFIGURED");
+    throw new ApiError(
+      "No phone number on file for this payer",
+      400,
+      "PAYER_PHONE_MISSING"
+    );
   }
 
-  const callbackUrl = `${PAY_LINK_BASE_URL}/pay/${student.uniquePayLinkToken}`;
-
-  const primaryParent = getPrimaryParent(student);
+  // The network is stored in this platform's vocabulary (MTN / VODAFONE /
+  // AIRTELTELIGO / UNKNOWN). An UNKNOWN network cannot be routed — Moolre
+  // would accept the request and then fail to deliver it to any carrier.
+  if (!payment.momoNetwork || payment.momoNetwork === "UNKNOWN") {
+    payment.status = "failed";
+    payment.failureReason = "No mobile money network selected for the payment";
+    await payment.save();
+    throw new ApiError(
+      "Please choose the mobile money network you are paying from",
+      400,
+      "MOMO_NETWORK_REQUIRED"
+    );
+  }
 
   try {
-    const result = await paystackInitializeTransaction({
-      secretKey,
-      email: primaryParent?.email || "",
-      amount: payment.amount,
-      reference: payment.paymentId,
-      callbackUrl,
-      metadata: {
-        studentId: student.studentId,
-        studentName: student.studentName,
-        planId: plan._id.toString(),
-        paymentId: payment.paymentId,
-      },
+    const result = await moolreInitiatePayment({
+      // Moolre takes cedis; this platform stores pesewas.
+      amount: amount / 100,
+      phone,
+      network: payment.momoNetwork,
+      reference: payment.reference,
+      description: payment.description,
     });
 
+    // Moolre wants the payer's phone number verified before it will send the
+    // prompt. The payment is **not** failed here: it is waiting for the parent
+    // to type in the code Moolre sent them.
+    if (result?.status === "otp_required") {
+      payment.status = "pending";
+      payment.moolreReference = payment.reference;
+      payment.moolreChannel = moolreNormaliseChannel(payment.momoNetwork);
+      payment.moolreResponseMessage =
+        result?.message?.slice(0, 500) || "Phone number verification required";
+      await payment.save();
+
+      return {
+        paymentRef: payment.paymentId,
+        planId: plan._id,
+        amount,
+        provider: "moolre",
+        requiresOtp: true,
+        otpRequired: true,
+        moolre: {
+          reference: payment.reference,
+          channel: payment.moolreChannel,
+          payerPhone: phone,
+        },
+      };
+    }
+
     payment.status = "processing";
-    payment.paystackReference = payment.paymentId;
-    payment.paystackAccessCode = result.accessCode;
-    payment.paystackStatus = "pending";
+    payment.moolreReference = payment.reference;
+    payment.moolreTransactionId = result?.transactionId || result?.transactionid || null;
+    payment.moolreChannel = moolreNormaliseChannel(payment.momoNetwork);
     await payment.save();
 
     await auditService.log({
@@ -824,29 +860,32 @@ const prepayViaPaystack = async (payment, plan, student) => {
         paymentId: payment.paymentId,
         amount: payment.amount,
         studentId: student.studentId,
-        provider: "paystack",
-        reference: result.reference,
+        provider: "moolre",
+        reference: payment.reference,
         planId: plan._id,
       },
     });
 
     return {
-      payment: payment.toJSON(),
-      provider: "paystack",
+      paymentRef: payment.paymentId,
+      planId: plan._id,
+      amount,
+      provider: "moolre",
       requiresPayerApproval: true,
-      paystack: {
-        authorizationUrl: result.authorizationUrl,
-        accessCode: result.accessCode,
-        reference: result.reference,
-        publicKey: result.publicKey,
+      moolre: {
+        reference: payment.reference,
+        channel: payment.moolreChannel,
+        payerPhone: phone,
       },
     };
   } catch (error) {
+    // No prompt was issued, so the payment is terminal rather than pending for
+    // a callback that will never arrive.
     payment.status = "failed";
-    payment.failureReason = error.message?.slice(0, 500) || "Paystack initialization failed";
+    payment.moolreResponseMessage = error.message?.slice(0, 500) || "Moolre request failed";
     await payment.save();
 
-    if (error instanceof PaystackTransportError) {
+    if (error instanceof MoolreTransportError) {
       throw new ApiError(error.message, error.status, error.code);
     }
     throw error;
@@ -913,45 +952,9 @@ const prepayViaMtn = async (payment, plan, student, primaryParent, amount, targe
   }
 };
 
-/** Builds the Hubtel request for the fallback path. */
-const prepayViaHubtel = async (payment, plan, primaryParent, amount) => {
-  const school = await fetchSchool(plan.schoolId);
-  const clientId = school.payment?.hubtelClientId;
-  const clientSecret = school.payment?.hubtelClientSecret;
-  const apiKey = school.payment?.hubtelApiKey;
-
-  const callbackUrl = `${WEBHOOK_BASE_URL}/api/webhooks/hubtel/payment`;
-
-  // TODO: replace with the live Hubtel initialize-payment call. The request
-  // payload is assembled here so the integration point is explicit; the
-  // webhook drives the actual application of the payment to the plan.
-  payment.status = "processing";
-  payment.hubtelOrderId = `ORDER-${payment.paymentId}`;
-  await payment.save();
-
-  return {
-    paymentRef: payment.paymentId,
-    planId: plan._id,
-    amount,
-    provider: "hubtel",
-    hubtelRequest: {
-      clientId,
-      clientSecret,
-      apiKey,
-      amount: amount / 100, // Hubtel expects cedis
-      customerPhone: payment.momoPhoneNumber,
-      customerName: primaryParent?.parentName || "Parent",
-      callbackUrl,
-      returnUrl: `${callbackUrl}/return`,
-      description: payment.description,
-      clientReference: payment.paymentId,
-    },
-  };
-};
-
 /**
  * Applies a completed payment to its plan, oldest installment first. Called
- * from the Hubtel webhook once a payment settles. Idempotent: a payment that
+ * from the Moolre webhook once a payment settles. Idempotent: a payment that
  * has already been recorded against an installment is ignored.
  */
 export const applyCompletedPaymentToPlan = async (payment) => {

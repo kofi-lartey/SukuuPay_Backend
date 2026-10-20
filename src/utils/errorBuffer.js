@@ -99,10 +99,10 @@ const CREDENTIAL_PATTERNS = [
   //
   // No leading `\b`, and an optional `[\w.-]*` prefix, because the real field
   // names are camelCase compounds: a `\b` before `secret` does not match inside
-  // `hubtelClientSecret` (no word boundary between "l" and "C"), so a
+  // `moolreClientSecret` (no word boundary between "e" and "C"), so a
   // boundary-anchored version silently leaves the exact field most likely to
-  // appear in a Mongoose `ValidationError` unredacted. `hubtelClientSecret:
-  // <value>` is therefore expected to become `hubtelClientSecret: ***`.
+  // appear in a Mongoose `ValidationError` unredacted. `moolreClientSecret:
+  // <value>` is therefore expected to become `moolreClientSecret: ***`.
   //
   // "key" is deliberately not an alternative on its own — `apiKey` and
   // `accessKey` are, bare `key` is not, because `monkey`-style identifiers would

@@ -16,11 +16,10 @@ import { resolveDateRange, MAX_PER_PAGE } from "../../utils/platformQuery.js";
  *
  * **Everything is an aggregation over an explicit `$project`/`$match`, never a
  * `School.find().lean()` handed straight to a response.** That is not style. A school
- * document carries `payment.hubtelApiKey`, `payment.hubtelClientSecret`,
- * `payment.hubtelClientId` and `sms.apiKey`; the first three are `select: false` but
- * `select: false` does not survive an aggregation pipeline, and a `$project` that
- * forgets one path leaks it. Naming the columns we want is the only version of this
- * that cannot leak a credential added to the model next year.
+ * document carries `sms.apiKey`; it is `select: false` but `select: false` does not
+ * survive an aggregation pipeline, and a `$project` that forgets one path leaks it.
+ * Naming the columns we want is the only version of this that cannot leak a
+ * credential added to the model next year.
  *
  * What this module deliberately does **not** re-derive: `getRevenueSeries` and the
  * dashboard KPIs in `../admin.service.js` already cover gross payment volume over
@@ -341,24 +340,24 @@ const PAST_DUE_SUBSCRIPTION_STATUSES = ["expired"];
  * **The naming divergence is real and worth stating plainly.** The brief for this
  * console described the field as a `sukuupay | school` pair. It is not one: the enum
  * on `School.payment.gatewayMode` (schoolModel.js:159) is
- * `hubtel | arke | mnotify | manual`, which names a *provider*, not a rail. So the
+ * `arke | mnotify | manual`, which names a *provider*, not a rail. So the
  * mapping has to be made explicitly:
  *
  *   - `manual` → the school's own rail. The school takes the money itself, in cash or
  *     by its own arrangement, and SukuuPay is not in the transaction.
- *   - `hubtel | arke | mnotify` → SukuuPay's rail. The payment is initiated through a
- *     gateway SukuuPay operates and the platform takes its cut (which is why every
- *     one of these schools is a `markup` / `platform_fee` ledger payer).
+ *   - `moolre | arke | mnotify` → SukuuPay's rail. The payment is
+ *     initiated through a gateway SukuuPay operates and the platform takes its cut
+ *     (which is why every one of these schools is a `markup` / `platform_fee` ledger
+ *     payer).
  *
- * There is no third bucket and no `unknown`: the field defaults to `"hubtel"` and is
+ * There is no third bucket and no `unknown`: the field defaults to `"moolre"` and is
  * `required`-by-default in the schema, so a school with no value is a data problem
  * worth seeing as a data problem rather than a fourth category that quietly holds
  * every unmigrated school and makes the platform's share look smaller than it is.
  */
 export const GATEWAY_RAIL_BY_MODE = {
   manual: "school_own",
-  paystack: "sukuupay",
-  hubtel: "sukuupay",
+  moolre: "sukuupay",
   arke: "sukuupay",
   mnotify: "sukuupay",
 };
@@ -368,12 +367,12 @@ export const GATEWAY_RAIL_BY_MODE = {
  *
  * `mtn` appears on `Payment.provider` (paymentModel.js) but not on
  * `School.payment.gatewayMode`, because MTN is reached through one of the platform's
- * own integrations rather than as a school-selectable gateway. Paystack is the
- * platform's default card rail and maps to `sukuupay` as well.
+ * own integrations rather than as a school-selectable gateway. Moolre is the
+ * platform's only active rail: one integration reaching MTN MoMo, Telecel Cash and
+ * AT Money, with the platform taking its cut on every collection.
  */
 export const PAYMENT_PROVIDER_RAIL = {
-  paystack: "sukuupay",
-  hubtel: "sukuupay",
+  moolre: "sukuupay",
   arke: "sukuupay",
   mnotify: "sukuupay",
   mtn: "sukuupay",
@@ -1519,13 +1518,13 @@ export const getCollectionRateAnalytics = async ({ from, to } = {}) => {
  *
  * Reads the mode from `School`, so there is an honest caveat that has to be stated in
  * the payload: this is a school's **current** configuration applied retroactively to
- * payments it took months ago. A school that switched from `manual` to `hubtel` in
+ * payments it took months ago. A school that switched from `manual` to `moolre` in
  * March appears in full under SukuuPay for January too. Fixing it needs a per-payment
  * rail stamp (or a mode history), neither of which exists — `Payment.provider` records
  * which provider handled a payment but not whether the school chose it, so it cannot
  * reconstruct the rail either. The alternative of reading `Payment.provider` is worse:
- * it answers "which carrier" and would put a school running its own Hubtel account
- * through SukuuPay's line.
+ * it answers "which carrier" and would put a school running its own rail through
+ * SukuuPay's line.
  */
 export const getGatewayMixAnalytics = async ({ from, to } = {}) => {
   const { from: start, to: end } = resolveWindow(from, to, 365);
@@ -1618,20 +1617,20 @@ export const getGatewayMixAnalytics = async ({ from, to } = {}) => {
     mapping: {
       /*
        * Published in the payload, not just in a comment, because the field name says
-       * `gatewayMode` and its enum says `hubtel|arke|mnotify|manual` while the console
+       * `gatewayMode` and its enum says `arke|mnotify|manual` while the console
        * question is "ours or theirs". Anyone reading this response without the model
-       * open would otherwise have to guess which of four provider names means "the
+       * open would otherwise have to guess which of three provider names means "the
        * platform is in this transaction".
        */
       description:
         "School.payment.gatewayMode is a provider enum, not a rail enum. " +
         "manual = the school's own rail (no platform involvement); " +
-        "hubtel|arke|mnotify = SukuuPay's rail.",
+        "moolre|arke|mnotify = SukuuPay's rail.",
       rails: GATEWAY_RAIL_BY_MODE,
       paymentProviderRails: PAYMENT_PROVIDER_RAIL,
       divergence:
         "There is no `sukuupay|school` enum anywhere in this codebase. School.payment." +
-        "gatewayMode is `hubtel|arke|mnotify|manual` (schoolModel.js:159) and " +
+        "gatewayMode is `arke|mnotify|manual` (schoolModel.js:159) and " +
         "Payment.provider additionally allows `mtn` (paymentModel.js:81), which maps to " +
         "Sukuupay because it is reached through a platform integration.",
     },

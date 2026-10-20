@@ -160,7 +160,7 @@ describe('maintenance mode decides what may happen', () => {
 // ── The guard cannot reach a payment webhook ─────────────────────────────────
 //
 // This is the single most important property of the whole feature. A maintenance
-// guard that refuses a Hubtel settlement callback turns a planned outage into lost
+// guard that refuses a settlement callback turns a planned outage into lost
 // money, and does it silently, because the provider's own retry would be refused too.
 
 describe('the maintenance guard is mounted where a webhook cannot reach it', () => {

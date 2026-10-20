@@ -91,9 +91,13 @@ const whatsappMessageSchema = new mongoose.Schema(
     },
 
     // ── Provider ──
+    //
+    // `meta` is Meta's own Cloud API. `moolre` is the same WhatsApp Business
+    // product resold through Moolre, which is the same account that collects
+    // the school's payments — one vendor, one balance.
     provider: {
       type: String,
-      enum: ['meta'],
+      enum: ['meta', 'moolre'],
       default: 'meta',
     },
     providerMessageId: {

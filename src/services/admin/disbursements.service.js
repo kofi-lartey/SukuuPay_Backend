@@ -7,10 +7,9 @@
  * ─────────────────────────────────────────────────────────────────────────────
  *
  * `utils/paymentGateway.js` was read before this was written, and it is a
- * **collection** selector, not a payout client. It exports `resolveGateway`,
- * `hubtelIsConfigured` and `availableGateways`, and every one of them answers
- * "which gateway should take this *parent payment*". None of them moves money
- * out.
+ * **collection** selector, not a payout client. It exports `resolveGateway` and
+ * `availableGateways`, and every one of them answers "which gateway should take
+ * this *parent payment*". None of them moves money out.
  *
  * `utils/mtnApi.js` is closer, and the gap is worth spelling out. It declares a
  * second MTN product —
@@ -578,7 +577,7 @@ export const buildDisbursementBatch = async ({ schoolId, periodStart, periodEnd 
         markupPercent,
         platformFeePercent,
       },
-      provider: "hubtel",
+      provider: "manual",
       createdBy: actor?._id || null,
       metadata: {
         markupPercentAtBuild: markupPercent,
@@ -943,7 +942,7 @@ export const getDisbursementBatch = async (batchId) => {
     batch.paymentIds?.length
       ? Payment.find({ _id: { $in: batch.paymentIds } })
           .populate("studentId", "studentId studentName studentClass")
-          .select("paymentId amount status receiptNumber studentId hubtelTransactionId provider createdAt")
+          .select("paymentId amount status receiptNumber studentId moolreReference moolreTransactionId mtnReferenceId mtnFinancialTransactionId provider createdAt")
           .lean()
       : [],
     PlatformLedger.find({ disbursementBatchId: batch._id }).sort({ createdAt: 1 }).lean(),
@@ -975,7 +974,12 @@ export const getDisbursementBatch = async (batchId) => {
       status: payment.status,
       receiptNumber: payment.receiptNumber,
       provider: payment.provider,
-      hubtelTransactionId: payment.hubtelTransactionId,
+      gatewayReference:
+        payment.moolreReference ||
+        payment.moolreTransactionId ||
+        payment.mtnFinancialTransactionId ||
+        payment.mtnReferenceId ||
+        null,
       createdAt: payment.createdAt,
       student: payment.studentId
         ? {
@@ -1087,32 +1091,20 @@ export const getFinanceOverview = async () => {
       /*
        * Reconciliation, and what `unmatched` actually means.
        *
-       * `matched` is "this completed payment carries a `hubtelTransactionId`,
-       * so it can be tied to a line on Hubtel's statement". `unmatched` is the
-       * absence of that one field. **A missing reference is a signal to look at,
-       * not a failure**: a school running Mode B on `manual`, a payment recorded
-       * through a different gateway, or a row written by a migration can all be
-       * perfectly settled with nothing to reconcile against Hubtel. Counting
-       * those as "unmatched" is correct — they are genuinely unreconciled *from
-       * Hubtel's side* — and the answer is a person spending a minute on them,
-       * not an alarm.
+       * `matched` is "this completed payment carries a provider reference, so it
+       * can be tied to a line on the gateway's statement". `unmatched` is the
+       * absence of any such reference. **A missing reference is a signal to look
+       * at, not a failure**: a school running `manual`, or a row written by a
+       * migration, can all be perfectly settled with nothing to reconcile
+       * against. Counting those as "unmatched" is correct — they are genuinely
+       * unreconciled *from the gateway's side* — and the answer is a person
+       * spending a minute on them, not an alarm.
        *
-       * Two known limits, stated so the number is not read as more than it is:
-       *
-       *   - **MTN payments will always land in `unmatched`.** Their reference is
-       *     `mtnReferenceId` / `mtnFinancialTransactionId`
-       *     (payment.service.js:190, :1076), not `hubtelTransactionId`. Every MTN
-       *     payment is reported here as unmatched even when it reconciles
-       *     perfectly against MTN's statement. The sample carries the MTN
-       *     fields precisely so a reviewer can tell those apart from a genuinely
-       *     reference-less row in one glance, and a follow-up that ORs the MTN
-       *     fields in would give a real matched/unmatched split. It is left out
-       *     here because the console's existing definition of "matched" is the
-       *     Hubtel reference and inventing a second one would make this number
-       *     disagree with every other screen that counts the same thing.
-       *   - **A manual payment is unmatched forever.** `provider: 'manual'` and
-       *     `method: 'cash'` have no gateway to reconcile against at all, so
-       *     they are noise in this figure by construction.
+       * The reference fields are the provider's own handles across every active
+       * rail: Moolre (`moolreReference` / `moolreTransactionId`) and MTN
+       * (`mtnReferenceId` / `mtnFinancialTransactionId`). A payment on either
+       * rail reconciles; a manual payment never carries one, so it is unmatched
+       * forever — by construction, and the console says so.
        */
       const match = {
         status: "completed",
@@ -1120,18 +1112,28 @@ export const getFinanceOverview = async () => {
         createdAt: { $gte: todayStart, $lte: todayEnd },
       };
 
+      const hasReference = {
+        $or: [
+          { moolreReference: { $nin: [null, ""] } },
+          { moolreTransactionId: { $nin: [null, ""] } },
+          { mtnReferenceId: { $nin: [null, ""] } },
+          { mtnFinancialTransactionId: { $nin: [null, ""] } },
+        ],
+      };
+
+      const hasNoReference = {
+        moolreReference: { $in: [null, ""] },
+        moolreTransactionId: { $in: [null, ""] },
+        mtnReferenceId: { $in: [null, ""] },
+        mtnFinancialTransactionId: { $in: [null, ""] },
+      };
+
       const [matched, unmatched, sample] = await Promise.all([
-        Payment.countDocuments({ ...match, hubtelTransactionId: { $nin: [null, ""] } }),
-        Payment.countDocuments({
-          ...match,
-          $or: [{ hubtelTransactionId: null }, { hubtelTransactionId: "" }],
-        }),
-        Payment.find({
-          ...match,
-          $or: [{ hubtelTransactionId: null }, { hubtelTransactionId: "" }],
-        })
+        Payment.countDocuments({ ...match, ...hasReference }),
+        Payment.countDocuments({ ...match, ...hasNoReference }),
+        Payment.find({ ...match, ...hasNoReference })
           .select(
-            "paymentId amount provider receiptNumber hubtelTransactionId hubtelOrderId mtnReferenceId mtnFinancialTransactionId settlement.reference"
+            "paymentId amount provider receiptNumber moolreReference moolreTransactionId mtnReferenceId mtnFinancialTransactionId settlement.reference"
           )
           .sort({ createdAt: -1 })
           .limit(UNMATCHED_SAMPLE_LIMIT)

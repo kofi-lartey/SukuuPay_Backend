@@ -88,15 +88,13 @@ const writePlatformField = (school, field, value) => {
 /**
  * Credentials stripped from every School read in this file.
  *
- * `hubtelClientId` and `hubtelApiKey` are `select: false` on the model and
- * therefore absent anyway; they are named explicitly because "a field is safe
- * because it happens to be `select: false` today" is not a property a reader can
- * verify from here, and the console is not the place to read a school's live
- * gateway credential — not even a super admin's. `hubtelClientSecret` and
- * `sms.apiKey` are the two that would actually cause harm.
+ * `sms.apiKey` is `select: false` on the model and therefore absent anyway; it is
+ * named explicitly because "a field is safe because it happens to be
+ * `select: false` today" is not a property a reader can verify from here, and the
+ * console is not the place to read a school's live gateway credential — not even
+ * a super admin's.
  */
-const SAFE_SCHOOL_SELECT =
-  "-payment.hubtelClientId -payment.hubtelClientSecret -payment.hubtelApiKey -sms.apiKey";
+const SAFE_SCHOOL_SELECT = "-sms.apiKey";
 
 /**
  * Payments whose platform cut has not been decided yet.
@@ -114,7 +112,7 @@ const IN_FLIGHT_PAYMENT_STATUSES = ["pending", "processing"];
  * unknown value with a 400 rather than letting Mongoose raise a `ValidationError`
  * (which has no `status`, so it would surface as a 500).
  */
-const GATEWAY_MODES = ['paystack', 'hubtel', 'arke', 'mnotify', 'manual'];
+const GATEWAY_MODES = ['moolre', 'arke', 'mnotify', 'manual'];
 
 /** The platform-written subset of a subscription. Narrower than the schema's enum. */
 const PAID_SUBSCRIPTION_STATUSES = ["active", "expired"];
@@ -464,12 +462,6 @@ export const createSchoolAsPlatform = async (payload = {}, actor) => {
       payment: {
         ...(payload.payment || {}),
         platformMarkupPercent,
-        // Never inherited from a caller body. A credential belongs in the
-        // operator's own integration screen, not in a create request that may
-        // have been copy-pasted from a CSV.
-        hubtelClientId: null,
-        hubtelClientSecret: null,
-        hubtelApiKey: null,
       },
       sms: { ...(payload.sms || {}), apiKey: null },
       subscription: {

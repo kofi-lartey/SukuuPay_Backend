@@ -457,7 +457,7 @@ export const smsDlrSchema = Joi.object({
   messages: Joi.array().items(Joi.object().unknown(true)).optional(),
   Messages: Joi.array().items(Joi.object().unknown(true)).optional(),
   results: Joi.array().items(Joi.object().unknown(true)).optional(),
-  // A single report, under any of the names the two providers use.
+  // A single report, under any of the names providers use.
   message_id: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
   id: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
   status: Joi.string().optional(),
@@ -468,25 +468,4 @@ export const smsDlrSchema = Joi.object({
   msisdn: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
   to: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
   timestamp: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
-}).unknown(true);
-
-// Hubtel posts its own vocabulary; `handleSmsDeliveryReport` folds either shape
-// into one internal report, so the validator's job here is only to accept a body
-// without rejecting a field this process has not heard of.
-export const hubtelDlrSchema = Joi.object({
-  MessageId: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
-  messageId: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
-  Status: Joi.string().optional(),
-  status: Joi.string().optional(),
-  ResponseCode: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
-  StatusCode: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
-  StatusDescription: Joi.string().optional(),
-  Network: Joi.string().optional(),
-  Recipient: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
-  PhoneNumber: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
-  MobileNumber: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
-  SentTimestamp: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
-  Timestamp: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
-  Data: Joi.array().items(Joi.object().unknown(true)).optional(),
-  data: Joi.array().items(Joi.object().unknown(true)).optional(),
 }).unknown(true);

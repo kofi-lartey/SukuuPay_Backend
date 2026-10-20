@@ -152,8 +152,8 @@ const paymentSchema = new mongoose.Schema(
     },
     provider: {
       type: String,
-      enum: ["paystack", "hubtel", "arke", "mnotify", "manual", "mtn"],
-      default: "paystack",
+      enum: ["arke", "mnotify", "manual", "mtn", "moolre"],
+      default: "moolre",
       index: true,
     },
 
@@ -181,40 +181,28 @@ const paymentSchema = new mongoose.Schema(
       default: null,
     },
 
-    // ── Hubtel/MoMo specific fields ──
-    hubtelTransactionId: {
+    // ── Moolre specific fields ──
+    //
+    // `moolreReference` is our own `Payment.reference`, echoed back by Moolre
+    // on the callback. It is the join key for a callback that carries no
+    // transaction id of its own.
+    moolreReference: {
       type: String,
       default: null,
       index: true,
     },
-    hubtelOrderId: {
-      type: String,
-      default: null,
-    },
-    hubtelResponseCode: {
-      type: String,
-      default: null,
-    },
-    hubtelResponseMessage: {
-      type: String,
-      default: null,
-    },
-
-    // ── Paystack specific fields ──
-    paystackReference: {
+    moolreTransactionId: {
       type: String,
       default: null,
       index: true,
     },
-    paystackAccessCode: {
+    // The network Moolre charged, stored in Moolre's own vocabulary (13 / 6 / 7)
+    // because that is what comes back on the callback and on a status poll.
+    moolreChannel: {
       type: String,
       default: null,
     },
-    paystackTransactionId: {
-      type: String,
-      default: null,
-    },
-    paystackStatus: {
+    moolreResponseMessage: {
       type: String,
       default: null,
     },

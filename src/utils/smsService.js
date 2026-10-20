@@ -20,6 +20,7 @@ import { SmsMessage } from '../models/smsMessageModel.js';
 import { normalisePhone } from './phoneNumbers.js';
 import { SMS_DEFAULT_PROVIDER } from '../config/env.js';
 import { sendArkeselSms, isArkeselSendConfigured } from './arkeselApi.js';
+import { sendMoolreSms, isMoolreSmsConfigured } from './moolreSmsApi.js';
 import { isPlaceholder } from './placeholder.js';
 
 // Rough GSM-7 character count per segment. Not used to bill, only so the
@@ -41,8 +42,8 @@ const countSegments = (text) => {
  * silently logging and reporting success.
  */
 const SEND_CLIENTS = {
+  moolre: { configured: isMoolreSmsConfigured, send: sendMoolreSms },
   arke: { configured: isArkeselSendConfigured, send: sendArkeselSms },
-  hubtel: { configured: () => false, send: null },
   mnotify: { configured: () => false, send: null },
 };
 
@@ -178,5 +179,17 @@ export const availableSmsProviders = () =>
   Object.entries(SEND_CLIENTS)
     .filter(([, client]) => typeof client.send === 'function' && client.configured())
     .map(([id]) => id);
+
+/**
+ * Sends one message to many recipients through Moolre, one recipient at a
+ * time.
+ *
+ * Returns a per-recipient outcome rather than throwing, because a reminder run
+ * that dies on the first unreachable number tells the school nothing about the
+ * other forty parents. Moolre is the provider this exists for: it bills and
+ * rate-limits per message, and a burst of parallel sends is how an account gets
+ * throttled mid-run.
+ */
+export { sendBulkSms } from './moolreSmsApi.js';
 
 export default sendSms;

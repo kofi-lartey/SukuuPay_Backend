@@ -102,7 +102,7 @@ const smsPurchaseRequestSchema = new mongoose.Schema(
     payment: {
       /** e.g. `SMS-PAY-20260918-7KQ2M1`. Unique, and partial so a null reference is not a value. */
       reference: { type: String, default: null, trim: true },
-      provider: { type: String, enum: ["mtn", "hubtel"], default: "mtn" },
+      provider: { type: String, enum: ["mtn"], default: "mtn" },
       status: {
         type: String,
         enum: ["pending", "processing", "completed", "failed", "refunded"],

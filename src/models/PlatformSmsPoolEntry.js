@@ -59,7 +59,7 @@ const platformSmsPoolEntrySchema = new mongoose.Schema(
 
     provider: {
       type: String,
-      enum: ["arke", "hubtel"],
+      enum: ["arke", "moolre"],
       default: "arke",
     },
 

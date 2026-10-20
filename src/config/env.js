@@ -109,9 +109,23 @@ export const EMAIL_JOB_CONCURRENCY = Number(process.env.EMAIL_JOB_CONCURRENCY ||
 export const API_URL = process.env.API_URL || '';
 
 // Public API origin, used to build unsubscribe links and List-Unsubscribe headers.
-export const API_BASE_URL = process.env.API_BASE_URL || 'https://api.sukuupay.com';
+//
+// **The default is the deployed host.** It used to be `https://api.sukuupay.com`,
+// a domain that does not resolve — so on any deployment that had not overridden
+// it, every email unsubscribe link pointed at a host that does not exist, and
+// the webhook base inherited the same dead address. The backend is served from
+// Render; this is that address.
+export const API_BASE_URL = process.env.API_BASE_URL || 'https://sukuupay-backend.onrender.com';
 
-// Backend origin for inbound provider callbacks (Hubtel, MTN, Arkesel).
+// The business email Moolre requires when generating a hosted payment link.
+//
+// It is the **merchant's** address, not the payer's — Moolre uses it for the
+// payment notification. The school's own address is preferred at call time; this
+// is the platform fallback for a school that has none on file.
+export const MOOLRE_CHECKOUT_EMAIL =
+  (process.env.MOOLRE_CHECKOUT_EMAIL || process.env.SUPER_ADMIN_EMAIL || '').trim() || null;
+
+// Backend origin for inbound provider callbacks (Moolre, MTN, Arkesel).
 //
 // This is deliberately NOT PAY_LINK_BASE_URL. That is the parent-facing page and
 // points at the frontend; provider callbacks are server-to-server POSTs that must
@@ -259,10 +273,6 @@ export const MAX_BULK_WHATSAPP_RECIPIENTS = Number(process.env.MAX_BULK_WHATSAPP
 export const WHATSAPP_REQUEST_TIMEOUT_MS = Number(process.env.WHATSAPP_REQUEST_TIMEOUT_MS || 15000);
 
 // ─────────────── Inbound third-party webhooks ───────────────
-// Shared secret for POST /webhooks/hubtel/payment. Hubtel signs the raw body
-// with HMAC-SHA512 using the account API key and sends X-Hubtel-Signature.
-export const HUBTEL_WEBHOOK_SECRET = process.env.HUBTEL_WEBHOOK_SECRET || process.env.HUBTEL_API_KEY;
-
 // Shared secret for the Arkesel SMS delivery callback. Arkesel either repeats
 // the account key in the `api_key` form field or signs the body; both are
 // accepted and at least one must be present in production.
@@ -272,7 +282,11 @@ export const ARKESEL_API_KEY = process.env.ARKESEL_API_KEY;
 // ─────────────── SMS gateway ───────────────
 // Provider used when a school has not chosen one. Per-school override lives on
 // `school.sms.provider`, so this is only the platform-wide default.
-export const SMS_DEFAULT_PROVIDER = process.env.SMS_DEFAULT_PROVIDER || 'arke';
+//
+// Moolre is the default because it is the same vendor that collects the
+// payments: one account, one balance, one vendor relationship to reconcile
+// against. Arkesel stays selectable per school for the schools still on it.
+export const SMS_DEFAULT_PROVIDER = process.env.SMS_DEFAULT_PROVIDER || 'moolre';
 
 // Arkesel send API. The API key is shared above with the DLR callback, because
 // it authenticates both directions.
@@ -335,29 +349,129 @@ export const MTN_CALLBACK_HOST = process.env.MTN_CALLBACK_HOST || '';
 
 // Shared secret for POST /webhooks/mtn/payment.
 //
-// MTN's Collections callback carries no keyed signature, so unlike Hubtel and
-// Meta there is no provider-signed proof of origin — the origin is asserted by a
-// secret we configure on MTN's side and echo back. It is therefore weaker than
-// the other two webhooks; the settlement claim in payment.service.js is what
-// actually prevents a duplicate credit. Set it before going to production.
+// MTN's Collections callback carries no keyed signature, so unlike Meta there
+// is no provider-signed proof of origin — the origin is asserted by a secret
+// we configure on MTN's side and echo back. It is therefore weaker than the
+// other webhook; the settlement claim in payment.service.js is what actually
+// prevents a duplicate credit. Set it before going to production.
 export const MTN_WEBHOOK_SECRET = process.env.MTN_WEBHOOK_SECRET;
 
-// ── Paystack ──
-// Paystack is the primary card / bank-direct provider. The platform-level
-// keys are used for the default collection flow; schools may override with
-// their own keys stored on School.payment.paystackSecretKey.
-export const PAYSTACK_PUBLIC_KEY = process.env.PAYSTACK_PUBLIC_KEY;
-export const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
+// Primary gateway preference: 'moolre' | 'mtn'
+//
+// Moolre is the primary: a Ghanaian EPSP licensed by the Bank of Ghana that
+// reaches MTN MoMo, Telecel Cash and AT Money through one integration, and
+// carries SMS on the same wallet.
+export const PRIMARY_PAYMENT_GATEWAY = process.env.PRIMARY_PAYMENT_GATEWAY || 'moolre';
 
-// HMAC secret for verifying Paystack webhook signatures (SHA-512).
-// When unset, the Paystack webhook endpoint warns-and-allows in development
-// and rejects in production.
-export const PAYSTACK_WEBHOOK_SECRET = process.env.PAYSTACK_WEBHOOK_SECRET;
+// ── Moolre ──
+//
+// Four credentials, not one, and they are not interchangeable:
+//
+//   MOOLRE_API_USER   — the account username, sent as `X-API-USER`
+//   MOOLRE_API_KEY    — the private key, for account / transfer / payment ops
+//   MOOLRE_PUBLIC_KEY — the public key, for payment-initiation (hosted checkout)
+//   MOOLRE_ACCOUNT_NUMBER — the merchant wallet, sent on nearly every call
+//
+// A missing one is a configuration error, not something to paper over at
+// request time: `utils/moolreClient.js` fails fast on the first call.
+export const MOOLRE_API_USER = process.env.MOOLRE_API_USER;
+export const MOOLRE_API_KEY = process.env.MOOLRE_API_KEY;
+export const MOOLRE_PUBLIC_KEY = process.env.MOOLRE_PUBLIC_KEY;
+export const MOOLRE_ACCOUNT_NUMBER = process.env.MOOLRE_ACCOUNT_NUMBER;
 
-// Primary gateway preference: 'paystack' | 'mtn' | 'hubtel'
-// Paystack is the default for card payments; MTN covers MoMo; Hubtel is
-// retained for legacy per-school configurations.
-export const PRIMARY_PAYMENT_GATEWAY = process.env.PRIMARY_PAYMENT_GATEWAY || 'paystack';
+// Base URL for the API. Sandbox is the same shape as production, so a
+// deployment only ever changes this one value.
+export const MOOLRE_BASE_URL = process.env.MOOLRE_BASE_URL || 'https://api.moolre.com';
+
+// Where the hosted checkout lives.
+//
+// **Not used by the client.** The checkout URL is not a page this platform
+// hosts or guesses at — Moolre creates a Web POS page per payment via
+// `POST /embed/link` and returns its `authorization_url`. This is kept only as
+// a record of the host Moolre serves that page from.
+export const MOOLRE_CHECKOUT_URL =
+  process.env.MOOLRE_CHECKOUT_URL ||
+  (MOOLRE_BASE_URL.includes('sandbox') ? 'https://sandbox.moolre.com' : 'https://pos.moolre.com');
+
+// Request timeout. Moolre's USSD push is a network round-trip to three
+// carriers, so it is slower than a card authorisation.
+export const MOOLRE_REQUEST_TIMEOUT_MS = Number(process.env.MOOLRE_REQUEST_TIMEOUT_MS || 30000);
+
+// Where Moolre posts the transaction callback.
+//
+// The `/api` prefix is part of the path, not decoration: the app mounts its
+// router at `/api` (`app.use('/api', routes)`), and the payment routes hang
+// off that router at the root. So the callback lives at
+// `<host>/api/pay/webhook/moolre` — a default without the prefix would 404,
+// and Moolre would retry a callback that could never land.
+//
+// A deployment sets this explicitly when the API is behind a proxy or a
+// custom domain, because `WEBHOOK_BASE_URL` is what the *platform* calls
+// itself, and the two are not always the same address.
+export const MOOLRE_CALLBACK_URL =
+  process.env.MOOLRE_CALLBACK_URL || `${WEBHOOK_BASE_URL}/api/pay/webhook/moolre`;
+
+// The secret Moolre echoes back in the payment callback.
+//
+// Moolre sends the callback secret in `data.secret`, and the docs are explicit:
+// "Validate the callback and its expected secret before changing payment
+// records." It is a second line of defence behind the re-verification with
+// Moolre's own status endpoint — a callback that fails the secret check is
+// still re-verified rather than trusted, and a callback that passes it is
+// still re-verified.
+//
+// **The secret belongs to the wallet, and the sandbox and live wallets are
+// separate records with separate secrets.** So the secret follows the
+// environment the API is pointed at: a sandbox secret in a live deployment
+// would refuse every live callback, which is the safe direction but a
+// confusing one.
+//
+// Unset, the check is skipped rather than failing every callback.
+export const MOOLRE_CALLBACK_SECRET = MOOLRE_BASE_URL.includes('sandbox')
+  ? process.env.MOOLRE_CALLBACK_SECRET_SANDBOX || process.env.MOOLRE_CALLBACK_SECRET || ''
+  : process.env.MOOLRE_CALLBACK_SECRET || '';
+
+// ── Moolre VAS credentials ──
+//
+// Moolre issues one VAS credential per *VAS service*, and a service can cover
+// both SMS and WhatsApp.
+//
+// **This account has one service.** Both keys issued for it decode to the same
+// `vasid` (15118) and the same expiry, differing only in the signature —
+// Moolre re-signed the key and revoked the old one. So there is one
+// credential, and `MOOLRE_VASKEY` is where it lives.
+//
+// The per-channel names remain because the docs describe them as
+// service-specific, and an account that *has* split SMS and WhatsApp into
+// separate services needs two different keys. The precedence is:
+//
+//   MOOLRE_VASKEY            — the single credential (this account)
+//   MOOLRE_SMS_VASKEY        — overrides it for SMS
+//   MOOLRE_WHATSAPP_VASKEY   — overrides it for WhatsApp
+//
+// A key from one VAS service authenticates on the other channel's endpoints
+// too, and then reports *its own* service's balance. That is a quiet way to
+// read the wrong account's numbers, which is why the source of truth is one
+// variable rather than two that have to be kept in step.
+export const MOOLRE_VASKEY =
+  process.env.MOOLRE_VASKEY || process.env.MOOLRE_SMS_VASKEY || process.env.MOOLRE_WHATSAPP_VASKEY || '';
+
+// ── Moolre SMS ──
+//
+// SMS rides on a VAS credential separate from the payment API key, and the
+// sender ID must be one Moolre has approved for the account — an unapproved
+// ID is silently dropped by the carrier, so it is validated before sending.
+export const MOOLRE_SMS_VASKEY =
+  process.env.MOOLRE_SMS_VASKEY || MOOLRE_VASKEY || '';
+export const MOOLRE_SMS_SENDER_ID = process.env.MOOLRE_SMS_SENDER_ID;
+
+// ── Moolre WhatsApp ──
+//
+// The WhatsApp service is separate from the *payment* credentials, and from
+// Meta's own WhatsApp credentials — this account is only used for outbound
+// sends.
+export const MOOLRE_WHATSAPP_VASKEY =
+  process.env.MOOLRE_WHATSAPP_VASKEY || MOOLRE_VASKEY || '';
 
 // A webhook that cannot be authenticated must not silently mutate money or
 // delivery state. When a secret is missing the endpoints refuse the request in

@@ -153,10 +153,11 @@ const platformSettingsSchema = new mongoose.Schema(
     sms: {
       provider: {
         type: String,
-        // Arkesel is the primary gateway everywhere else in the product; the
-        // option is kept because a provider change is a support action, not a
-        // deploy.
-        enum: ["arke", "hubtel"],
+        // Arkesel is the primary gateway everywhere else in the product; Moolre
+        // is here because it carries SMS on the same wallet it collects on, so
+        // a platform that has switched to Moolre for payments has a way to
+        // switch its own messages over without a deploy.
+        enum: ["arke", "moolre"],
         default: "arke",
       },
       ratePesewas: { type: Number, default: 25, min: 0 },
@@ -242,14 +243,14 @@ const platformSettingsSchema = new mongoose.Schema(
      * `activeGateways` is the source of truth for the gate-level switch that
      * `resolveGateway` reads: only entries with `active: true` are ever selected,
      * and the remaining providers stay in the school enum so existing school
-     * configs are not invalidated by a code change. Paystack is the sole active
-     * gateway; Hubtel, Arke, Mnotify and MTN are retained but disabled.
+     * configs are not invalidated by a code change. Moolre is the active
+     * gateway; Arke, Mnotify, MTN and the manual rail are retained but disabled.
      */
     payment: {
       activeGateways: {
         type: [String],
-        enum: ["paystack", "hubtel", "arke", "mnotify", "mtn", "manual"],
-        default: ["paystack"],
+        enum: ["moolre", "arke", "mnotify", "mtn", "manual"],
+        default: ["moolre"],
       },
     },
 
@@ -291,7 +292,7 @@ export const DEFAULT_PLATFORM_SETTINGS = {
   },
   support: { phone: "", email: "" },
   maintenance: { mode: "off", message: "" },
-  payment: { activeGateways: ["paystack"] },
+  payment: { activeGateways: ["moolre"] },
 };
 
 /**

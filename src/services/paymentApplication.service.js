@@ -16,7 +16,7 @@ import auditService from "../utils/auditService.js";
  *
  * ## Why this exists
  *
- * Both webhook paths — Hubtel and MTN — did this themselves, and both did it with
+ * Both webhook paths — Moolre and MTN — did this themselves, and both did it with
  * the same three lines:
  *
  *     await Student.findByIdAndUpdate(payment.studentId, {
@@ -49,38 +49,53 @@ export const applyPaymentToStudent = async (studentId, amountCredited) => {
   const delta = Math.round(Number(amountCredited) || 0);
   if (delta === 0) return null;
 
-  // `$inc` first, then correct the balance if it went negative.
+  // One atomic update, because `balance` has to move with `totalPaid` — a
+  // student who has paid GH¢25 and is still shown GH¢100 owing is a student
+  // who is told to pay it again.
   //
-  // The original was a bare `$inc: { balance: -amount }`, which is correct exactly
-  // as long as no more money ever arrives than is owed. The parent portal breaks
-  // that assumption: it accepts an arbitrary amount up to the balance *as it stood
-  // when the page loaded*, and between that render and the parent's tap, a sibling
-  // pays down part of the same account. The second payment then lands against a
-  // balance that has since moved, and the raw `$inc` writes a negative balance.
+  // The balance is **recomputed from the source-of-truth fields** rather than
+  // decremented from its stored value, for two reasons:
   //
-  // A negative balance is not a cosmetic bug. `student.balance` is what the parent
-  // portal renders as the amount owed, so it would show "-GH₵ 40.00"; it is what
-  // `initiatePayment` validates an amount against, so it would refuse every payment
-  // on the account until someone hand-edited the student; and it is what the
-  // school's arrears report sums, so it would *reduce* reported arrears by money
-  // that does not exist. Clamping to zero is the honest reading — the fees are
-  // settled — and the surplus belongs in `totalPaid`, which is not clamped, so the
-  // overpayment is still visible to a bursar rather than silently discarded.
+  //   1. `findByIdAndUpdate` does not run the model's `pre("save")` hook, and
+  //      that hook is where `balance = totalOwed - totalPaid` is computed on
+  //      every other write. The old code only wrote `balance` back when it
+  //      went *negative* — the clamp case — so on an ordinary payment the
+  //      balance was computed and then thrown away. Every settled payment
+  //   therefore left the amount owed exactly where it was, on every
+  //   gateway: MTN and Moolre alike.
+  //   2. A stored balance that is already stale cannot be decremented into
+  //      the right answer. Recomputing from `totalOwed` and `totalPaid` is
+  //      what the model does anyway, and it self-heals.
+  //
+  // The result is clamped at zero: an overpayment settles the fees, and the
+  // surplus stays visible in `totalPaid`, where a bursar can see it — which
+  // is what the old code intended.
   const updated = await Student.findByIdAndUpdate(
     studentId,
-    { $inc: { totalPaid: delta } },
-    { returnDocument: 'after' }
+    [
+      {
+        $set: {
+          totalPaid: { $add: [{ $ifNull: ['$totalPaid', 0] }, delta] },
+          balance: {
+            $max: [
+              0,
+              {
+                $subtract: [
+                  { $ifNull: ['$totalOwed', 0] },
+                  { $add: [{ $ifNull: ['$totalPaid', 0] }, delta] },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    ],
+    { returnDocument: 'after', updatePipeline: true }
   );
 
   if (!updated) return null;
 
-  const nextBalance = (updated.balance || 0) - delta;
-  const clampedAtZero = nextBalance < 0;
-
-  if (clampedAtZero) {
-    await Student.updateOne({ _id: studentId }, { $set: { balance: 0 } });
-    updated.balance = 0;
-  }
+  const clampedAtZero = updated.balance === 0 && (updated.totalPaid || 0) > (updated.totalOwed || 0);
 
   return {
     before: { balance: updated.balance + delta, totalPaid: updated.totalPaid - delta },
@@ -183,9 +198,13 @@ export const bookPlatformLedgerEntries = async (payment) => {
       paymentId: payment._id,
       studentId: payment.studentId,
       description: `Markup on ${payment.paymentId}`,
-      reference: payment.hubtelTransactionId || payment.mtnFinancialTransactionId || payment.paymentId,
-      // Accrued, not settled: the money is in Hubtel's float, not in a platform
-      // account. `settled: true` here would make it look withdrawable.
+      reference:
+        payment.moolreReference ||
+        payment.moolreTransactionId ||
+        payment.mtnFinancialTransactionId ||
+        payment.paymentId,
+      // Accrued, not settled: the money is in the gateway's float, not in a
+      // platform account. `settled: true` here would make it look withdrawable.
       settled: false,
       settledAt: null,
       // No user behind a webhook settlement, and inventing one would put a

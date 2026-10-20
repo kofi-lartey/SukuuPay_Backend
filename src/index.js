@@ -27,7 +27,7 @@ app.set('trust proxy', 1);
 // ─────────────────────────────────────────────
 // Raw body capture
 // ─────────────────────────────────────────────
-// Meta, Hubtel and Arkesel sign the exact bytes they sent, so their callbacks
+// Meta and Arkesel sign the exact bytes they sent, so their callbacks
 // can only be authenticated against the unparsed body: a JSON parse followed by
 // `JSON.stringify` reorders nothing but re-escapes unicode, collapses nothing
 // but rewrites the separators, and the HMAC will not match. `verify` hands us
@@ -114,8 +114,8 @@ mongoose.connect(MONGODB_URI)
     // silent failure here has no recovery but a redeploy, and a loud one at least
     // says why.
     await ensureSuperAdmin();
-    // One-shot migration: move any school still on a disabled gateway mode
-    // (hubbel, arke, mnotify) to the sole active gateway, paystack.
+    // One-shot migration: move any school still on a retired gateway mode
+    // (hubtel, paystack, arke, mnotify) to the sole active gateway, moolre.
     // Idempotent — re-runs are a no-op.
     await migrateGateways();
     // Replace the legacy unique `providerId` index (which indexed explicit

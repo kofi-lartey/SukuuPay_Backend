@@ -80,7 +80,7 @@ export const smsRequestIdParamSchema = Joi.object({
 export const poolTopUpSchema = Joi.object({
   units: Joi.number().integer().min(1).max(10000000).required(),
   amountPes: Joi.number().integer().min(0).allow(null).optional(),
-  provider: Joi.string().valid("arke", "hubtel").default("arke"),
+  provider: Joi.string().valid("arke", "moolre").default("arke"),
   reference: Joi.string().trim().max(200).allow("").optional(),
   note: Joi.string().trim().max(300).allow("").optional(),
 });

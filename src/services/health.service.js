@@ -4,6 +4,17 @@ import { API_COMMIT, API_BUILD_DATE, API_NAME, API_VERSION, NODE_ENV, PRIMARY_PA
 import { getWhatsAppConfigStatus } from '../utils/whatsappApi.js';
 import { getMtnConfigStatus } from '../utils/mtnApi.js';
 import { getArkeselConfigStatus } from '../utils/arkeselApi.js';
+import {
+  isMoolreConfigured,
+} from '../utils/moolreClient.js';
+import { isMoolreSmsConfigured } from '../utils/moolreSmsApi.js';
+import { isMoolreWhatsAppConfigured } from '../utils/moolreWhatsAppApi.js';
+import {
+  MOOLRE_API_KEY,
+  MOOLRE_API_USER,
+  MOOLRE_ACCOUNT_NUMBER,
+  MOOLRE_PUBLIC_KEY,
+} from '../config/env.js';
 import { availableSmsProviders } from '../utils/smsService.js';
 import { SMS_DEFAULT_PROVIDER } from '../config/env.js';
 
@@ -133,11 +144,21 @@ export const getVersion = () => ({
     },
     payments: {
       primaryGateway: PRIMARY_PAYMENT_GATEWAY,
+      // The credentials, never the values: a report that has to be pasted
+      // into a ticket should not carry the merchant wallet's API key with it.
+      moolre: {
+        configured: isMoolreConfigured(),
+        hasApiUser: Boolean(MOOLRE_API_USER),
+        hasApiKey: Boolean(MOOLRE_API_KEY),
+        hasPublicKey: Boolean(MOOLRE_PUBLIC_KEY),
+        hasAccountNumber: Boolean(MOOLRE_ACCOUNT_NUMBER),
+        smsConfigured: isMoolreSmsConfigured(),
+        // The WhatsApp service has its own VAS key, separate from the SMS one.
+        // Reporting them together is the point: an account with only the SMS
+        // key looks fully configured until a WhatsApp send fails.
+        whatsappConfigured: isMoolreWhatsAppConfigured(),
+      },
       mtn: getMtnConfigStatus(),
-      // Hubtel credentials are per-school, so only the platform's view is
-      // reported here; whether a given school is Hubtel-capable is resolved per
-      // payment by utils/paymentGateway.js.
-      hubtel: { note: 'Per-school credentials; resolved at payment time' },
     },
   },
 });

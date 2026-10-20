@@ -470,7 +470,7 @@ export const listSchools = async (query) => {
       .sort(sort)
       .skip(skip)
       .limit(Number(perPage))
-      .select("-payment.hubtelApiKey -payment.hubtelClientSecret -sms.apiKey"),
+      .select("-sms.apiKey"),
     School.countDocuments(filter),
   ]);
 
@@ -499,7 +499,7 @@ export const getSchoolById = async (schoolId, requester) => {
   }
 
   const school = await School.findOne({ _id: schoolId, deletedAt: null })
-    .select("-payment.hubtelApiKey -payment.hubtelClientSecret -sms.apiKey")
+    .select("-sms.apiKey")
     .lean();
 
   if (!school) {

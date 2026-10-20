@@ -52,8 +52,8 @@ services:
       # hostname, which is knowable from the service name, and leaving them for
       # manual entry is how a stale value outlives a rename: a wrong API_URL
       # makes the keep-alive check probe a host that 404s, and a wrong
-      # WEBHOOK_BASE_URL means Hubtel settlement callbacks go nowhere and
-      # payments sit in `processing` forever with no error.
+      # WEBHOOK_BASE_URL means settlement callbacks go nowhere and payments sit
+      # in `processing` forever with no error.
       - key: API_URL
         value: https://sukuupay-backend.onrender.com
       - key: WEBHOOK_BASE_URL
@@ -103,12 +103,16 @@ services:
       - key: PASSWORD_RESET_EXPIRE_MINUTES
         value: 30
 
-      # ── MTN MoMo (primary payment gateway) ──
+      # ── MTN MoMo (secondary payment gateway) ──
       # Currently sandbox. Switching to production requires MTN partner approval
       # and production credentials from the OVA dashboard — changing these values
       # alone does not enable live payments.
-      - key: PRIMARY_PAYMENT_GATEWAY
-        value: mtn
+      #
+      # MTN is not the active gateway, so it does not set
+      # PRIMARY_PAYMENT_GATEWAY. That key is set once, in the Moolre block below —
+      # a duplicate key in the same envVars list meant which gateway was live
+      # depended on how the parser took the last one. One key, one value, one
+      # truth.
       - key: MTN_ENVIRONMENT
         value: sandbox
       - key: MTN_TARGET_ENVIRONMENT
@@ -130,20 +134,46 @@ services:
       - key: MTN_WEBHOOK_SECRET
         sync: false
 
-      # ── Paystack (primary card / bank-direct payment gateway) ──
-      # Paystack handles international cards, Ghana cards (GH-Link), and bank
-      # direct debit. The public key is sent to the browser so the parent can
-      # complete the hosted checkout; the secret key stays server-side for
-      # initialization and verification.
+      # ── Moolre (primary payment gateway + SMS) ──
+      #
+      # Moolre is the only active payment gateway. It handles mobile money
+      # collections (MTN MoMo, Telecel Cash, AT Money) and carries SMS on the same
+      # wallet.
+      #
+      # Run `npm run moolre:check` locally to see exactly what is still
+      # outstanding before flipping these.
+      #
       - key: PRIMARY_PAYMENT_GATEWAY
-        value: paystack
-      - key: PAYSTACK_PUBLIC_KEY
+        value: moolre
+      - key: MOOLRE_API_USER
         sync: false
-      - key: PAYSTACK_SECRET_KEY
+      - key: MOOLRE_API_KEY
         sync: false
-      # HMAC-SHA512 secret for verifying Paystack webhook signatures.
-      - key: PAYSTACK_WEBHOOK_SECRET
+      - key: MOOLRE_PUBLIC_KEY
         sync: false
+      - key: MOOLRE_ACCOUNT_NUMBER
+        sync: false
+      # The secret Moolre echoes back in the callback. It is a second line of
+      # defence behind the re-verification with Moolre's own status endpoint:
+      # a callback that fails this check is re-verified, not trusted.
+      - key: MOOLRE_CALLBACK_SECRET
+        sync: false
+      # The merchant address Moolre uses for the payment notification on a
+      # hosted checkout. A school's own address is preferred at call time;
+      # this is the platform fallback.
+      - key: MOOLRE_CHECKOUT_EMAIL
+        sync: false
+      # Moolre SMS rides on a VAS credential separate from the payment API key.
+      - key: MOOLRE_SMS_VASKEY
+        sync: false
+      - key: MOOLRE_SMS_SENDER_ID
+        value: SukuuPay
+      - key: MOOLRE_WHATSAPP_VASKEY
+        sync: false
+      # Where Moolre posts payment results. This must be the public origin of
+      # *this* service, or the callback lands somewhere Moolre cannot reach.
+      - key: MOOLRE_CALLBACK_URL
+        value: https://sukuupay-backend.onrender.com/api/pay/webhook/moolre
 
       # ── Arkesel (primary SMS gateway) ──
       - key: SMS_DEFAULT_PROVIDER

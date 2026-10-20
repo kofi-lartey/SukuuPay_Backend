@@ -9,7 +9,7 @@ import mongoose from "mongoose";
  * by code, addressed to one account, and disappears when read.
  *
  * An announcement is authored by a person, aimed at a *population*, and outlives
- * the session that posted it. Maintenance windows, a Hubtel outage, a pricing
+ * the session that posted it. Maintenance windows, a gateway outage, a pricing
  * change: all of them are things every school needs to know at once and none of
  * them are events in anybody's personal feed.
  *

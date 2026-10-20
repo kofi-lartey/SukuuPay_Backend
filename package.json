@@ -11,7 +11,11 @@
     "fix:onboarding-completed": "node scripts/fix-onboarding-completed.js",
     "demo:backup": "node scripts/backup-demo-data.mjs",
     "demo:purge": "node scripts/purge-demo-data.js",
-    "demo:restore": "node scripts/restore-demo-data.mjs"
+    "demo:restore": "node scripts/restore-demo-data.mjs",
+    "moolre:check": "node scripts/moolreReadiness.mjs",
+    "moolre:flow": "node scripts/moolreSandboxFlow.mjs",
+    "moolre:e2e": "node scripts/moolreCallbackE2E.mjs",
+    "balances:check": "node scripts/backfillStudentBalances.mjs --dry-run"
   },
   "keywords": [],
   "author": "",

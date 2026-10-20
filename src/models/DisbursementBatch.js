@@ -164,8 +164,8 @@ const disbursementBatchSchema = new mongoose.Schema(
 
     provider: {
       type: String,
-      enum: ["hubtel", "manual"],
-      default: "hubtel",
+      enum: ["manual"],
+      default: "manual",
     },
 
     /**

@@ -75,7 +75,7 @@ export const listAllPayments = async (query = {}) => {
       .skip(skip)
       .limit(limit)
       .select(
-        'paymentId schoolId studentId parentId amount currency status paymentMethod provider momoNetwork description receiptNumber invoiceNumber hubtelTransactionId feesBreakdown disbursementBatchId createdAt completedAt'
+        'paymentId schoolId studentId parentId amount currency status paymentMethod provider momoNetwork description receiptNumber invoiceNumber moolreReference moolreTransactionId mtnReferenceId mtnFinancialTransactionId feesBreakdown disbursementBatchId createdAt completedAt'
       )
       .populate('schoolId', 'name schoolCode region status')
       .populate('studentId', 'studentName studentId class')
@@ -530,7 +530,7 @@ export const exportPaymentsCsv = async (res, { from, to, schoolId } = {}) => {
     .sort({ createdAt: -1 })
     .limit(cap + 1)
     .select(
-      'paymentId schoolId studentId amount currency status paymentMethod provider momoNetwork description receiptNumber invoiceNumber hubtelTransactionId createdAt'
+      'paymentId schoolId studentId amount currency status paymentMethod provider momoNetwork description receiptNumber invoiceNumber moolreReference moolreTransactionId mtnReferenceId mtnFinancialTransactionId createdAt'
     )
     .populate('schoolId', 'name schoolCode')
     .populate('studentId', 'studentName studentId')
@@ -568,7 +568,7 @@ export const exportPaymentsCsv = async (res, { from, to, schoolId } = {}) => {
       { key: 'network', header: 'Network' },
       { key: 'receiptNumber', header: 'Receipt' },
       { key: 'invoiceNumber', header: 'Invoice' },
-      { key: 'hubtelReference', header: 'Gateway reference' },
+      { key: 'gatewayReference', header: 'Gateway reference' },
       { key: 'description', header: 'Description' },
     ],
     page.map((row) => ({
@@ -584,7 +584,12 @@ export const exportPaymentsCsv = async (res, { from, to, schoolId } = {}) => {
       network: row.momoNetwork,
       receiptNumber: row.receiptNumber,
       invoiceNumber: row.invoiceNumber,
-      hubtelReference: row.hubtelTransactionId,
+      gatewayReference:
+        row.moolreReference ||
+        row.moolreTransactionId ||
+        row.mtnFinancialTransactionId ||
+        row.mtnReferenceId ||
+        '',
       description: row.description,
     }))
   );

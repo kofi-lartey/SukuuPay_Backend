@@ -62,13 +62,13 @@ export const updatePlatformFeeSchema = Joi.object({
 /**
  * `PUT /admin/schools/:id/gateway-mode`
  *
- * The four values from `School.payment.gatewayMode`'s enum. `manual` is a real
+ * The values from `School.payment.gatewayMode`'s enum. `manual` is a real
  * option, not a fallback: a school paying by bank transfer has no rail to change,
  * and refusing the value would make "switch this school to manual" inexpressible
  * rather than merely pointless.
  */
 export const updateGatewayModeSchema = Joi.object({
-  gatewayMode: Joi.string().valid('paystack', 'hubtel', 'arke', 'mnotify', 'manual').required(),
+  gatewayMode: Joi.string().valid('moolre', 'arke', 'mnotify', 'manual').required(),
 });
 
 /**
@@ -157,11 +157,10 @@ export const updateInternalNotesSchema = Joi.object({
  * a school's existing code by phone needs to be able to enter it rather than be
  * told the system invented a different one.
  *
- * `hubtelClientId` / `hubtelClientSecret` / `hubtelApiKey` / `sms.apiKey` are absent
- * rather than merely ignored. `validate` strips unknown keys, so a body carrying a
- * credential has it *removed* before the service runs — and the service independently
- * nulls all four on write, so there is no path by which a credential arriving in a
- * create request is persisted.
+ * `sms.apiKey` is absent rather than merely ignored. `validate` strips unknown keys,
+ * so a body carrying a credential has it *removed* before the service runs — and the
+ * service independently nulls it on write, so there is no path by which a credential
+ * arriving in a create request is persisted.
  */
 export const createSchoolAsPlatformSchema = Joi.object({
   name: Joi.string().trim().min(2).max(150).required(),
@@ -196,7 +195,7 @@ export const createSchoolAsPlatformSchema = Joi.object({
       bankName: Joi.string().trim().allow('').max(120),
       branch: Joi.string().trim().allow('').max(120),
     }).min(1),
-    gatewayMode: Joi.string().valid('paystack', 'hubtel', 'arke', 'mnotify', 'manual'),
+    gatewayMode: Joi.string().valid('moolre', 'arke', 'mnotify', 'manual'),
     platformMarkupPercent: Joi.number().min(0).max(100),
     networksEnabled: Joi.object({
       mtn: Joi.boolean(),
@@ -205,7 +204,7 @@ export const createSchoolAsPlatformSchema = Joi.object({
     }).min(1),
   }).min(1),
   sms: Joi.object({
-    provider: Joi.string().valid('hubtel', 'arke', 'mnotify'),
+    provider: Joi.string().valid('moolre', 'arke', 'mnotify'),
     senderId: Joi.string().trim().allow('').max(20),
   }).min(1),
   /**

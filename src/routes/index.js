@@ -43,7 +43,7 @@ router.use('/', healthRoute);
 //
 //   - **On `/api`, never globally.** Payment and WhatsApp callbacks are mounted at
 //     the root in `index.js` before `/api`, so this cannot reach them. A global guard
-//     would refuse a Hubtel settlement callback mid-migration — turning a planned
+//     would refuse a settlement callback mid-migration — turning a planned
 //     outage into lost money, silently, because the provider's retry would be refused
 //     too.
 //   - **After `healthRoute`,** so `GET /api/health` answers before the guard runs.

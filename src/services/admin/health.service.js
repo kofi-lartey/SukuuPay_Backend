@@ -18,7 +18,7 @@ import {
 import { cloudinary } from "../../utils/cloudinary.js";
 import { getArkeselConfigStatus, isArkeselSendConfigured } from "../../utils/arkeselApi.js";
 import { availableSmsProviders } from "../../utils/smsService.js";
-import { isPaystackConfigured } from "../../utils/paystackApi.js";
+import { isMoolreConfigured } from "../../utils/moolreClient.js";
 import keepAliveJob from "../../utils/cron.js";
 import installmentReminderJob from "../../jobs/installmentReminder.job.js";
 import healthCheckJob from "../../jobs/healthCheck.job.js";
@@ -33,7 +33,7 @@ import healthCheckJob from "../../jobs/healthCheck.job.js";
  * MongoDB is *required*. Without it nothing works — no login, no payment, no
  * page — so it can drive the overall status to `down`.
  *
- * Cloudinary, Hubtel, SMS and cron are *optional*. A platform with no SMS credit
+ * Cloudinary, the payment gateways, SMS and cron are *optional*. A platform with no SMS credit
  * still takes payments: a parent opening a pay link is served by MongoDB and the
  * gateway, and the reminder that does not go out is an inconvenience, not an
  * outage. Reporting that as `down` would train the operator to ignore the word,
@@ -366,114 +366,69 @@ const checkCloudinary = async () => {
   };
 };
 
-// ──────────────────── Hubtel ────────────────────
+// ──────────────────── Payment gateways ────────────────────
 
 /**
- * Hubtel — optional, and there is **nothing to ping.** Read this before assuming
- * otherwise.
+ * Payment gateways — configuration presence only.
  *
- * There is no Hubtel API client in this codebase. There is no `hubtel*.js` module,
- * no `HUBTEL_BASE_URL` in `config/env.js`, and no settlement or reconcile endpoint
- * to call. `utils/paymentGateway.js` exports `hubtelIsConfigured(school)`,
- * `resolveGateway(school)` and `availableGateways(school)` — every one of which
- * takes a School — because **Hubtel credentials are per tenant**, stored on
- * `school.payment.{hubtelClientId, hubtelClientSecret, hubtelApiKey}` and all
- * three marked `select: false` (`schoolModel.js:133-146`).
+ * Moolre is the only active gateway, and there is **nothing to ping.** There is
+ * no per-gateway API client that calls a payment provider's health endpoint on a
+ * schedule; readiness is determined by whether Moolre's four credentials are
+ * present at the platform level.
  *
- * The two consequences, both of which are facts rather than gaps in this file:
- *
- *   1. **There is no platform-level Hubtel credential to authenticate with.** A
- *      probe cannot make an authenticated Hubtel call on the platform's behalf at
- *      all, so "can we reach Hubtel?" is not a question this deployment can answer.
- *   2. **A credential-count probe does not mean the credentials work.** It reports
- *      how many schools are *configured*, which is a real and useful thing — it is
- *      what tells an operator that half the schools on Hubtel mode will fail at
- *      checkout — and it is not a liveness check, so it is not labelled as one.
- *
- * So the probe counts, and explicitly reports `networkProbe: false` with the
- * reason, rather than issuing an unauthenticated `fetch` to a settlement URL that
- * would answer 401 and be read as "Hubtel is down" — a false alarm about the
- * provider's name, caused by the absence of a credential rather than by Hubtel.
- *
- * The aggregation projects **counts only**. `school.payment.hubtelClientSecret` is
+ * The aggregation projects **counts only**. `school.sms.apiKey` is
  * `select: false`, which stops a `.find()` from returning it — but an aggregation
  * pipeline is not a projection and does not honour `select: false`, so the field
  * is genuinely reachable from a `$match` here. It is therefore matched on and
  * never projected, and this comment exists so nobody adds it to the `$project`.
  */
-const checkHubtel = async () => {
+const checkPaymentGateways = async () => {
   const [row] = await School.aggregate([
     { $match: { deletedAt: null } },
     {
       $project: {
-        hasClientId: { $ne: [{ $ifNull: ["$payment.hubtelClientId", ""] }, ""] },
-        hasClientSecret: { $ne: [{ $ifNull: ["$payment.hubtelClientSecret", ""] }, ""] },
-        hasApiKey: { $ne: [{ $ifNull: ["$payment.hubtelApiKey", ""] }, ""] },
-        hasPaystackKey: { $ne: [{ $ifNull: ["$payment.paystackSecretKey", ""] }, ""] },
+        inMoolreMode: { $eq: ["$payment.gatewayMode", "moolre"] },
+        inManualMode: { $eq: ["$payment.gatewayMode", "manual"] },
       },
     },
     {
       $group: {
         _id: null,
         totalSchools: { $sum: 1 },
-        complete: {
-          $sum: {
-            $cond: [{ $and: ["$hasClientId", "$hasClientSecret", "$hasApiKey"] }, 1, 0],
-          },
-        },
-        inHubtelMode: {
-          $sum: { $cond: [{ $eq: ["$payment.gatewayMode", "hubtel"] }, 1, 0] },
-        },
-        inPaystackMode: {
-          $sum: {
-            $cond: [
-              { or: [{ $eq: ["$payment.gatewayMode", "paystack"] }, { $not: "$payment.gatewayMode" }] },
-              1,
-              0,
-            ],
-          },
-        },
-        paystackReady: { $sum: { $cond: ["$hasPaystackKey", 1, 0] } },
+        inMoolreMode: { $sum: { $cond: ["$inMoolreMode", 1, 0] } },
+        inManualMode: { $sum: { $cond: ["$inManualMode", 1, 0] } },
       },
     },
   ]);
 
-  const complete = row?.complete || 0;
-  const inHubtelMode = row?.inHubtelMode || 0;
-  const inPaystackMode = row?.inPaystackMode || 0;
-  const paystackSchools = row?.paystackReady || 0;
+  const inMoolreMode = row?.inMoolreMode || 0;
+  const inManualMode = row?.inManualMode || 0;
   const totalSchools = row?.totalSchools || 0;
 
   /*
-   * With Paystack as the sole active gateway, the platform health hinges on
-   * Paystack readiness, not Hubtel. Schools still carrying a `gatewayMode` of
-   * `hubtel` (or `arke`/`mnotify`) are retained in the data but disabled:
-   * `resolveGateway` will not route to them, so they appear as "disabled" rather
-   * than "broken". The Hubtel credential count is still surfaced for operators
-   * migrating schools off the old rail.
+   * Moolre is the sole active gateway, so the platform health hinges on Moolre
+   * readiness. Schools still carrying a `gatewayMode` of `arke` or `mnotify` are
+   * retained in the data but disabled: `resolveGateway` will not route to them,
+   * so they appear as "disabled" rather than "broken".
    */
-  const paystackPlatformReady = isPaystackConfigured({});
-  const brokenHubtel = Math.max(0, inHubtelMode - complete);
+  const moolrePlatformReady = isMoolreConfigured();
 
   return {
-    status: paystackPlatformReady ? "ok" : "degraded",
-    detail: paystackPlatformReady
-      ? `${inPaystackMode} of ${totalSchools} schools on Paystack (active); ${inHubtelMode} schools still on Hubtel (disabled)`
-      : "Paystack is the only active gateway but no platform-level PAYSTACK_SECRET_KEY is configured",
-    credentialsModel: "platform-and-per-school",
-    activeGateways: ["paystack"],
-    disabledGateways: ["hubtel", "arke", "mnotify", "mtn"],
-    paystackPlatformConfigured: paystackPlatformReady,
-    schoolsInPaystackMode: inPaystackMode,
-    schoolsWithPaystackKey: paystackSchools,
-    schoolsInHubtelMode: inHubtelMode,
-    schoolsFullyConfigured: complete,
-    schoolsMissingCredentials: brokenHubtel,
+    status: moolrePlatformReady ? "ok" : "degraded",
+    detail: moolrePlatformReady
+      ? `Moolre is the active gateway (${inMoolreMode} of ${totalSchools} schools)`
+      : "No payment gateway is configured: set the Moolre credentials",
+    credentialsModel: "platform",
+    activeGateways: moolrePlatformReady ? ["moolre"] : [],
+    disabledGateways: ["mtn", "arke", "mnotify"],
+    moolrePlatformConfigured: moolrePlatformReady,
+    schoolsInMoolreMode: inMoolreMode,
+    schoolsInManualMode: inManualMode,
     totalSchools,
-    primaryGateway: "paystack",
+    primaryGateway: "moolre",
     networkProbe: false,
     networkProbeReason:
-      "Paystack is the sole active gateway and its readiness is determined by PAYSTACK_SECRET_KEY presence, not a network call. Hubtel, Arke, Mnotify and MTN are disabled.",
+      "Moolre is the sole active gateway and its readiness is determined by credential presence, not a network call. MTN, Arke and Mnotify are disabled.",
   };
 };
 
@@ -540,24 +495,6 @@ const checkSms = async () => {
     ratePesewas: settings?.sms?.ratePesewas ?? null,
     sendProvidersAvailable: availableSmsProviders(),
   };
-
-  /*
-   * `hubtel` is an enum value on `PlatformSettings.sms.provider` and on
-   * `School.sms.provider`, but `utils/smsService.js` registers its send client
-   * with `configured: () => false, send: null` (SEND_CLIENTS, line 45). So a
-   * platform configured for `hubtel` cannot send a single SMS today, and saying
-   * "degraded" is the accurate report — not a bug in this probe.
-   */
-  if (provider === "hubtel") {
-    return {
-      ...base,
-      status: "degraded",
-      configured: false,
-      detail:
-        'Platform SMS provider is "hubtel", which is selectable in settings but has no send integration wired (utils/smsService.js SEND_CLIENTS). Every outbound SMS will fail.',
-      arkesel: getArkeselConfigStatus(),
-    };
-  }
 
   const configured = isArkeselSendConfigured();
 
@@ -743,15 +680,15 @@ const checkCron = async () => {
 export const getSystemHealth = async () => {
   const startedAt = Date.now();
 
-  const [mongo, cloudinaryResult, hubtel, sms, cron] = await runProbes([
+  const [mongo, cloudinaryResult, payments, sms, cron] = await runProbes([
     ["mongodb", checkMongo, { required: true }],
     ["cloudinary", checkCloudinary],
-    ["hubtel", checkHubtel],
+    ["payments", checkPaymentGateways],
     ["sms", checkSms],
     ["cron", checkCron],
   ]);
 
-  const dependencies = { mongodb: mongo, cloudinary: cloudinaryResult, hubtel, sms, cron };
+  const dependencies = { mongodb: mongo, cloudinary: cloudinaryResult, payments, sms, cron };
 
   const all = Object.values(dependencies);
   const requiredDown = all.some((d) => d.required && d.status === "down");
