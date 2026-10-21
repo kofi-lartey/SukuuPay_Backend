@@ -406,6 +406,38 @@ describe('parent portal: school projection', () => {
     assert.equal(projectSchool(null), null);
     assert.equal(projectSchool(undefined), null);
   });
+
+  test('carries the school’s active term and year, and nothing else from `academic`', () => {
+    // The parent portal's attendance page opens on the school’s current term.
+    // A client that cannot see which term the school is in can only guess, and
+    // a guess of "Term 1" is wrong for two terms out of three — in a way the
+    // parent cannot diagnose, because the page loads and the marks are simply
+    // not in it.
+    const withTerm = projectSchool({
+      name: 'Prampram Basic School',
+      academic: {
+        currentTerm: 'Term 2',
+        currentYear: '2026/2027',
+        // The school's own business, not the parent's.
+        classes: ['JHS 1A', 'JHS 2A'],
+        grading: { classWeight: 30, examWeight: 70 },
+        payment: { gatewayMode: 'moolre' },
+      },
+    });
+
+    assert.equal(withTerm.academic.currentTerm, 'Term 2');
+    assert.equal(withTerm.academic.currentYear, '2026/2027');
+    assert.equal('classes' in withTerm.academic, false);
+    assert.equal('grading' in withTerm.academic, false);
+    assert.equal('payment' in withTerm.academic, false);
+  });
+
+  test('a school with no academic settings still projects an empty calendar', () => {
+    // Not a throw and not a missing key: the client reads this on every load,
+    // and an absent `academic` is a page that cannot pick a term.
+    const bare = projectSchool({ name: 'No Settings School' });
+    assert.deepEqual(bare.academic, { currentTerm: '', currentYear: '' });
+  });
 });
 
 describe('parent portal: payment projection', () => {

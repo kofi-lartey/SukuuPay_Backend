@@ -6,6 +6,7 @@ import {
   resolveSchoolAcademicYear,
   isoDay,
 } from "../../utils/termDates.js";
+import { summariseAttendance } from "../../utils/attendanceRate.js";
 import ApiError from "../../utils/ApiError.js";
 
 /**
@@ -91,11 +92,17 @@ export const getStudentAttendance = async (user, studentId, { term } = {}) => {
   const { student, school } = await loadStudentScope(user, user.schoolId, studentId);
 
   const resolvedTerm = resolveTerm(term, school);
-  // The student's own year first (a promoted student keeps the year the record
-  // belongs to), then the school's — the same order `resolveAcademicYear` uses.
-  // Normalised through `resolveSchoolAcademicYear` so a school still carrying
-  // the bare default `"2026"` does not land its term range a year out.
-  const academicYear = student.academicYear || resolveSchoolAcademicYear(school);
+  // The **school's** year, not the student's own `academicYear` — and the same
+  // one the class summary uses (`classes.service.js`), so the teacher's per-
+  // student drawer and the class rate beside it describe the same term.
+  //
+  // The two used to be read from different places: the term from the school,
+  // the year from the student. A term and the year it sits in are one thing,
+  // and the student's field is written when they are enrolled and never
+  // refreshed when the school rolls over its academic year — so a school that
+  // moved to 2026/2027 still had students carrying "2025/2026", and the window
+  // landed in the previous September while the register was being taken now.
+  const academicYear = resolveSchoolAcademicYear(school);
   const { start, end } = resolveTermRange(resolvedTerm, academicYear, school);
 
   const records = await Attendance.find({
@@ -106,22 +113,24 @@ export const getStudentAttendance = async (user, studentId, { term } = {}) => {
     .sort({ date: 1 })
     .lean();
 
-  // Counted from present + late + absent only: `excused` is a day the school
-  // agreed the student need not attend and `holiday` is a day there was no
-  // register, so counting either would score the family for a decision they
-  // did not make. The parent portal's rate is computed the same way.
-  const present = records.filter((r) => r.status === "present").length;
-  const late = records.filter((r) => r.status === "late").length;
-  const absent = records.filter((r) => r.status === "absent").length;
-  const totalDays = present + late + absent;
-  const rate = totalDays > 0 ? Math.round((present / totalDays) * 1000) / 10 : 0;
+  // One definition of the rate, shared with the parent portal — see
+  // `utils/attendanceRate.js`. A `late` mark is an attendance; `excused` and
+  // `holiday` are days the family is not scored on.
+  const summary = summariseAttendance(records);
 
   return {
     studentId: student.studentId,
     studentName: student.studentName,
     studentClass: student.studentClass,
     term: resolvedTerm,
-    summary: { rate, present, late, absent, totalDays },
+    summary: {
+      rate: summary.rate,
+      present: summary.present,
+      late: summary.late,
+      absent: summary.absent,
+      excused: summary.excused,
+      totalDays: summary.totalDays,
+    },
     recent: records
       .slice(-10)
       .reverse()

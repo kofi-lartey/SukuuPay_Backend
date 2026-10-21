@@ -268,6 +268,19 @@ const projectStudent = (student, now = new Date()) => {
  * the school's published contact details, and the "Contact school" section on the
  * page is *made of* them. Nothing here is a credential — there is no `bankAccount`,
  * no `payment` config, no `featureFlags`.
+ *
+ * **`academic` carries the school's active term and academic year.** The parent
+ * portal's attendance page, report-card page and timetable all read the term the
+ * school is currently in, and a client that does not know which term that is can
+ * only guess — and a guess of "Term 1" is a guess that is wrong for two terms out
+ * of three, and wrong in a way the parent cannot diagnose: the page loads, the
+ * calendar renders, and the marks the teacher made are simply not in it. The
+ * server already resolves the current term for every read that needs one
+ * (`resolveTerm`); exposing it here lets the client start on the same term
+ * instead of overriding it.
+ *
+ * The rest of `academic` — the class list, the grading policy, the fee settings —
+ * stays off this payload. A parent has no use for the school's grading weights.
  */
 const projectSchool = (school) =>
   school
@@ -277,6 +290,10 @@ const projectSchool = (school) =>
         brandColor: school.brandColor || null,
         phone: school.phone || null,
         email: school.email || null,
+        academic: {
+          currentTerm: school.academic?.currentTerm || "",
+          currentYear: school.academic?.currentYear || "",
+        },
       }
     : null;
 

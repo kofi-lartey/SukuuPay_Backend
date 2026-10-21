@@ -14,7 +14,8 @@ import assert from 'node:assert/strict';
 import { gradeForScore, GRADE_BANDS } from '../src/utils/gradeBands.js';
 import { colorForSubject } from '../src/utils/subjectColors.js';
 import { resolveTermRange, daysBetween, isoDay, resolveSchoolAcademicYear } from '../src/utils/termDates.js';
-import { resolveAcademicYear } from '../src/services/parent/portalContext.js';
+import { resolveAcademicYear, resolveTerm } from '../src/services/parent/portalContext.js';
+import { summariseAttendance } from '../src/utils/attendanceRate.js';
 import { isWithinRadius } from '../src/utils/geoDistance.js';
 import { parsePeriodTime, isOngoing } from '../src/services/parent/timetable.service.js';
 import { hashTokenForLog } from '../src/utils/tokens.js';
@@ -134,6 +135,124 @@ describe('resolveTermRange — GES default fallback', () => {
   test('isoDay is the UTC date, so Accra midnight is not yesterday', () => {
     assert.equal(isoDay(new Date('2026-06-01T23:30:00Z')), '2026-06-01');
     assert.equal(isoDay(new Date('2026-06-02T00:15:00Z')), '2026-06-02');
+  });
+});
+
+// ── Which term a read is about ─────────────────────────────────────────────────
+
+describe('resolveTerm — the school’s current term is the default', () => {
+  test('a school in Term 2 resolves to Term 2 when the caller does not ask', () => {
+    // The parent portal asked for "Term 1" in the query string whatever the
+    // school was in, so a school in Term 2 had its marks read against the
+    // previous term’s window and the parent saw an empty register. The server
+    // already resolves the school’s term; this pins that it keeps doing so.
+    assert.equal(resolveTerm(undefined, { academic: { currentTerm: 'Term 2' } }), 'Term 2');
+    assert.equal(resolveTerm('', { academic: { currentTerm: 'Term 3' } }), 'Term 3');
+  });
+
+  test('a school that has not set a term falls back to Term 1', () => {
+    // The same fallback the client uses, so the two never resolve differently.
+    assert.equal(resolveTerm(undefined, { academic: { currentTerm: '' } }), 'Term 1');
+    assert.equal(resolveTerm(undefined, { academic: {} }), 'Term 1');
+    assert.equal(resolveTerm(undefined, null), 'Term 1');
+  });
+
+  test('an explicit term always wins over the school’s setting', () => {
+    assert.equal(resolveTerm('Term 1', { academic: { currentTerm: 'Term 2' } }), 'Term 1');
+  });
+});
+
+// ── The attendance window ─────────────────────────────────────────────────────
+
+describe('the attendance window follows the school’s year, not the student’s', () => {
+  test('a student still carrying last year does not drag the window back a year', () => {
+    // `Student.academicYear` is written when the student is enrolled or
+    // imported and is never refreshed when the school rolls over its academic
+    // year — so it goes stale, and every student in the school goes stale
+    // together. Reading the window's year from the student while reading the
+    // window's term from the school produced a window that was not the
+    // school's term: September–December 2025 while the register was being
+    // taken in October 2026.
+    const school = { academic: { currentYear: '2026/2027', currentTerm: 'Term 1' } };
+    const student = { academicYear: '2025/2026' };
+
+    const window = resolveTermRange(
+      resolveTerm(undefined, school),
+      resolveSchoolAcademicYear(school),
+      school
+    );
+    assert.equal(window.start.toISOString().slice(0, 10), '2026-09-01');
+    assert.equal(window.end.toISOString().slice(0, 10), '2026-12-15');
+
+    // The student’s own field still says last year — which is exactly what
+    // makes the distinction worth a test, and is correct for a report card.
+    assert.equal(resolveAcademicYear(student, school), '2025/2026');
+  });
+
+  test('the teacher’s class summary and the parent’s calendar read the same year', () => {
+    // `classes.service.js` resolves the year from the school; the parent
+    // portal and the teacher’s per-student drawer must resolve it from the
+    // same place, or the teacher quotes a rate for a term the parent is not
+    // looking at.
+    const school = { academic: { currentYear: '2026/2027', currentTerm: 'Term 2' } };
+    assert.equal(resolveSchoolAcademicYear(school), '2026/2027');
+    assert.equal(resolveTerm(undefined, school), 'Term 2');
+  });
+});
+
+// ── The one attendance rate ────────────────────────────────────────────────────
+
+describe('summariseAttendance — the rate every surface quotes', () => {
+  test('a late mark counts as an attendance', () => {
+    // The parent portal and the teacher's per-student view used to score a late
+    // mark as a non-attendance while the class summary, the report card and the
+    // headmaster’s dashboard counted it as attendance — so the portal and the
+    // teacher quoted different rates for the same register.
+    const s = summariseAttendance([
+      { status: 'present' },
+      { status: 'present' },
+      { status: 'late' },
+      { status: 'absent' },
+    ]);
+
+    assert.equal(s.present, 2);
+    assert.equal(s.late, 1);
+    assert.equal(s.absent, 1);
+    assert.equal(s.attended, 3);
+    assert.equal(s.totalDays, 4);
+    assert.equal(s.rate, 75);
+  });
+
+  test('an excused day is counted but not scored', () => {
+    // An excused absence is a day the school agreed the student need not
+    // attend, and a holiday is a day there was no register.
+    const s = summariseAttendance([
+      { status: 'present' },
+      { status: 'excused' },
+      { status: 'holiday' },
+    ]);
+
+    assert.equal(s.excused, 1);
+    assert.equal(s.holiday, 1);
+    assert.equal(s.totalDays, 1);
+    assert.equal(s.rate, 100);
+  });
+
+  test('an empty register is 0%, not NaN', () => {
+    const s = summariseAttendance([]);
+    assert.equal(s.rate, 0);
+    assert.equal(s.totalDays, 0);
+    assert.equal(s.attended, 0);
+  });
+
+  test('an unknown status is counted nowhere rather than guessed at', () => {
+    const s = summariseAttendance([
+      { status: 'present' },
+      { status: 'mystery' },
+      null,
+    ]);
+    assert.equal(s.totalDays, 1);
+    assert.equal(s.rate, 100);
   });
 });
 

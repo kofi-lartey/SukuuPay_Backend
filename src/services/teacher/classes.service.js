@@ -14,6 +14,7 @@ import {
   resolveTermRange,
   resolveSchoolAcademicYear,
 } from "../../utils/termDates.js";
+import { summariseAttendance } from "../../utils/attendanceRate.js";
 import ApiError from "../../utils/ApiError.js";
 
 /**
@@ -108,12 +109,15 @@ export const getClassRoster = async (user, { className }) => {
 /**
  * How much of a class's register was attended, over the term.
  *
- * The definition is borrowed whole from the parent portal
- * (`parent/attendance.service.js`) rather than re-derived: `excused` and
- * `holiday` marks are outside the denominator, because an excused absence is a
- * day the school agreed the student need not attend and scoring it against the
- * class is how a portal stops being trusted. Parent and teacher must never
- * quote different attendance rates to each other.
+ * The definition is *not* re-derived here: it is `utils/attendanceRate.js`, the
+ * same function the parent portal and the teacher's per-student view use.
+ *
+ * `excused` and `holiday` marks are outside the denominator, because an excused
+ * absence is a day the school agreed the student need not attend and scoring it
+ * against the class is how a portal stops being trusted; and a `late` mark
+ * counts as attended, because the student was in the school. Parent and teacher
+ * must never quote different attendance rates to each other, and the way to
+ * guarantee that is for there to be only one function to call.
  */
 const computeAttendanceRate = async (schoolId, className, term, school, academicYear) => {
   const { start, end } = resolveTermRange(term, academicYear, school);
@@ -130,10 +134,7 @@ const computeAttendanceRate = async (schoolId, className, term, school, academic
 
   if (!records.length) return 0;
 
-  const attended = records.filter(
-    (r) => r.status === "present" || r.status === "late"
-  ).length;
-  return Math.round((attended / records.length) * 1000) / 10;
+  return summariseAttendance(records).rate;
 };
 
 /**
