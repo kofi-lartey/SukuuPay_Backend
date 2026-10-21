@@ -43,23 +43,28 @@ const validate = (schema, payload) =>
 
 // ── Grade bands ──────────────────────────────────────────────────────────────
 
-describe('gradeForScore — WAEC bands', () => {
-  test('80 / 80 lands A+', () => assert.equal(gradeForScore(80, 80), 'A+'));
-  test('79 / 100 lands A (not A+)', () => assert.equal(gradeForScore(79), 'A'));
+describe('gradeForScore — the terminal report bands', () => {
+  test('80 / 80 lands A', () => assert.equal(gradeForScore(80, 80), 'A'));
+  test('79 / 100 lands A- (not A)', () => assert.equal(gradeForScore(79), 'A-'));
   test('0 lands F', () => assert.equal(gradeForScore(0), 'F'));
   test('a 50-mark subject uses the same band as a 100-mark one', () => {
-    // 40/50 == 80% -> A+, so a half-weighted subject does not grade-shift.
-    assert.equal(gradeForScore(40, 50), 'A+');
-    assert.equal(gradeForScore(80, 100), 'A+');
+    // 40/50 == 80% -> A, so a half-weighted subject does not grade-shift.
+    assert.equal(gradeForScore(40, 50), 'A');
+    assert.equal(gradeForScore(80, 100), 'A');
   });
   test('a mark above maxSaturation is still F, never NaN', () => {
     assert.equal(gradeForScore(NaN, 100), 'F');
     assert.equal(gradeForScore(60, 0), 'F');
   });
   test('the band table is the source the admin and parent share', () => {
-    assert.equal(GRADE_BANDS[0].grade, 'A+');
+    assert.equal(GRADE_BANDS[0].grade, 'A');
     assert.equal(GRADE_BANDS[0].min, 80);
     assert.equal(GRADE_BANDS.at(-1).grade, 'F');
+    // The five bands the physical report prints, and no more.
+    assert.deepEqual(
+      GRADE_BANDS.map((b) => b.grade),
+      ['A', 'A-', 'B+', 'B', 'F']
+    );
   });
 });
 

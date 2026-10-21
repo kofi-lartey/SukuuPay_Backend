@@ -40,3 +40,6 @@ build/
 # Temp scratch used by local audits and probes
 *.audit.mjs
 audit-*.mjs
+
+# Local database dumps — a copy of the live data, never committed
+*-backup.json

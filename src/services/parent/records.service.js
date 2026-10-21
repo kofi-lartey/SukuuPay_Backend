@@ -64,8 +64,21 @@ export const getStudentRecordsForTerm = async (token, { term } = {}) => {
     },
     subjects: (record.subjects || []).map((s) => ({
       subject: s.subject,
-      score: s.score,
-      grade: s.grade || gradeForScore(s.score, s.maxScore),
+      // The Ghanaian breakdown, as the terminal report prints it.
+      classScore: s.classScore ?? null,
+      examScore: s.examScore ?? null,
+      totalScore: s.totalScore ?? s.score ?? null,
+      // The grade is stored at compile time and recomputed here as a fallback,
+      // so a card compiled before `gradeBands.js` existed still reads a letter
+      // rather than an empty string. A subject with no total has no grade:
+      // showing "F" for a subject that was never completed would tell a parent
+      // their child failed when the truth is that the class was not finished.
+      grade:
+        s.grade ||
+        (s.totalScore != null ? gradeForScore(s.totalScore) : ""),
+      meaning: s.meaning || "",
+      subjectPosition: s.subjectPosition || "",
+      score: s.score ?? s.totalScore ?? null,
     })),
     teacherRemark: record.teacherRemark,
     headRemark: record.headRemark,

@@ -77,10 +77,14 @@ describe('teacher validation — required inputs', () => {
     }).error);
   });
 
-  test('a bulk grade save accepts 200 rows and refuses 201', () => {
+  test('a bulk grade save accepts 400 rows and refuses 401', () => {
+    // A subject is now two rows — a class score and an exam score — so a class
+    // of two hundred students needs four hundred rows in one call. The ceiling
+    // is raised to match, and 401 is still refused.
     // 24 hex characters, the ObjectId length the schema demands.
-    const rows = Array.from({ length: 200 }, (_, i) => ({
+    const rows = Array.from({ length: 400 }, (_, i) => ({
       studentId: `64b7f9c2e1a2b3c4d5e6f7${String(i % 100).padStart(2, '0')}`,
+      assessmentType: i % 2 === 0 ? 'class_score' : 'exam_score',
       score: 50,
     }));
     assert.ok(validate(saveBulkGradesSchema, {
@@ -92,7 +96,7 @@ describe('teacher validation — required inputs', () => {
 
     const tooMany = [
       ...rows,
-      { studentId: '64b7f9c2e1a2b3c4d5e6f7aa', score: 50 },
+      { studentId: '64b7f9c2e1a2b3c4d5e6f7aa', assessmentType: 'class_score', score: 50 },
     ];
     assert.ok(validate(saveBulkGradesSchema, {
       className: 'JHS 2A',
@@ -100,6 +104,32 @@ describe('teacher validation — required inputs', () => {
       term: 'Term 2',
       grades: tooMany,
     }).error);
+  });
+
+  test('every bulk row says which half of the report it is', () => {
+    // A row with no assessment type has no place on the report card: it is
+    // neither the class score nor the exam score, so there is no column to
+    // print it in and no total to add it to.
+    assert.ok(validate(saveBulkGradesSchema, {
+      className: 'JHS 2A',
+      subject: 'Mathematics',
+      term: 'Term 2',
+      grades: [{ studentId: '64b7f9c2e1a2b3c4d5e6f708', score: 42 }],
+    }).error);
+  });
+
+  test('a retired assessment type is refused', () => {
+    // The old vocabulary (class_test, quiz, assignment) is gone: the terminal
+    // report has two columns and a mark that is in neither has nowhere to
+    // print.
+    for (const assessmentType of ['class_test', 'quiz', 'assignment', 'exam']) {
+      assert.ok(validate(saveBulkGradesSchema, {
+        className: 'JHS 2A',
+        subject: 'Mathematics',
+        term: 'Term 2',
+        grades: [{ studentId: '64b7f9c2e1a2b3c4d5e6f708', assessmentType, score: 42 }],
+      }).error, `${assessmentType} should be refused`);
+    }
   });
 });
 
@@ -112,6 +142,7 @@ describe('teacher validation — the academic year is optional', () => {
       className: 'JHS 2A',
       subject: 'Mathematics',
       term: 'Term 2',
+      assessmentType: 'class_score',
       score: 68,
     });
     assert.ok(error === undefined);
@@ -124,6 +155,7 @@ describe('teacher validation — the academic year is optional', () => {
       className: 'JHS 2A',
       subject: 'Mathematics',
       term: 'Term 2',
+      assessmentType: 'class_score',
       score: 68,
       academicYear: '2026-27',
     }).error);
@@ -131,16 +163,44 @@ describe('teacher validation — the academic year is optional', () => {
 });
 
 describe('teacher validation — defaults and bounds', () => {
-  test('assessmentType defaults to class_test', () => {
-    const { value } = validate(saveSingleGradeSchema, {
+  test('assessmentType is required, not defaulted', () => {
+    // The two halves of a terminal report row. A mark recorded without saying
+    // which half it belongs to has no total and no grade, so the schema
+    // refuses it rather than guessing.
+    const { error } = validate(saveSingleGradeSchema, {
       studentId: '64b7f9c2e1a2b3c4d5e6f708',
       className: 'JHS 2A',
       subject: 'Mathematics',
       term: 'Term 2',
       score: 68,
     });
-    assert.equal(value.assessmentType, 'class_test');
-    assert.equal(value.maxScore, 100);
+    assert.ok(error);
+
+    for (const assessmentType of ['class_score', 'exam_score']) {
+      const { error: typeError, value } = validate(saveSingleGradeSchema, {
+        studentId: '64b7f9c2e1a2b3c4d5e6f708',
+        className: 'JHS 2A',
+        subject: 'Mathematics',
+        term: 'Term 2',
+        score: 68,
+        assessmentType,
+      });
+      assert.equal(typeError, undefined);
+      assert.equal(value.assessmentType, assessmentType);
+    }
+  });
+
+  test('maxScore is the server’s to choose, so the client need not send it', () => {
+    const { error, value } = validate(saveSingleGradeSchema, {
+      studentId: '64b7f9c2e1a2b3c4d5e6f708',
+      className: 'JHS 2A',
+      subject: 'Mathematics',
+      term: 'Term 2',
+      score: 68,
+      assessmentType: 'exam_score',
+    });
+    assert.equal(error, undefined);
+    assert.equal(value.maxScore, undefined);
   });
 
   test('an unknown term is rejected', () => {

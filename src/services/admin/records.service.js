@@ -3,30 +3,15 @@ import { Student } from "../../models/studentModel.js";
 import { Attendance } from "../../models/Attendance.js";
 import { log as auditLog } from "../../utils/auditService.js";
 import { gradeForScore } from "../../utils/gradeBands.js";
+import {
+  buildSubjectResultsFromPayload,
+  assignSubjectPositions,
+  rankByAverage,
+  averageOfTotals,
+} from "../../utils/subjectResults.js";
 import { resolveTermRange } from "../../utils/termDates.js";
 import { AUDIT_ACTIONS } from "../../config/constants.js";
 import ApiError from "../../utils/ApiError.js";
-
-/**
- * Average, grade and position arithmetic.
- *
- * `average` is a percentage across subjects, so a subject marked out of 50 and
- * one marked out of 100 contribute equally:
- *
- *     (each subject's percentage) / number of subjects
- *
- * Computing it from raw scores instead would let one heavily-weighted subject
- * drag a class average down by a letter grade.
- */
-const computeSummary = (subjects) => {
-  if (!subjects.length) return { average: 0, grade: "F" };
-  const pctSum = subjects.reduce((sum, s) => {
-    const pct = (s.score / (s.maxScore || 100)) * 100;
-    return sum + pct;
-  }, 0);
-  const average = Math.round((pctSum / subjects.length) * 10) / 10;
-  return { average, grade: gradeForScore(average) };
-};
 
 /**
  * Compile a class's report cards for one term, as drafts.
@@ -36,8 +21,8 @@ const computeSummary = (subjects) => {
  *
  *   1. loads every student in the class,
  *   2. loads attendance for the class in one query and tallies it,
- *   3. computes each student's average and grade,
- *   4. ranks the class, and
+ *   3. computes each student's subject breakdown, average and grade,
+ *   4. ranks the class within each subject and overall, and
  *   5. writes one `draft` ReportCard per student.
  *
  * **Attendance is tallied over the term's date range, not over the student's
@@ -50,6 +35,12 @@ const computeSummary = (subjects) => {
  * both `position: 1` and the next is `3`. Assigning `index + 1` instead gives
  * two students "1" and "2", which tells the second one they beat someone they
  * did not — the single most complained-about number on a Ghanaian report card.
+ *
+ * **The subject rows are a breakdown, not a number.** A Ghanaian terminal
+ * report prints the class score, the exam score, the total, the grade and the
+ * subject position for every subject, and that is what is written here — the
+ * same shape the grades-driven compiler in `recordsApproval.service.js`
+ * produces, so the two compile paths cannot disagree.
  */
 export const compileClassReportCards = async (schoolId, userId, payload) => {
   const {
@@ -107,41 +98,58 @@ export const compileClassReportCards = async (schoolId, userId, payload) => {
     attendanceByStudent.set(key, tally);
   }
 
+  // student ─▶ subject breakdown, and the class ranking within each subject.
+  const subjectResultsByStudent = new Map();
+  const rowsByStudent = new Map();
   const drafts = students.map((student) => {
     const key = String(student._id);
-    const subjects = (scores[key] || []).map((s) => ({
-      subject: s.subject,
-      score: s.score,
-      maxScore: s.maxScore || 100,
-      grade: gradeForScore(s.score, s.maxScore || 100),
-      remark: s.remark || "",
-      teacher: s.teacher || "",
-    }));
-    const { average, grade } = computeSummary(subjects);
+    const rows = scores[key] || [];
+    const results = buildSubjectResultsFromPayload(rows);
+    subjectResultsByStudent.set(key, results);
+    // The payload rows again, keyed by subject, so a remark and a teacher's
+    // name can ride along with the breakdown they belong to.
+    rowsByStudent.set(
+      key,
+      new Map(rows.map((row) => [row.subject, row]))
+    );
     return {
       student,
-      subjects,
-      average,
-      grade,
+      results,
+      average: averageOfTotals(results),
+      completedCount: results.filter((r) => r.complete).length,
       attendance: attendanceByStudent.get(key) || { present: 0, total: 0 },
     };
   });
 
+  const subjectPositions = assignSubjectPositions(subjectResultsByStudent);
+
   // Rank by average descending, ties sharing the lower position.
-  const sorted = [...drafts].sort((a, b) => b.average - a.average);
-  const positionByStudent = new Map();
-  let position = 0;
-  let previousAverage = null;
-  sorted.forEach((entry, index) => {
-    if (previousAverage === null || entry.average < previousAverage) {
-      position = index + 1;
-      previousAverage = entry.average;
-    }
-    positionByStudent.set(String(entry.student._id), position);
-  });
+  const positionByStudent = rankByAverage(drafts);
 
   const results = [];
   for (const draft of drafts) {
+    const key = String(draft.student._id);
+    const positionsForStudent = subjectPositions.get(key) || new Map();
+    const rows = rowsByStudent.get(key) || new Map();
+
+    const subjects = draft.results.map((result) => ({
+      subject: result.subject,
+      classScore: result.classScore,
+      classMaxScore: result.classMaxScore,
+      examScore: result.examScore,
+      examMaxScore: result.examMaxScore,
+      totalScore: result.totalScore,
+      grade: result.grade,
+      meaning: result.meaning,
+      subjectPosition: positionsForStudent.get(result.subject) || "",
+      score: result.totalScore,
+      maxScore: 100,
+      // A remark and a teacher name may be carried on the payload row; they
+      // ride along with the breakdown rather than replacing it.
+      remark: rows.get(result.subject)?.remark || "",
+      teacher: rows.get(result.subject)?.teacher || "",
+    }));
+
     const record = await ReportCard.findOneAndUpdate(
       {
         schoolId,
@@ -156,11 +164,11 @@ export const compileClassReportCards = async (schoolId, userId, payload) => {
           className,
           term,
           academicYear,
-          subjects: draft.subjects,
+          subjects,
           average: draft.average,
-          position: positionByStudent.get(String(draft.student._id)),
+          position: positionByStudent.get(key) ?? null,
           classSize: students.length,
-          grade: draft.grade,
+          grade: draft.completedCount ? gradeForScore(draft.average) : "",
           teacherRemark: {
             text: teacherRemark?.text || "",
             author: teacherRemark?.author || "",
@@ -169,7 +177,7 @@ export const compileClassReportCards = async (schoolId, userId, payload) => {
             text: headRemark?.text || "",
             author: headRemark?.author || "",
           },
-          conduct: conductByStudent?.[String(draft.student._id)] || "Good",
+          conduct: conductByStudent?.[key] || "Good",
           attendance: draft.attendance,
           // Re-compiling a published card withdraws it: the numbers on it have
           // just changed, and a parent who downloaded the previous version is

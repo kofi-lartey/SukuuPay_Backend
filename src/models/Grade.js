@@ -18,6 +18,19 @@ import mongoose from "mongoose";
  * land on the same row, and a second submission must not produce a second mark
  * for the same test.
  *
+ * ## Two assessments, not one
+ *
+ * `assessmentType` is the Ghanaian terminal report's split: a **class score**
+ * (continuous assessment, marked out of 50) and an **exam score** (marked out
+ * of 100). A subject is therefore *two rows* here, and the report card's
+ * "Total" is computed from the pair at compile time (see
+ * `utils/subjectResults.js`) rather than stored — a total is a fact about two
+ * marks and one of the two can be corrected after the fact.
+ *
+ * `maxScore` is recorded per row rather than assumed, because a school that
+ * marks its continuous assessment out of 60 must be able to say so: the
+ * normalisation at compile time divides by what was actually recorded.
+ *
  * Not partial on `deletedAt`, and deliberately so: a soft-deleted row is
  * *reused* by the next write rather than colliding into a duplicate-key error,
  * which is the same contract `Attendance` already runs on (see the comment on
@@ -50,16 +63,33 @@ const gradeSchema = new mongoose.Schema(
       index: true,
     },
     academicYear: { type: String, required: true, index: true },
+    // The two halves of a Ghanaian terminal report row: continuous assessment
+    // ("class score") and the end-of-term examination.
+    //
+    // These are the *only* two. The old vocabulary (class_test, quiz,
+    // assignment, exam) described a school running many small tests and
+    // averaging them; the terminal report does not have those columns, it has
+    // these two, and a mark that is not in one of them has nowhere to print.
+    // A school that wants its quizzes tracked averages them into the class
+    // score before it is entered here.
     assessmentType: {
       type: String,
-      enum: ["class_test", "quiz", "assignment", "exam"],
-      default: "class_test",
+      enum: ["class_score", "exam_score"],
+      required: true,
     },
     score: { type: Number, required: true, min: 0 },
-    maxScore: { type: Number, default: 100, min: 1 },
+    // The mark this row was recorded against — 50 for a class score, 100 for
+    // an exam score. Recorded rather than assumed so the compile-time
+    // normalisation divides by what the school actually used.
+    maxScore: { type: Number, required: true, min: 1, default: 100 },
     // Stored, not derived on read: the band a mark earned at the time it was
-    // recorded is a fact about that mark, and `gradeForScore` bands have moved
+    // recorded is a fact about that mark, and `gradeBands.js` bands have moved
     // before. A percentage is re-derivable; a grade is not.
+    //
+    // This is the band of *this row's own mark*. The grade printed on a report
+    // card is the band of the **total** (class + exam), and it is computed at
+    // compile time — a class score of 45/50 is an A on its own and is not the
+    // student's grade in that subject.
     grade: { type: String, default: "", trim: true },
 
     // ── Approval workflow ──

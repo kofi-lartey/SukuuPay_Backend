@@ -102,20 +102,53 @@ export const generateReportCardPdf = (card, { school, student }) => {
     doc.moveDown(0.4);
 
     // ── Subjects table ──
+    //
+    // The physical terminal report's column layout: Subject, Class Score, Exam
+    // Score, Total, Grade, Position. The two maxima are printed under the
+    // column heads ("50" under Class, "100" under Exam) because a parent
+    // reading "48" under a column headed only "Exam" cannot tell whether that
+    // is 48 out of 100 or 48 out of 50.
     doc.font("Helvetica-Bold").fontSize(12).fillColor("#0f172a").text("Subjects");
     doc.moveDown(0.3);
 
+    const RIGHT = doc.page.width - 48;
+    const COL_GAP = 4;
+    const colWidths = { pos: 34, grade: 38, total: 44, exam: 48, klass: 48 };
+
+    // Laid out from the right edge inwards, so the flexible Subject column
+    // takes whatever is left rather than a hard-coded width that a different
+    // page size would break.
+    let cursor = RIGHT;
+    const posCol = { x: (cursor -= colWidths.pos), w: colWidths.pos };
+    cursor -= COL_GAP;
+    const gradeCol = { x: (cursor -= colWidths.grade), w: colWidths.grade };
+    cursor -= COL_GAP;
+    const totalCol = { x: (cursor -= colWidths.total), w: colWidths.total };
+    cursor -= COL_GAP;
+    const examCol = { x: (cursor -= colWidths.exam), w: colWidths.exam };
+    cursor -= COL_GAP;
+    const classCol = { x: (cursor -= colWidths.klass), w: colWidths.klass };
+    cursor -= COL_GAP;
+
     const cols = [
-      { label: "Subject", x: 48, w: contentWidth - 200, align: "left" },
-      { label: "Score", x: doc.page.width - 48 - 160, w: 70, align: "right" },
-      { label: "Max", x: doc.page.width - 48 - 84, w: 40, align: "right" },
-      { label: "Grade", x: doc.page.width - 48 - 40, w: 40, align: "right" },
+      { label: "Subject", x: 48, w: cursor - 48, align: "left" },
+      { label: "Class", x: classCol.x, w: classCol.w, align: "right" },
+      { label: "Exam", x: examCol.x, w: examCol.w, align: "right" },
+      { label: "Total", x: totalCol.x, w: totalCol.w, align: "right" },
+      { label: "Grade", x: gradeCol.x, w: gradeCol.w, align: "right" },
+      { label: "Pos", x: posCol.x, w: posCol.w, align: "right" },
     ];
 
     const tableTop = doc.y;
-    doc.save().rect(48, tableTop, contentWidth, 18).fill("#f1f5f9").restore();
-    doc.font("Helvetica-Bold").fontSize(9).fillColor("#0f172a");
-    for (const c of cols) doc.text(c.label, c.x, tableTop + 5, { width: c.w, align: c.align });
+    doc.save().rect(48, tableTop, contentWidth, 26).fill("#f1f5f9").restore();
+    doc.font("Helvetica-Bold").fontSize(8.5).fillColor("#0f172a");
+    for (const c of cols) doc.text(c.label, c.x, tableTop + 4, { width: c.w, align: c.align });
+    // The maxima, under their column heads.
+    doc.font("Helvetica").fontSize(7).fillColor("#64748b");
+    doc.text("50", classCol.x, tableTop + 15, { width: classCol.w, align: "right" });
+    doc.text("100", examCol.x, tableTop + 15, { width: examCol.w, align: "right" });
+    doc.text("100", totalCol.x, tableTop + 15, { width: totalCol.w, align: "right" });
+    doc.y = tableTop + 26;
     doc.moveDown(0.4);
 
     let y = doc.y;
@@ -125,11 +158,38 @@ export const generateReportCardPdf = (card, { school, student }) => {
         doc.addPage();
         y = 48;
       }
-      const score = `${s.score ?? 0} / ${s.maxScore ?? 100}`;
-      doc.text(s.subject || "—", 48, y, { width: contentWidth - 200 });
-      doc.text(String(s.grade || "—"), doc.page.width - 48 - 40, y, { width: 40, align: "right" });
-      doc.text(String(s.maxScore ?? 100), doc.page.width - 48 - 84, y, { width: 40, align: "right" });
-      doc.text(String(s.score ?? 0), doc.page.width - 48 - 160, y, { width: 70, align: "right" });
+      // A subject with only one half recorded prints the mark it has and a
+      // dash for the rest, rather than a total that was never computed.
+      const classScore = s.classScore ?? s.score ?? null;
+      const examScore = s.examScore ?? null;
+      const total = s.totalScore ?? s.score ?? null;
+
+      doc.text(s.subject || "—", 48, y, { width: cursor - 48 });
+      doc.text(String(s.grade || "—"), gradeCol.x, y, { width: gradeCol.w, align: "right" });
+      doc.text(
+        total != null ? String(total) : "—",
+        totalCol.x,
+        y,
+        { width: totalCol.w, align: "right" }
+      );
+      doc.text(
+        examScore != null ? String(examScore) : "—",
+        examCol.x,
+        y,
+        { width: examCol.w, align: "right" }
+      );
+      doc.text(
+        classScore != null ? String(classScore) : "—",
+        classCol.x,
+        y,
+        { width: classCol.w, align: "right" }
+      );
+      doc.text(
+        s.subjectPosition || "—",
+        posCol.x,
+        y,
+        { width: posCol.w, align: "right" }
+      );
       y += 15;
       doc.moveTo(48, y - 4).lineTo(doc.page.width - 48, y - 4).strokeColor("#eef2f6").stroke();
     }

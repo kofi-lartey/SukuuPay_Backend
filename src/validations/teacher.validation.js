@@ -19,6 +19,16 @@ const TERMS = ["Term 1", "Term 2", "Term 3"];
 const objectId = Joi.string().pattern(/^[0-9a-fA-F]{24}$/);
 const academicYear = Joi.string().trim().pattern(/^\d{4}\/\d{4}$/);
 
+/**
+ * The two halves of a Ghanaian terminal report row.
+ *
+ * `class_score` is the continuous assessment (marked out of 50) and
+ * `exam_score` the end-of-term examination (marked out of 100). There are only
+ * these two: the terminal report has these two columns, so a mark that is
+ * neither has nowhere to print.
+ */
+export const ASSESSMENT_TYPES = ["class_score", "exam_score"];
+
 export const classQuerySchema = Joi.object({
   className: Joi.string().trim().min(2).max(50).required(),
 });
@@ -72,6 +82,10 @@ export const studentGradesQuerySchema = Joi.object({
  * itself part of the payload, so Joi cannot compare the two. The service closes
  * that gap (`readScore`) and the endpoint re-checks it before writing, because
  * a mark above the maximum is not a validation detail but a 100+% grade.
+ *
+ * `assessmentType` is required, not defaulted: a mark recorded without saying
+ * which half of the report it belongs to has no total and no grade, and a
+ * silent default is how one of those marks ends up in the wrong column.
  */
 export const saveSingleGradeSchema = Joi.object({
   studentId: objectId.required(),
@@ -79,38 +93,40 @@ export const saveSingleGradeSchema = Joi.object({
   subject: Joi.string().trim().min(2).max(80).required(),
   term: Joi.string().valid(...TERMS).required(),
   academicYear: academicYear.optional(),
-  assessmentType: Joi.string()
-    .valid("class_test", "quiz", "assignment", "exam")
-    .default("class_test"),
+  assessmentType: Joi.string().valid(...ASSESSMENT_TYPES).required(),
   score: Joi.number().min(0).required(),
-  maxScore: Joi.number().min(1).max(200).default(100),
+  maxScore: Joi.number().min(1).max(200).optional(),
 });
 
 /**
  * The whole class in one call.
  *
  * `min(1)` so an empty batch is a 422 rather than a silent no-op that reports
- * "saved 0 of 0" and looks like a success. `max(200)` keeps one request inside
+ * "saved 0 of 0" and looks like a success. `max(400)` keeps one request inside
  * the size a phone can reliably post on a Ghanaian mobile connection — the same
- * ceiling `bulkMarkAttendanceSchema` uses for a register.
+ * ceiling `bulkMarkAttendanceSchema` uses for a register, doubled because a
+ * student now contributes two rows (a class score and an exam score).
+ *
+ * `assessmentType` and `maxScore` are **per row**, not on the envelope: one
+ * call carries the whole class's class scores *and* its exam scores, and the
+ * server needs to know which is which for each line. A single envelope-level
+ * `assessmentType` could only ever describe half the batch.
  */
 export const saveBulkGradesSchema = Joi.object({
   className: Joi.string().trim().min(2).max(50).required(),
   subject: Joi.string().trim().min(2).max(80).required(),
   term: Joi.string().valid(...TERMS).required(),
   academicYear: academicYear.optional(),
-  assessmentType: Joi.string()
-    .valid("class_test", "quiz", "assignment", "exam")
-    .default("class_test"),
-  maxScore: Joi.number().min(1).max(200).default(100),
   grades: Joi.array()
     .items(
       Joi.object({
         studentId: objectId.required(),
+        assessmentType: Joi.string().valid(...ASSESSMENT_TYPES).required(),
         score: Joi.number().min(0).required(),
+        maxScore: Joi.number().min(1).max(200).optional(),
       })
     )
     .min(1)
-    .max(200)
+    .max(400)
     .required(),
 });

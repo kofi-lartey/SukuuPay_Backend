@@ -7,6 +7,12 @@ import { School } from "../../models/schoolModel.js";
 import { log as auditLog } from "../../utils/auditService.js";
 import { AUDIT_ACTIONS } from "../../config/constants.js";
 import { gradeForScore } from "../../utils/gradeBands.js";
+import {
+  buildSubjectResults,
+  assignSubjectPositions,
+  rankByAverage,
+  averageOfTotals,
+} from "../../utils/subjectResults.js";
 import { resolveTermRange } from "../../utils/termDates.js";
 import { generateReportCardPdf, uploadReportCardPdf } from "./reportCardPdf.service.js";
 import ApiError from "../../utils/ApiError.js";
@@ -27,22 +33,6 @@ import ApiError from "../../utils/ApiError.js";
  * filters on `approvalStatus: "approved"` and nothing else — a draft or a
  * rejected block is simply not there to be read.
  */
-
-/** Competition ranking ("1224"): tied averages share the lower position. */
-const rankByAverage = (drafts) => {
-  const sorted = [...drafts].sort((a, b) => b.average - a.average);
-  const positions = new Map();
-  let position = 0;
-  let previous = null;
-  sorted.forEach((entry, index) => {
-    if (previous === null || entry.average < previous) {
-      position = index + 1;
-      previous = entry.average;
-    }
-    positions.set(String(entry.student._id), position);
-  });
-  return positions;
-};
 
 /**
  * Attach a term's attendance tally to each draft.
@@ -84,16 +74,30 @@ const tallyAttendance = async (schoolId, school, { className, term, academicYear
  * **approved** grades.
  *
  * The headmaster runs this after approving the class's marks. For each student:
- * pull the approved grades, collapse them to one figure per subject, average
- * across subjects, rank the class, attach the term's attendance, and upsert one
- * card into `review`.
+ * pull the approved grades, fold the class score and the exam score into one
+ * total per subject, rank the class within each subject and overall, attach
+ * the term's attendance, and upsert one card into `review`.
  *
- * Per-subject marks are averaged, not stacked: a student with a class test and
- * an exam in Mathematics is *one* Mathematics row on a report card, not two —
- * the same collapse `teacher/grades.service.js` uses in the grade drawer. The
- * collapsed figure is a percentage out of 100 so a subject marked out of 50 and
- * one out of 100 are comparable, and so the class average is a clean mean of
- * like-for-like numbers.
+ * ## What a subject row is
+ *
+ * A Ghanaian terminal report prints a *breakdown* per subject — Class Score,
+ * Exam Score, Total, Grade, and the position the student came in that subject —
+ * and that is exactly what this writes:
+ *
+ *     class score 42/50  +  exam score 48/100  →  total 66  →  grade B
+ *
+ * The total is the server's arithmetic, never the teacher's: the two halves
+ * are normalised onto 50 points each and added, so a school marking its
+ * continuous assessment out of 60 and one marking it out of 50 produce
+ * comparable totals.
+ *
+ * ## What a subject row is not
+ *
+ * A subject with only one of its two halves recorded is **incomplete**: it
+ * carries the mark that was given and no total, no grade and no position, and
+ * it is excluded from the average. Compiling a half-marked class into report
+ * cards that read "Total 42, Grade A" for every child would publish a number
+ * that looks like a result and is not one.
  *
  * Existing remarks and conduct are left untouched on recompile (`$set` writes
  * only the computed fields), so a headmaster's remark written before a
@@ -128,44 +132,34 @@ export const compileClassReportsFromGrades = async (schoolId, userId, payload) =
     approvalStatus: "approved",
     deletedAt: null,
   })
-    .select("studentId subject score maxScore")
+    .select("studentId subject assessmentType score maxScore")
     .lean();
 
-  // student ─▶ subject ─▶ { sumPct, count }
-  const byStudentSubject = new Map();
+  // student ─▶ [ raw grade rows ]. A subject is two rows: a class score and an
+  // exam score, and the pair is what makes a total.
+  const rowsByStudent = new Map();
   for (const g of grades) {
-    const skey = String(g.studentId);
-    const scores = byStudentSubject.get(skey) || new Map();
-    const subj = scores.get(g.subject) || { sumPct: 0, count: 0 };
-    subj.sumPct += (g.score / (g.maxScore || 100)) * 100;
-    subj.count += 1;
-    scores.set(g.subject, subj);
-    byStudentSubject.set(skey, scores);
+    const key = String(g.studentId);
+    const list = rowsByStudent.get(key) || [];
+    list.push(g);
+    rowsByStudent.set(key, list);
   }
 
+  // Fold each student's pair of marks into one result per subject.
+  const subjectResultsByStudent = new Map();
   const drafts = students.map((student) => {
-    const subjectMap = byStudentSubject.get(String(student._id));
-    const subjects = [];
-    if (subjectMap) {
-      for (const [subject, { sumPct, count }] of subjectMap) {
-        const score = Math.round((sumPct / count) * 10) / 10;
-        subjects.push({
-          subject,
-          score,
-          maxScore: 100,
-          grade: gradeForScore(score),
-          remark: "",
-          teacher: "",
-        });
-      }
-      subjects.sort((a, b) => a.subject.localeCompare(b.subject));
-    }
-    const average = subjects.length
-      ? Math.round((subjects.reduce((sum, s) => sum + s.score, 0) / subjects.length) * 10) / 10
-      : 0;
-    return { student, subjects, average };
+    const results = buildSubjectResults(rowsByStudent.get(String(student._id)) || []);
+    subjectResultsByStudent.set(String(student._id), results);
+    return {
+      student,
+      results,
+      average: averageOfTotals(results),
+      completedCount: results.filter((r) => r.complete).length,
+    };
   });
 
+  // Where the student came in each subject, and where they came in the class.
+  const subjectPositions = assignSubjectPositions(subjectResultsByStudent);
   const positions = rankByAverage(drafts);
   const attendanceByStudent = await tallyAttendance(schoolId, school, {
     className,
@@ -176,6 +170,28 @@ export const compileClassReportsFromGrades = async (schoolId, userId, payload) =
 
   const results = [];
   for (const draft of drafts) {
+    const studentKey = String(draft.student._id);
+    const positionsForStudent = subjectPositions.get(studentKey) || new Map();
+
+    const subjects = draft.results.map((result) => ({
+      subject: result.subject,
+      classScore: result.classScore,
+      classMaxScore: result.classMaxScore,
+      examScore: result.examScore,
+      examMaxScore: result.examMaxScore,
+      totalScore: result.totalScore,
+      grade: result.grade,
+      meaning: result.meaning,
+      subjectPosition: positionsForStudent.get(result.subject) || "",
+      // The single-figure mirror of the total, for readers that predate the
+      // split. `null` — not zero — when the subject is incomplete, so a
+      // half-marked subject never reads as a fail.
+      score: result.totalScore,
+      maxScore: 100,
+      remark: "",
+      teacher: "",
+    }));
+
     const record = await ReportCard.findOneAndUpdate(
       { schoolId, studentId: draft.student._id, term, academicYear },
       {
@@ -185,12 +201,12 @@ export const compileClassReportsFromGrades = async (schoolId, userId, payload) =
           className,
           term,
           academicYear,
-          subjects: draft.subjects,
+          subjects,
           average: draft.average,
-          position: positions.get(String(draft.student._id)),
+          position: positions.get(studentKey) ?? null,
           classSize: students.length,
-          grade: gradeForScore(draft.average),
-          attendance: attendanceByStudent.get(String(draft.student._id)) || {
+          grade: draft.completedCount ? gradeForScore(draft.average) : "",
+          attendance: attendanceByStudent.get(studentKey) || {
             present: 0,
             total: 0,
           },

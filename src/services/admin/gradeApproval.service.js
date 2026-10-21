@@ -272,6 +272,12 @@ export const reopenRejectedGrades = async (schoolId, userId, payload) => {
  * submitted — with the count, who submitted it, and the earliest submit time,
  * so the queue can be worked oldest-first. Submitter names are resolved in one
  * query after the grouping rather than with a per-group join.
+ *
+ * **Two counts, because a subject is two rows.** Every subject now carries a
+ * class score *and* an exam score, so a class of thirty contributes sixty rows.
+ * `count` is the number of grade rows — the size of the block as stored — and
+ * `studentCount` is how many children it covers, which is the number the
+ * headmaster actually recognises ("thirty children, Mathematics").
  */
 export const getGradeApprovalQueue = async (schoolId, { term, academicYear } = {}) => {
   const match = {
@@ -293,6 +299,7 @@ export const getGradeApprovalQueue = async (schoolId, { term, academicYear } = {
           academicYear: "$academicYear",
         },
         count: { $sum: 1 },
+        students: { $addToSet: "$studentId" },
         submittedBy: { $first: "$submittedBy" },
         submittedAt: { $min: "$submittedAt" },
       },
@@ -305,6 +312,7 @@ export const getGradeApprovalQueue = async (schoolId, { term, academicYear } = {
         term: "$_id.term",
         academicYear: "$_id.academicYear",
         count: 1,
+        studentCount: { $size: "$students" },
         submittedBy: 1,
         submittedAt: 1,
       },
@@ -329,6 +337,7 @@ export const getGradeApprovalQueue = async (schoolId, { term, academicYear } = {
       term: g.term,
       academicYear: g.academicYear,
       count: g.count,
+      studentCount: g.studentCount ?? g.count,
       submittedBy: g.submittedBy,
       submittedByName: g.submittedBy
         ? nameById.get(String(g.submittedBy)) || ""

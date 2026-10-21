@@ -14,13 +14,44 @@ import mongoose from "mongoose";
  * denormalised alongside it because the class-wide reads (rank, preview,
  * publish) are all by class, and a student who has been promoted mid-year keeps
  * the class the card was compiled against.
+ *
+ * ## The subject row is a breakdown, not a number
+ *
+ * A Ghanaian terminal report prints, for every subject: the Class Score, the
+ * Exam Score, the Total, the Grade, and the position the student came in that
+ * subject. So the subject row carries all five, and `totalScore` is the
+ * server's answer rather than the teacher's — it is computed from the two
+ * halves at compile time (see `utils/subjectResults.js`).
+ *
+ * `score` and `maxScore` are kept as the single-figure mirror of `totalScore`
+ * so a card compiled before the split still renders, and so the parent
+ * portal's older reads keep working.
  */
 const subjectGradeSchema = new mongoose.Schema(
   {
     subject: { type: String, required: true, trim: true },
-    score: { type: Number, required: true, min: 0 },
+
+    // ── The Ghanaian breakdown ──
+    classScore: { type: Number, default: null, min: 0 },
+    classMaxScore: { type: Number, default: 50, min: 1 },
+    examScore: { type: Number, default: null, min: 0 },
+    examMaxScore: { type: Number, default: 100, min: 1 },
+    totalScore: { type: Number, default: null, min: 0, max: 100 },
+    // Not required: a subject with only one of its two halves recorded has no
+    // grade yet, and an empty string is the honest answer. Mongoose's
+    // `required` rejects `""`, which would make an incomplete subject
+    // unsaveable — and an unsaveable report card is how a class with no exam
+    // marks yet ends up with no report card at all.
+    grade: { type: String, default: "", trim: true },
+    meaning: { type: String, default: "", trim: true },
+    // "1st", "2nd", "3rd" — the student's rank in this subject across the class.
+    subjectPosition: { type: String, default: "", trim: true },
+
+    // The single-figure mirror of `totalScore`, for readers that predate the
+    // split and for cards compiled before it.
+    score: { type: Number, default: null, min: 0 },
     maxScore: { type: Number, default: 100, min: 1 },
-    grade: { type: String, required: true, trim: true },
+
     remark: { type: String, default: "", maxlength: 200 },
     teacher: { type: String, default: "" },
   },

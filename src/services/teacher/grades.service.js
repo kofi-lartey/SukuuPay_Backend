@@ -2,27 +2,56 @@ import { Grade } from "../../models/Grade.js";
 import { Student } from "../../models/studentModel.js";
 import { loadTeacherScope, loadStudentScope } from "../../utils/teacherScope.js";
 import { resolveTerm } from "../parent/portalContext.js";
-import { gradeForScore } from "../../utils/gradeBands.js";
+import {
+  gradeForScore,
+  calculateTotalScore,
+  CLASS_SCORE_MAX,
+  EXAM_SCORE_MAX,
+} from "../../utils/gradeBands.js";
+import {
+  buildSubjectResults,
+  assignSubjectPositions,
+} from "../../utils/subjectResults.js";
 import { initialsOf } from "./classes.service.js";
 import { log as auditLog } from "../../utils/auditService.js";
 import { AUDIT_ACTIONS } from "../../config/constants.js";
 import { resolveSchoolAcademicYear } from "../../utils/termDates.js";
 import ApiError from "../../utils/ApiError.js";
 
-/** The assessment types a teacher may record. Mirrors the Grade schema enum. */
-const ASSESSMENT_TYPES = ["class_test", "quiz", "assignment", "exam"];
+/**
+ * The two halves of a Ghanaian terminal report row.
+ *
+ * A subject is two marks on a Ghanaian report card: the **class score**
+ * (continuous assessment, out of 50) and the **exam score** (out of 100).
+ * The teacher enters both; the total, the grade and the subject position are
+ * the server's arithmetic.
+ */
+export const ASSESSMENT_TYPES = ["class_score", "exam_score"];
+
+/** The mark each assessment type is recorded against unless the school says otherwise. */
+const DEFAULT_MAX_SCORE = {
+  class_score: CLASS_SCORE_MAX,
+  exam_score: EXAM_SCORE_MAX,
+};
+
+/** The widest a school may widen a mark, so a stray `maxScore: 100000` is refused. */
+const MAX_ALLOWED_SCORE = 200;
 
 /**
  * `GET /teacher/grades?className=JHS 2A&term=Term 2&subject=Mathematics`
  *
  * The class's grade book for one subject, formatted so the bulk entry grid
- * renders every student and their score in one pass.
+ * renders every student and their two marks in one pass.
  *
  * Every student in the class appears, including those with no score yet, and a
- * student with no score reads `score: null` rather than being omitted. That is
- * the whole point: a grid that reflows as marks are entered loses a teacher's
- * place mid-entry, and a missing row reads as "this student is not in the
- * class" when what it means is "this student has not been assessed".
+ * student with no score reads `classScore: null` rather than being omitted.
+ * That is the whole point: a grid that reflows as marks are entered loses a
+ * teacher's place mid-entry, and a missing row reads as "this student is not
+ * in the class" when what it means is "this student has not been assessed".
+ *
+ * The total and grade are computed here as well as at compile time, so the
+ * teacher sees the same number the report card will carry while they are
+ * still typing rather than after the headmaster has approved.
  */
 export const getClassGrades = async (user, { className, term, subject, academicYear }) => {
   if (!className) {
@@ -59,33 +88,89 @@ export const getClassGrades = async (user, { className, term, subject, academicY
   };
   if (subject) filter.subject = subject;
 
-  const grades = await Grade.find(filter)
-    .select("studentId subject score maxScore assessmentType")
-    .lean();
+  // Without a subject there is no column to read, and the contract is the
+  // roster with no scores — the grid is rendered before the teacher has picked
+  // one. Reading every subject and folding them into one row per student
+  // returned one *arbitrary* subject's marks (the last row the query happened
+  // to produce), and the teacher then overwrote that subject's numbers with
+  // the subject they had actually picked.
+  const grades = subject
+    ? await Grade.find(filter)
+        .select("studentId subject score maxScore assessmentType")
+        .lean()
+    : [];
 
+  // student ─▶ assessmentType. One row per half of the subject, keyed so the
+  // pair can be read back together.
   const byStudent = new Map();
   for (const g of grades) {
-    byStudent.set(String(g.studentId), g);
+    const key = String(g.studentId);
+    const bucket = byStudent.get(key) || {};
+    bucket[g.assessmentType] = g;
+    byStudent.set(key, bucket);
   }
+
+  // Where each student came in this subject — the same competition ranking the
+  // report card carries, computed from the same two halves, so the teacher
+  // reads the number the card will print before anything is approved.
+  const resultsByStudent = new Map();
+  for (const [key, bucket] of byStudent) {
+    resultsByStudent.set(
+      key,
+      buildSubjectResults([
+        ...(bucket.class_score ? [bucket.class_score] : []),
+        ...(bucket.exam_score ? [bucket.exam_score] : []),
+      ])
+    );
+  }
+  const positions = assignSubjectPositions(resultsByStudent);
 
   return {
     className,
     term: resolvedTerm,
     academicYear: resolvedYear,
     subject: subject || null,
-    // The marks' own maximum, so a school marking out of 50 does not have every
-    // score read as a mark out of 100. Defaults to 100 on an empty book.
-    maxScore: grades[0]?.maxScore || 100,
+    // The two marks a Ghanaian terminal report is built from. They are the
+    // report's own maxima, not a school's discretion: the class score is out
+    // of 50 and the exam out of 100.
+    maxClassScore: CLASS_SCORE_MAX,
+    maxExamScore: EXAM_SCORE_MAX,
     students: students.map((s) => {
-      const g = byStudent.get(String(s._id));
+      const bucket = byStudent.get(String(s._id)) || {};
+      const classRow = bucket.class_score;
+      const examRow = bucket.exam_score;
+
+      const classScore = classRow ? classRow.score : null;
+      const examScore = examRow ? examRow.score : null;
+      const complete = classRow != null && examRow != null;
+
+      const { totalScore, grade, meaning } = complete
+        ? calculateTotalScore(
+            classScore,
+            classRow.maxScore || CLASS_SCORE_MAX,
+            examScore,
+            examRow.maxScore || EXAM_SCORE_MAX
+          )
+        : { totalScore: null, grade: null, meaning: null };
+
+      const positionsForStudent = positions.get(String(s._id)) || new Map();
+
       return {
         _id: s._id,
         studentId: s.studentId,
         studentName: s.studentName,
         initials: initialsOf(s.studentName),
-        score: g?.score ?? null,
-        grade:
-          g?.score != null ? gradeForScore(g.score, g.maxScore || 100) : null,
+        classScore,
+        examScore,
+        totalScore,
+        grade,
+        meaning,
+        // Whether the pair is complete enough to be banded. The grid shows a
+        // dash rather than a grade until it is.
+        complete,
+        // Where the student came in this subject, or "" while the subject is
+        // incomplete — a half-marked pair has no total to rank on.
+        subjectPosition: positionsForStudent.get(subject) || "",
       };
     }),
   };
@@ -95,9 +180,11 @@ export const getClassGrades = async (user, { className, term, subject, academicY
  * `GET /teacher/students/:studentId/grades?term=Term 2`
  *
  * One student's breakdown by subject — the other half of the roster drawer.
- * Subjects with several marks (a class test and a quiz) are averaged into one
- * percentage per subject, because the question the drawer answers is "how is
- * this child doing in Mathematics", not "what were the three marks".
+ *
+ * Each subject is one row with the class score, the exam score and the total
+ * the two make, because that is the shape the report card has and the question
+ * the drawer answers is "how is this child doing in Mathematics", not "what
+ * were the three marks".
  */
 export const getStudentGrades = async (user, studentId, { term, academicYear } = {}) => {
   const { student, school } = await loadStudentScope(user, user.schoolId, studentId);
@@ -119,20 +206,32 @@ export const getStudentGrades = async (user, studentId, { term, academicYear } =
 
   const bySubject = new Map();
   for (const g of grades) {
-    const list = bySubject.get(g.subject) || [];
-    list.push(g);
-    bySubject.set(g.subject, list);
+    const bucket = bySubject.get(g.subject) || {};
+    bucket[g.assessmentType] = g;
+    bySubject.set(g.subject, bucket);
   }
 
-  const subjects = [...bySubject.entries()].map(([subject_, list]) => {
-    const avg =
-      list.reduce((sum, g) => sum + (g.score / (g.maxScore || 100)) * 100, 0) /
-      list.length;
-    const percentage = Math.round(avg * 10) / 10;
+  const subjects = [...bySubject.entries()].map(([subject, bucket]) => {
+    const classRow = bucket.class_score;
+    const examRow = bucket.exam_score;
+    const complete = classRow != null && examRow != null;
+
+    const { totalScore, grade, meaning } = complete
+      ? calculateTotalScore(
+          classRow.score,
+          classRow.maxScore || CLASS_SCORE_MAX,
+          examRow.score,
+          examRow.maxScore || EXAM_SCORE_MAX
+        )
+      : { totalScore: null, grade: "", meaning: "" };
+
     return {
-      subject: subject_,
-      score: percentage,
-      grade: gradeForScore(percentage),
+      subject,
+      classScore: classRow ? classRow.score : null,
+      examScore: examRow ? examRow.score : null,
+      totalScore,
+      grade,
+      meaning,
     };
   });
 
@@ -156,6 +255,21 @@ const readScore = (score, maxScore) => {
 };
 
 /**
+ * The mark a row is recorded against.
+ *
+ * The server owns the default — a class score is out of 50 and an exam score
+ * out of 100 — and a school that marks its continuous assessment differently
+ * may override it per row, bounded so a stray value cannot turn a mark into a
+ * percentage of nothing.
+ */
+const resolveMaxScore = (assessmentType, requested) => {
+  const fallback = DEFAULT_MAX_SCORE[assessmentType] || EXAM_SCORE_MAX;
+  const numeric = Number(requested);
+  if (!Number.isFinite(numeric) || numeric < 1) return fallback;
+  return Math.min(numeric, MAX_ALLOWED_SCORE);
+};
+
+/**
  * The shared write body: resolve the class, the school, the year and the term,
  * and confirm the students are in the class being marked.
  *
@@ -170,17 +284,13 @@ const readScore = (score, maxScore) => {
  *    `admin.attendance.service.js:bulkMarkAttendance` already runs before it
  *    writes a register.
  */
-const resolveWriteScope = async (user, { className, term, academicYear, maxScore }) => {
+const resolveWriteScope = async (user, { className, term, academicYear }) => {
   if (!className || !term) {
     throw new ApiError(
       "className and term are required",
       400,
       "VALIDATION_ERROR"
     );
-  }
-
-  if (!Number.isFinite(maxScore) || maxScore < 1) {
-    throw new ApiError("maxScore must be at least 1", 400, "VALIDATION_ERROR");
   }
 
   const { school, classes } = await loadTeacherScope(user, user.schoolId);
@@ -197,7 +307,6 @@ const resolveWriteScope = async (user, { className, term, academicYear, maxScore
     className,
     term: resolveTerm(term, school),
     academicYear: academicYear || resolveSchoolAcademicYear(school),
-    maxScore,
   };
 };
 
@@ -230,9 +339,9 @@ export const saveSingleGrade = async (user, payload) => {
     subject,
     term,
     academicYear,
-    assessmentType = "class_test",
+    assessmentType,
     score,
-    maxScore = 100,
+    maxScore,
   } = payload;
 
   if (!studentId || !className || !subject || !term) {
@@ -251,12 +360,7 @@ export const saveSingleGrade = async (user, payload) => {
     );
   }
 
-  const scope = await resolveWriteScope(user, {
-    className,
-    term,
-    academicYear,
-    maxScore,
-  });
+  const scope = await resolveWriteScope(user, { className, term, academicYear });
 
   const enrolled = await classStudentIds(user.schoolId, className);
   if (!enrolled.has(String(studentId))) {
@@ -267,9 +371,11 @@ export const saveSingleGrade = async (user, payload) => {
     );
   }
 
+  const effectiveMax = resolveMaxScore(assessmentType, maxScore);
+
   // Never trust a client-supplied score: the bound is the server's, not the
   // form's, and a mark above the maximum would silently become a 100+% grade.
-  const read = readScore(score, scope.maxScore);
+  const read = readScore(score, effectiveMax);
   if (!read.ok) {
     throw new ApiError(read.reason, 400, "INVALID_SCORE");
   }
@@ -293,14 +399,14 @@ export const saveSingleGrade = async (user, payload) => {
         term: scope.term,
         academicYear: scope.academicYear,
         assessmentType,
-         score: read.score,
-         maxScore: scope.maxScore,
-         grade: gradeForScore(read.score, scope.maxScore),
-         approvalStatus: "submitted",
-         submittedAt: new Date(),
-         submittedBy: user._id,
-         recordedBy: user._id,
-         recordedAt: new Date(),
+        score: read.score,
+        maxScore: effectiveMax,
+        grade: gradeForScore(read.score, effectiveMax),
+        approvalStatus: "submitted",
+        submittedAt: new Date(),
+        submittedBy: user._id,
+        recordedBy: user._id,
+        recordedAt: new Date(),
       },
     },
     { upsert: true, new: true }
@@ -312,7 +418,13 @@ export const saveSingleGrade = async (user, payload) => {
     entityId: grade._id,
     userId: user._id,
     schoolId: user.schoolId,
-    meta: { studentId, subject, term: scope.term, score: read.score },
+    meta: {
+      studentId,
+      subject,
+      term: scope.term,
+      assessmentType,
+      score: read.score,
+    },
   });
 
   return grade;
@@ -321,9 +433,14 @@ export const saveSingleGrade = async (user, payload) => {
 /**
  * `POST /teacher/grades/bulk`
  *
- * The whole class, one subject, one assessment — the working path, because a
+ * The whole class, one subject, both assessments — the working path, because a
  * teacher with thirty students on a flaky connection should not end the term
  * with a half-saved column.
+ *
+ * The payload is a *mix* of `class_score` and `exam_score` rows: the teacher
+ * types both marks for the class and sends them in one call, and each row
+ * carries its own `assessmentType` so the server knows which half of the
+ * terminal report it is writing.
  *
  * `bulkWrite` with `{ ordered: false }`: a bad score fails *that row* and the
  * rest of the class is still saved. The alternative — `ordered: true` — would
@@ -333,15 +450,7 @@ export const saveSingleGrade = async (user, payload) => {
  * than a bare count.
  */
 export const saveBulkGrades = async (user, payload) => {
-  const {
-    className,
-    subject,
-    term,
-    academicYear,
-    assessmentType = "class_test",
-    maxScore = 100,
-    grades,
-  } = payload;
+  const { className, subject, term, academicYear, grades } = payload;
 
   if (!className || !subject || !term || !Array.isArray(grades)) {
     throw new ApiError(
@@ -351,20 +460,7 @@ export const saveBulkGrades = async (user, payload) => {
     );
   }
 
-  if (!ASSESSMENT_TYPES.includes(assessmentType)) {
-    throw new ApiError(
-      "assessmentType must be one of " + ASSESSMENT_TYPES.join(", "),
-      400,
-      "VALIDATION_ERROR"
-    );
-  }
-
-  const scope = await resolveWriteScope(user, {
-    className,
-    term,
-    academicYear,
-    maxScore,
-  });
+  const scope = await resolveWriteScope(user, { className, term, academicYear });
 
   const enrolled = await classStudentIds(user.schoolId, className);
 
@@ -383,8 +479,18 @@ export const saveBulkGrades = async (user, payload) => {
       });
       continue;
     }
+    if (!ASSESSMENT_TYPES.includes(row.assessmentType)) {
+      errors.push({
+        studentId: row.studentId,
+        reason:
+          "assessmentType must be one of " + ASSESSMENT_TYPES.join(", "),
+      });
+      continue;
+    }
 
-    const read = readScore(row.score, scope.maxScore);
+    const effectiveMax = resolveMaxScore(row.assessmentType, row.maxScore);
+
+    const read = readScore(row.score, effectiveMax);
     if (!read.ok) {
       errors.push({ studentId: row.studentId, reason: read.reason });
       continue;
@@ -399,7 +505,10 @@ export const saveBulkGrades = async (user, payload) => {
           subject,
           term: scope.term,
           academicYear: scope.academicYear,
-          assessmentType,
+          // The assessment type is part of the upsert key: a student's class
+          // score and their exam score are two rows, and correcting one must
+          // never land on the other.
+          assessmentType: row.assessmentType,
         },
         update: {
           $set: {
@@ -409,15 +518,15 @@ export const saveBulkGrades = async (user, payload) => {
             subject,
             term: scope.term,
             academicYear: scope.academicYear,
-            assessmentType,
-             score: read.score,
-             maxScore: scope.maxScore,
-             grade: gradeForScore(read.score, scope.maxScore),
-             approvalStatus: "submitted",
-             submittedAt: new Date(),
-             submittedBy: user._id,
-             recordedBy: user._id,
-             recordedAt: new Date(),
+            assessmentType: row.assessmentType,
+            score: read.score,
+            maxScore: effectiveMax,
+            grade: gradeForScore(read.score, effectiveMax),
+            approvalStatus: "submitted",
+            submittedAt: new Date(),
+            submittedBy: user._id,
+            recordedBy: user._id,
+            recordedAt: new Date(),
           },
         },
         upsert: true,

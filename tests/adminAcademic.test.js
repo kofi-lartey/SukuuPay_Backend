@@ -97,6 +97,35 @@ describe('Grade — approval workflow shape', () => {
     }
     assert.equal(Grade.schema.path('rejectionReason').options.maxlength, 500);
   });
+
+  test('assessmentType carries the terminal report’s two columns', () => {
+    // A Ghanaian terminal report prints a class score and an exam score, and
+    // nothing else. The old vocabulary (class_test, quiz, assignment) had no
+    // column to print in.
+    assert.deepEqual(
+      Grade.schema.path('assessmentType').enumValues,
+      ['class_score', 'exam_score']
+    );
+  });
+
+  test('the upsert key is per assessment type', () => {
+    // One row per student per subject per assessment: a class score and an
+    // exam score are two rows, and correcting one must never land on the
+    // other.
+    const hasUpsertIndex = Grade.schema.indexes().some(([keys, options]) =>
+      options?.unique === true &&
+      keys.schoolId === 1 &&
+      keys.studentId === 1 &&
+      keys.subject === 1 &&
+      keys.term === 1 &&
+      keys.academicYear === 1 &&
+      keys.assessmentType === 1
+    );
+    assert.ok(
+      hasUpsertIndex,
+      'Grade is missing the { schoolId, studentId, subject, term, academicYear, assessmentType } unique index'
+    );
+  });
 });
 
 describe('ReportCard — review sits between draft and published', () => {
@@ -126,6 +155,33 @@ describe('ReportCard — review sits between draft and published', () => {
     assert.ok(paths.pdfPublicId, 'ReportCard.pdfPublicId is missing');
     assert.ok(paths['headRemark.text'], 'ReportCard.headRemark.text is missing');
     assert.ok(paths['teacherRemark.text'], 'ReportCard.teacherRemark.text is missing');
+  });
+
+  test('a subject row carries the Ghanaian breakdown', () => {
+    // The terminal report prints the class score, the exam score, the total,
+    // the grade and the subject position for every subject. A card that drops
+    // any of them cannot be printed the way the paper is printed.
+    const subject = ReportCard.schema.path('subjects').schema;
+    for (const field of [
+      'subject',
+      'classScore',
+      'examScore',
+      'totalScore',
+      'grade',
+      'meaning',
+      'subjectPosition',
+    ]) {
+      assert.ok(subject.path(field), `ReportCard.subjects.${field} is missing`);
+    }
+  });
+
+  test('a subject with no total can still be saved', () => {
+    // A half-marked subject has no grade, and Mongoose's `required` rejects
+    // an empty string — so a card that could not be saved would leave a class
+    // with no report card at all.
+    const subject = ReportCard.schema.path('subjects').schema;
+    assert.notEqual(subject.path('grade').options.required, true);
+    assert.equal(subject.path('totalScore').options.default, null);
   });
 });
 
@@ -272,10 +328,22 @@ describe('report card PDF — the artefact the parent downloads', () => {
       academicYear: '2026/2027',
       className: 'JHS 2A',
       average: 74,
-      grade: 'A-',
+      grade: 'B+',
       position: 3,
       classSize: 30,
-      subjects: [{ subject: 'Mathematics', score: 80, maxScore: 100, grade: 'A' }],
+      subjects: [
+        {
+          subject: 'English',
+          classScore: 42,
+          classMaxScore: 50,
+          examScore: 48,
+          examMaxScore: 100,
+          totalScore: 66,
+          grade: 'B',
+          meaning: 'Developing',
+          subjectPosition: '3rd',
+        },
+      ],
       teacherRemark: { text: 'Good term.', author: 'Mr. Owusu' },
       headRemark: { text: 'Keep it up.', author: 'Head' },
       conduct: 'Good',
@@ -288,6 +356,21 @@ describe('report card PDF — the artefact the parent downloads', () => {
     assert.ok(Buffer.isBuffer(buf));
     assert.ok(buf.length > 0);
     assert.equal(buf.subarray(0, 4).toString(), '%PDF', 'not a PDF');
+  });
+
+  test('a card compiled before the split still renders', async () => {
+    // The pre-split subject shape — one figure — must keep producing a valid
+    // page, because there are cards in the database from before the change.
+    const buf = await generateReportCardPdf(
+      {
+        term: 'Term 1',
+        academicYear: '2025/2026',
+        subjects: [{ subject: 'English', score: 72, maxScore: 100, grade: 'B+' }],
+      },
+      { school: {}, student: {} }
+    );
+    assert.ok(Buffer.isBuffer(buf));
+    assert.equal(buf.subarray(0, 4).toString(), '%PDF');
   });
 
   test('a half-empty card still renders — never throws a 500 on a mid-term draft', async () => {
