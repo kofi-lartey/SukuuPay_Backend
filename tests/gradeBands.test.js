@@ -16,10 +16,14 @@ import {
   gradeForScore,
   meaningForGrade,
   calculateTotalScore,
+  normaliseClassScore,
   GRADE_BANDS,
   CLASS_SCORE_MAX,
   EXAM_SCORE_MAX,
+  CLASS_WEIGHT,
+  EXAM_WEIGHT,
 } from '../src/utils/gradeBands.js';
+import { DEFAULT_CLASS_COMPONENTS } from '../src/utils/gradingConfig.js';
 import {
   positionLabel,
   buildSubjectResults,
@@ -29,7 +33,7 @@ import {
   averageOfTotals,
 } from '../src/utils/subjectResults.js';
 
-// ── The bands ───────────────────────────────────────────────────────────────
+// ── The bands ─────────────────────────────────────────────────────────────────
 
 describe('gradeForScore — the five-band scale', () => {
   test('bands a percentage into its letter', () => {
@@ -43,6 +47,8 @@ describe('gradeForScore — the five-band scale', () => {
   });
 
   test('respects the maximum a subject was marked against', () => {
+    // The band is read from the proportion, so a 45-marker is a band wherever
+    // it was marked out of.
     assert.equal(gradeForScore(45, 50), 'A');
     assert.equal(gradeForScore(90, 100), 'A');
     assert.equal(gradeForScore(33, 50), 'B');
@@ -79,94 +85,213 @@ describe('meaningForGrade', () => {
   });
 });
 
-// ── The total ───────────────────────────────────────────────────────────────
+// ── The weighting ─────────────────────────────────────────────────────────────
 
-describe('calculateTotalScore — the class/exam breakdown', () => {
-  test('42 out of 50 and 48 out of 100 is a total of 66 and a grade of B', () => {
-    // The acceptance case, and the one the whole feature exists for.
-    const result = calculateTotalScore(42, 50, 48, 100);
-    assert.equal(result.totalScore, 66);
-    assert.equal(result.grade, 'B');
-    assert.equal(result.meaning, 'Developing');
-  });
-
-  test('is not a plain sum of the two raw marks', () => {
-    // The bug this pins: 42 + 48 = 90 would put a student who scored 84% in
-    // class and 48% in the exam at 90% overall.
-    const result = calculateTotalScore(42, 50, 48, 100);
-    assert.notEqual(result.totalScore, 90);
-  });
-
-  test('a perfect paper is a hundred and a blank paper is a zero', () => {
-    assert.equal(calculateTotalScore(50, 50, 100, 100).totalScore, 100);
-    assert.equal(calculateTotalScore(50, 50, 100, 100).grade, 'A');
-    assert.equal(calculateTotalScore(0, 50, 0, 100).totalScore, 0);
-    assert.equal(calculateTotalScore(0, 50, 0, 100).grade, 'F');
-  });
-
-  test('a missing half counts as zero rather than as NaN', () => {
-    const result = calculateTotalScore('', 50, 48, 100);
-    assert.equal(result.totalScore, 24);
-    assert.ok(Number.isFinite(result.totalScore));
-  });
-
-  test('the report’s own maxima are 50 and 100', () => {
-    assert.equal(CLASS_SCORE_MAX, 50);
+describe('the 30/70 split', () => {
+  test('the report’s own maxima are 30 and 100', () => {
+    assert.equal(CLASS_SCORE_MAX, 30);
     assert.equal(EXAM_SCORE_MAX, 100);
+  });
+
+  test('the weights are 30/70', () => {
+    assert.equal(CLASS_WEIGHT, 30);
+    assert.equal(EXAM_WEIGHT, 70);
+  });
+
+  test('the default breakdown sums to the class weight', () => {
+    const total = DEFAULT_CLASS_COMPONENTS.reduce((sum, part) => sum + part.weight, 0);
+    assert.equal(total, CLASS_WEIGHT);
   });
 });
 
-// ── The subject table ───────────────────────────────────────────────────────
+// ── The total ─────────────────────────────────────────────────────────────────
+
+describe('calculateTotalScore — the class/exam breakdown', () => {
+  test('24/30 + 60/100 is a total of 66 and a grade of B', () => {
+    // The acceptance case, and the one the whole feature exists for. The class
+    // score carries 24 of its 30 points and the exam 42 of its 70, for 66.
+    const result = calculateTotalScore(24, 30, 60, 100);
+    assert.equal(result.totalScore, 66);
+    assert.equal(result.grade, 'B');
+    assert.equal(result.meaning, 'Developing');
+    assert.equal(result.classPoints, 24);
+    assert.equal(result.examPoints, 42);
+  });
+
+  test('is not a plain sum of the two raw marks', () => {
+    // The bug this pins: adding 24 + 60 gives 84, which would put a student who
+    // scored 80% in class and 60% in the exam at 84% overall.
+    const result = calculateTotalScore(24, 30, 60, 100);
+    assert.notEqual(result.totalScore, 84);
+  });
+
+  test('a perfect class and paper is a hundred and a blank pair is a zero', () => {
+    assert.equal(calculateTotalScore(30, 30, 100, 100).totalScore, 100);
+    assert.equal(calculateTotalScore(30, 30, 100, 100).grade, 'A');
+    assert.equal(calculateTotalScore(0, 30, 0, 100).totalScore, 0);
+    assert.equal(calculateTotalScore(0, 30, 0, 100).grade, 'F');
+  });
+
+  test('a missing half counts as zero rather than as NaN', () => {
+    // 30/30 is not in, so only the exam contributes: 48/100 × 70 = 34.
+    const result = calculateTotalScore('', 30, 48, 100);
+    assert.equal(result.totalScore, 34);
+    assert.ok(Number.isFinite(result.totalScore));
+  });
+
+  test('honours a school that runs a 40/60 split', () => {
+    // 24/30 and 60/100, but the class carries 40 and the exam 60: the class
+    // contributes 32 and the exam 36, for 68 — a B.
+    const result = calculateTotalScore(24, 30, 60, 100, { classWeight: 40, examWeight: 60 });
+    assert.equal(result.totalScore, 68);
+    assert.equal(result.grade, 'B');
+  });
+
+  test('defaults to the report’s own maxima when none are passed', () => {
+    const withDefaults = calculateTotalScore(24, undefined, 60, undefined);
+    const withExplicit = calculateTotalScore(24, 30, 60, 100);
+    assert.deepEqual(withDefaults, withExplicit);
+  });
+});
+
+describe('normaliseClassScore — a direct class score rescales onto the weight', () => {
+  test('a legacy /50 mark reads as the same proportion on /30', () => {
+    // 45/50 and 27/30 are the same 90%, and contribute the same to the total.
+    assert.equal(normaliseClassScore(45, 50, { classWeight: 30 }), 27);
+    assert.equal(normaliseClassScore(27, 30, { classWeight: 30 }), 27);
+  });
+
+  test('a mark already on 30 is unchanged', () => {
+    assert.equal(normaliseClassScore(24, 30, { classWeight: 30 }), 24);
+    assert.equal(normaliseClassScore(0, 30, { classWeight: 30 }), 0);
+  });
+
+  test('falls back to the class weight when the maximum is absent', () => {
+    assert.equal(normaliseClassScore(18, null, { classWeight: 30 }), 18);
+  });
+
+  test('follows a school that changed the split', () => {
+    // A 40/60 school’s 45/50 is 90% of its 40-point class assessment → 36.
+    assert.equal(normaliseClassScore(45, 50, { classWeight: 40 }), 36);
+  });
+});
+
+// ── The subject table ─────────────────────────────────────────────────────────
 
 describe('buildSubjectResults — a subject is a pair of marks', () => {
-  const rows = [
-    { subject: 'English', assessmentType: 'class_score', score: 42, maxScore: 50 },
-    { subject: 'English', assessmentType: 'exam_score', score: 48, maxScore: 100 },
-    { subject: 'Mathematics', assessmentType: 'class_score', score: 30, maxScore: 50 },
+  const parts = {
+    class_test: { subject: 'English', assessmentType: 'class_test', score: 80, maxScore: 100 },
+    group_work: { subject: 'English', assessmentType: 'group_work', score: 80, maxScore: 100 },
+    homework: { subject: 'English', assessmentType: 'homework', score: 16, maxScore: 20 },
+    class_work: { subject: 'English', assessmentType: 'class_work', score: 16, maxScore: 20 },
+  };
+  // 7.2 + 7.2 + 4.8 + 4.8 = 24 out of 30.
+  const english = [
+    parts.class_test, parts.group_work, parts.homework, parts.class_work,
+    { subject: 'English', assessmentType: 'exam_score', score: 60, maxScore: 100 },
+  ];
+  const maths = [
+    { subject: 'Mathematics', assessmentType: 'class_score', score: 24, maxScore: 30 },
   ];
 
-  test('folds a pair into one result with a total and a grade', () => {
-    const results = buildSubjectResults(rows);
-    const english = results.find((r) => r.subject === 'English');
-    assert.equal(english.classScore, 42);
-    assert.equal(english.examScore, 48);
-    assert.equal(english.totalScore, 66);
-    assert.equal(english.grade, 'B');
-    assert.equal(english.complete, true);
+  test('folds a breakdown into one result with the weighted total and grade', () => {
+    const results = buildSubjectResults(english);
+    const row = results.find((r) => r.subject === 'English');
+    assert.equal(row.classScore, 24);
+    assert.equal(row.classMaxScore, 30);
+    assert.equal(row.examScore, 60);
+    assert.equal(row.examMaxScore, 100);
+    assert.equal(row.examPoints, 42);
+    assert.equal(row.totalScore, 66);
+    assert.equal(row.grade, 'B');
+    assert.equal(row.complete, true);
+    assert.equal(row.classParts.length, 4);
+    assert.equal(row.subjectPosition, undefined);
+  });
+
+  test('a lone class score (no parts) is the class score, normalised to 30', () => {
+    const results = buildSubjectResults([
+      { subject: 'Mathematics', assessmentType: 'class_score', score: 24, maxScore: 30 },
+      { subject: 'Mathematics', assessmentType: 'exam_score', score: 60, maxScore: 100 },
+    ]);
+    const row = results.find((r) => r.subject === 'Mathematics');
+    assert.equal(row.classScore, 24);
+    assert.equal(row.classMaxScore, 30);
+    assert.equal(row.totalScore, 66);
+  });
+
+  test('a legacy /50 class score rescales onto /30 without a migration', () => {
+    // The migration only renamed the row; the proportion is what is preserved.
+    const results = buildSubjectResults([
+      { subject: 'Mathematics', assessmentType: 'class_score', score: 45, maxScore: 50 },
+      { subject: 'Mathematics', assessmentType: 'exam_score', score: 78, maxScore: 100 },
+    ]);
+    const row = results.find((r) => r.subject === 'Mathematics');
+    assert.equal(row.classScore, 27); // 45/50 → 27/30
+    assert.equal(row.classMaxScore, 30);
+    // 27 + round(78/100 × 70) = 27 + 55 = 82.
+    assert.equal(row.examScore, 78);
+    assert.equal(row.examMaxScore, 100);
+    assert.equal(row.totalScore, 82);
+    assert.equal(row.grade, 'A');
   });
 
   test('a subject with one half is incomplete, not a zero', () => {
-    // The bug this pins: a teacher who has entered the class scores but not
-    // the exam scores would otherwise produce report cards reading
-    // "Total 30, Grade A" for every child in the class.
-    const results = buildSubjectResults(rows);
-    const maths = results.find((r) => r.subject === 'Mathematics');
-    assert.equal(maths.classScore, 30);
-    assert.equal(maths.examScore, null);
-    assert.equal(maths.totalScore, null);
-    assert.equal(maths.grade, '');
-    assert.equal(maths.complete, false);
+    const results = buildSubjectResults(maths);
+    const row = results.find((r) => r.subject === 'Mathematics');
+    assert.equal(row.classScore, 24);
+    assert.equal(row.examScore, null);
+    assert.equal(row.totalScore, null);
+    assert.equal(row.grade, '');
+    assert.equal(row.complete, false);
+  });
+
+  test('an incomplete breakdown has no class score', () => {
+    // Missing class_work → the class assessment is not in, so no class score and
+    // no total even though the other three parts are.
+    const results = buildSubjectResults([
+      parts.class_test, parts.group_work, parts.homework,
+      { subject: 'English', assessmentType: 'exam_score', score: 60, maxScore: 100 },
+    ]);
+    const row = results.find((r) => r.subject === 'English');
+    assert.equal(row.classScore, null);
+    assert.equal(row.complete, false);
+    assert.equal(row.totalScore, null);
   });
 
   test('the results come back in subject order', () => {
-    const results = buildSubjectResults(rows);
+    const results = buildSubjectResults([...maths, ...english]);
     assert.deepEqual(results.map((r) => r.subject), ['English', 'Mathematics']);
   });
 
-  test('a school that marks its continuous assessment out of 60 still totals', () => {
-    const results = buildSubjectResults([
-      { subject: 'Science', assessmentType: 'class_score', score: 45, maxScore: 60 },
-      { subject: 'Science', assessmentType: 'exam_score', score: 48, maxScore: 100 },
+  test('a part marked out of its own maximum contributes the right proportion', () => {
+    // class_test 45/50 is the same 90% as 90/100, so with identical other parts
+    // the class score (and therefore the total) is the same.
+    const sameProportion = buildSubjectResults([
+      { subject: 'English', assessmentType: 'class_test', score: 45, maxScore: 50 },
+      { subject: 'English', assessmentType: 'group_work', score: 80, maxScore: 100 },
+      { subject: 'English', assessmentType: 'homework', score: 16, maxScore: 20 },
+      { subject: 'English', assessmentType: 'class_work', score: 16, maxScore: 20 },
+      { subject: 'English', assessmentType: 'exam_score', score: 60, maxScore: 100 },
     ]);
-    assert.equal(results[0].totalScore, 62);
+    const diffMax = buildSubjectResults([
+      { subject: 'English', assessmentType: 'class_test', score: 90, maxScore: 100 },
+      { subject: 'English', assessmentType: 'group_work', score: 80, maxScore: 100 },
+      { subject: 'English', assessmentType: 'homework', score: 16, maxScore: 20 },
+      { subject: 'English', assessmentType: 'class_work', score: 16, maxScore: 20 },
+      { subject: 'English', assessmentType: 'exam_score', score: 60, maxScore: 100 },
+    ]);
+    assert.equal(sameProportion[0].totalScore, diffMax[0].totalScore);
   });
 });
 
 describe('buildSubjectResultsFromPayload — the teacher’s own compile path', () => {
   test('folds a class/exam pair exactly as the grade book does', () => {
     const results = buildSubjectResultsFromPayload([
-      { subject: 'English', classScore: 42, examScore: 48 },
+      { subject: 'English', classScore: 24, examScore: 60 },
     ]);
+    assert.equal(results[0].classScore, 24);
+    assert.equal(results[0].examScore, 60);
     assert.equal(results[0].totalScore, 66);
     assert.equal(results[0].grade, 'B');
   });
@@ -182,14 +307,14 @@ describe('buildSubjectResultsFromPayload — the teacher’s own compile path', 
 
   test('a half-entered subject is incomplete, as everywhere else', () => {
     const results = buildSubjectResultsFromPayload([
-      { subject: 'English', classScore: 42 },
+      { subject: 'English', classScore: 24 },
     ]);
     assert.equal(results[0].complete, false);
     assert.equal(results[0].totalScore, null);
   });
 });
 
-// ── The positions ───────────────────────────────────────────────────────────
+// ── The positions ─────────────────────────────────────────────────────────────
 
 describe('positionLabel', () => {
   test('writes the ordinal the report prints', () => {
@@ -282,8 +407,6 @@ describe('rankByAverage — the class position', () => {
   });
 
   test('a student with nothing marked is not ranked at all', () => {
-    // An unranked student sitting in the middle of the table reads as a fail
-    // rather than as "not marked yet".
     const positions = rankByAverage([
       draft('s1', 80),
       draft('s2', 0, 0),

@@ -273,11 +273,12 @@ export const reopenRejectedGrades = async (schoolId, userId, payload) => {
  * so the queue can be worked oldest-first. Submitter names are resolved in one
  * query after the grouping rather than with a per-group join.
  *
- * **Two counts, because a subject is two rows.** Every subject now carries a
- * class score *and* an exam score, so a class of thirty contributes sixty rows.
- * `count` is the number of grade rows — the size of the block as stored — and
- * `studentCount` is how many children it covers, which is the number the
- * headmaster actually recognises ("thirty children, Mathematics").
+ * **Two counts, because a subject is several rows.** Every subject now carries
+ * the parts of its class assessment *and* its exam score, so a class of thirty
+ * contributes a hundred and fifty rows. A `count` is the number of grade rows —
+ * the size of the block as stored — and a `studentCount` is how many children
+ * it covers, which is the number the headmaster actually recognises ("thirty
+ * children, Mathematics").
  */
 export const getGradeApprovalQueue = async (schoolId, { term, academicYear } = {}) => {
   const match = {

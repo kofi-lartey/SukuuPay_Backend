@@ -105,11 +105,20 @@ export const generateReportCardPdf = (card, { school, student }) => {
     //
     // The physical terminal report's column layout: Subject, Class Score, Exam
     // Score, Total, Grade, Position. The two maxima are printed under the
-    // column heads ("50" under Class, "100" under Exam) because a parent
+    // column heads ("30" under Class, "70" under Exam) because a parent
     // reading "48" under a column headed only "Exam" cannot tell whether that
-    // is 48 out of 100 or 48 out of 50.
+    // is 48 out of 70 or 48 out of 100.
+    //
+    // The maxima come from the card rather than being written here, because
+    // they are the school's policy: a school running 40/60 prints 40 and 60.
+    // A card compiled before the weighting carried a class score out of 50 and
+    // an exam out of 100, so those are the fallback.
     doc.font("Helvetica-Bold").fontSize(12).fillColor("#0f172a").text("Subjects");
     doc.moveDown(0.3);
+
+    const firstSubject = (card.subjects || [])[0] || {};
+    const classMax = firstSubject.classMaxScore ?? 30;
+    const examMax = firstSubject.examMaxScore ?? 70;
 
     const RIGHT = doc.page.width - 48;
     const COL_GAP = 4;
@@ -145,8 +154,8 @@ export const generateReportCardPdf = (card, { school, student }) => {
     for (const c of cols) doc.text(c.label, c.x, tableTop + 4, { width: c.w, align: c.align });
     // The maxima, under their column heads.
     doc.font("Helvetica").fontSize(7).fillColor("#64748b");
-    doc.text("50", classCol.x, tableTop + 15, { width: classCol.w, align: "right" });
-    doc.text("100", examCol.x, tableTop + 15, { width: examCol.w, align: "right" });
+    doc.text(String(classMax), classCol.x, tableTop + 15, { width: classCol.w, align: "right" });
+    doc.text(String(examMax), examCol.x, tableTop + 15, { width: examCol.w, align: "right" });
     doc.text("100", totalCol.x, tableTop + 15, { width: totalCol.w, align: "right" });
     doc.y = tableTop + 26;
     doc.moveDown(0.4);

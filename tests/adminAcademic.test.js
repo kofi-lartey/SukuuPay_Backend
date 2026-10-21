@@ -98,13 +98,15 @@ describe('Grade — approval workflow shape', () => {
     assert.equal(Grade.schema.path('rejectionReason').options.maxlength, 500);
   });
 
-  test('assessmentType carries the terminal report’s two columns', () => {
-    // A Ghanaian terminal report prints a class score and an exam score, and
-    // nothing else. The old vocabulary (class_test, quiz, assignment) had no
+  test('assessmentType carries the terminal report’s split', () => {
+    // A Ghanaian terminal report prints a class score and an exam score, and the
+    // class score is itself gathered from the parts the school runs — a class
+    // test, group work, homework, class work — plus, for a school that does not
+    // break it down, a single class score as one mark. Anything else has no
     // column to print in.
     assert.deepEqual(
       Grade.schema.path('assessmentType').enumValues,
-      ['class_score', 'exam_score']
+      ['class_score', 'class_test', 'group_work', 'homework', 'class_work', 'exam_score']
     );
   });
 

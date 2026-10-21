@@ -1,6 +1,8 @@
 import { Grade } from "../../models/Grade.js";
 import { Student } from "../../models/studentModel.js";
+import { School } from "../../models/schoolModel.js";
 import { buildSubjectResults, assignSubjectPositions } from "../../utils/subjectResults.js";
+import { getSchoolGrading } from "../../utils/gradingConfig.js";
 
 /**
  * The headmaster's view of a class's marks, for the approval queue.
@@ -72,8 +74,9 @@ export const getAdminClassGrades = async (schoolId, { className, subject, term, 
     .lean();
   const studentById = new Map(students.map((s) => [String(s._id), s]));
 
-  // class ─▶ student ─▶ [ raw grade rows ]. A subject is two rows — a class
-  // score and an exam score — and the pair is what makes a total.
+  // class ─▶ student ─▶ [ raw grade rows ]. A subject is a *set* of rows —
+  // the parts of the class assessment and the exam — and the whole set is
+  // what makes a total.
   const byClass = new Map();
   for (const g of grades) {
     const classKey = String(g.className || "");
@@ -85,13 +88,21 @@ export const getAdminClassGrades = async (schoolId, { className, subject, term, 
     byClass.set(classKey, studentsInClass);
   }
 
+  // The school's grading policy — the 30/70 split and the class-score
+  // breakdown — decides how the rows fold into a class score and a total.
+  const school = await School.findById(schoolId).select("academic.grading").lean();
+  const policy = getSchoolGrading(school);
+
   const rows = [];
   for (const [classKey, studentsInClass] of byClass) {
     // A position is "3rd in English in JHS 2A" — it is only meaningful
     // inside one class, so the ranking is per class and never spans two.
     const resultsByStudent = new Map();
     for (const [studentKey, studentRows] of studentsInClass) {
-      resultsByStudent.set(studentKey, buildSubjectResults(studentRows));
+      resultsByStudent.set(
+        studentKey,
+        buildSubjectResults(studentRows, { grading: policy })
+      );
     }
     const positions = assignSubjectPositions(resultsByStudent);
 
@@ -103,7 +114,7 @@ export const getAdminClassGrades = async (schoolId, { className, subject, term, 
       for (const result of results) {
         const subjectRows = studentRows.filter((r) => r.subject === result.subject);
         const source =
-          subjectRows.find((r) => r.assessmentType === "class_score") || subjectRows[0];
+          subjectRows.find((r) => r.assessmentType === "exam_score") || subjectRows[0];
 
         rows.push({
           studentId: studentKey,
@@ -111,10 +122,17 @@ export const getAdminClassGrades = async (schoolId, { className, subject, term, 
           studentCode: student?.studentId || "",
           className: source?.className || classKey,
           subject: result.subject,
+          // Each part of the class assessment, so the headmaster approves the
+          // marking they are being shown rather than only its sum.
+          classParts: result.classParts,
           classScore: result.classScore,
           classMaxScore: result.classMaxScore,
           examScore: result.examScore,
           examMaxScore: result.examMaxScore,
+          // The two contributions to the total, as the report prints them: the
+          // class score out of 30 and the exam out of 70.
+          classPoints: result.classPoints,
+          examPoints: result.examPoints,
           totalScore: result.totalScore,
           grade: result.grade,
           meaning: result.meaning,
@@ -131,5 +149,14 @@ export const getAdminClassGrades = async (schoolId, { className, subject, term, 
     }
   }
 
-  return { grades: rows };
+  return {
+    grades: rows,
+    grading: {
+      classWeight: policy.classWeight,
+      examWeight: policy.examWeight,
+      classMax: policy.classMax,
+      examMax: policy.examMax,
+      components: policy.components,
+    },
+  };
 };

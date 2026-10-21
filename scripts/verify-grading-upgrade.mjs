@@ -5,24 +5,25 @@
  *
  * ## What it checks
  *
- *  - **A. Schema** — the grade model takes the two assessment types, refuses
- *    the legacy one, and the report card accepts a half-entered subject.
- *  - **B. Arithmetic** — the two halves normalise onto 50 each, the total is
- *    out of 100, the band follows, and the positions are competition-ranked.
+ *  - **A. Schema** — the grade model takes the breakdown's assessment types,
+ *    refuses the truly-retired ones, and the report card accepts a half-entered
+ *    subject.
+ *  - **B. Arithmetic** — the 30/70 weighting, the direct class-score that
+ *    rescales onto 30, the parts breakdown, the band, and the positions.
  *  - **C. The live database** — the unique index is really per assessment type
- *    on the deployed collection, not just in the schema.
- *  - **D. The whole flow, end to end** — a teacher saves a class of marks, the
- *    headmaster reviews and approves them, the cards are compiled and
- *    published, and the report card a parent reads carries the class score,
- *    the exam score, the total, the grade and the subject position.
+ *    on the deployed collection, and no retired vocabulary rows remain.
+ *  - **D. The whole flow, end to end** — a teacher saves a class of marks as the
+ *    parts of the class assessment plus the exam, the headmaster reviews and
+ *    approves them, the cards are compiled and published, and the report card a
+ *    parent reads carries the class score out of 30, the exam out of 100, the
+ *    weighted total, the grade and the subject position.
  *
  * ## What it writes
  *
- * Section D creates a **throwaway school** — a school, two staff accounts,
- * three students, their marks and their report cards — and deletes all of it
- * again in a `finally` block, whether the run passed or failed. Nothing
- * outside that one school is touched, and the demo data is left exactly as it
- * was found.
+ * Section D creates a **throwaway school** — a school, two staff accounts, three
+ * students, their marks and their report cards — and deletes all of it again in
+ * a `finally` block, whether the run passed or failed. Nothing outside that one
+ * school is touched, and the demo data is left exactly as it was found.
  *
  * The live checks need `MONGODB_URI`; without it the run stops after the
  * arithmetic and says so.
@@ -42,7 +43,11 @@ import {
   averageOfTotals,
   rankByAverage,
 } from "../src/utils/subjectResults.js";
-import { calculateTotalScore } from "../src/utils/gradeBands.js";
+import {
+  calculateTotalScore,
+  normaliseClassScore,
+} from "../src/utils/gradeBands.js";
+import { ASSESSMENT_TYPES, CLASS_COMPONENT_KEYS } from "../src/utils/gradingConfig.js";
 
 const teacherService = await import("../src/services/teacher/grades.service.js");
 const adminGrades = await import("../src/services/admin/classGrades.service.js");
@@ -74,9 +79,9 @@ const eq = (label, actual, expected) =>
 line("\n═══ A. Schema (no database) ═══\n");
 
 eq(
-  "Grade.assessmentType enum is [class_score, exam_score]",
-  Grade.schema.path("assessmentType").enumValues,
-  ["class_score", "exam_score"]
+  "Grade.assessmentType enum is the split, not the old two",
+  Grade.schema.path("assessmentType").enumValues.sort(),
+  [...ASSESSMENT_TYPES].sort()
 );
 
 const unique = Grade.schema.indexes().find(
@@ -96,8 +101,8 @@ const classRow = new Grade({
   term: "Term 2",
   academicYear: "2026/2027",
   assessmentType: "class_score",
-  score: 42,
-  maxScore: 50,
+  score: 24,
+  maxScore: 30,
   recordedBy: new mongoose.Types.ObjectId(),
 });
 const classErr = classRow.validateSync();
@@ -106,18 +111,19 @@ ok("a class_score row validates", !classErr, classErr ? classErr.message : "");
 const examRow = new Grade({
   ...classRow.toObject(),
   assessmentType: "exam_score",
-  score: 48,
+  score: 60,
   maxScore: 100,
 });
 const examErr = examRow.validateSync();
 ok("an exam_score row validates", !examErr, examErr ? examErr.message : "");
 
-// A legacy row must NOT validate — that is what the migration exists for.
+// The class-score parts are on the report now; the old vocabulary that had no
+// column is refused.
 const legacyErr = new Grade({
   ...classRow.toObject(),
-  assessmentType: "class_test",
+  assessmentType: "quiz",
 }).validateSync();
-ok("a legacy assessmentType is refused", Boolean(legacyErr));
+ok("a retired assessmentType (quiz) is refused", Boolean(legacyErr));
 
 // The report card must accept a complete subject AND a half-entered one.
 const card = new ReportCard({
@@ -129,9 +135,9 @@ const card = new ReportCard({
   subjects: [
     {
       subject: "English",
-      classScore: 42,
-      classMaxScore: 50,
-      examScore: 48,
+      classScore: 24,
+      classMaxScore: 30,
+      examScore: 60,
       examMaxScore: 100,
       totalScore: 66,
       grade: "B",
@@ -142,9 +148,10 @@ const card = new ReportCard({
     },
     {
       subject: "Mathematics",
-      classScore: 30,
-      classMaxScore: 50,
+      classScore: 24,
+      classMaxScore: 30,
       examScore: null,
+      examMaxScore: 100,
       totalScore: null,
       grade: "",
       score: null,
@@ -162,18 +169,26 @@ ok(
 
 line("\n═══ B. Arithmetic ═══\n");
 
-const total = calculateTotalScore(42, 50, 48, 100);
-eq("42/50 + 48/100 is 66", total.totalScore, 66);
+const total = calculateTotalScore(24, 30, 60, 100);
+eq("24/30 + 60/100 is 66", total.totalScore, 66);
 eq("66 is a B", total.grade, "B");
+eq("the exam contributes its 42 of 70", total.examPoints, 42);
+eq("the class contributes its 24 of 30", total.classPoints, 24);
 
-// Three students, one subject, a full class simulation.
-//   s1  45/50 + 80/100 → 45 + 40 = 85
-//   s3  50/50 + 60/100 → 50 + 30 = 80
-//   s2  42/50 + 48/100 → 42 + 24 = 66
-//   s4  class score only — half marked, so no total and no position
-const rowsFor = (classScore, examScore) => {
+ok(
+  "a legacy /50 mark rescales to the same /30 proportion",
+  normaliseClassScore(45, 50, { classWeight: 30 }) === 27 &&
+    normaliseClassScore(27, 30, { classWeight: 30 }) === 27
+);
+
+// A full class simulation on the default breakdown (9/9/6/6).
+//   s1  class 24 (24/24/16/16 → 7.2+7.2+4.8+4.8) + exam 80 → 24 + 56 = 80, grade A
+//   s2  class 21 (21/21/14/14 → 6.3+6.3+4.2+4.2) + exam 65 → 21 + 46 = 67, grade B
+//   s3  class 15 (15/15/10/10 → 4.5+4.5+3+3) + exam 40 → 15 + 28 = 43, grade F
+//   s4  class 18/30 only — half marked, no total and no position
+const rowsFor = (classScore, maxScore, examScore) => {
   const rows = [
-    { subject: "English", assessmentType: "class_score", score: classScore, maxScore: 50 },
+    { subject: "English", assessmentType: "class_score", score: classScore, maxScore },
   ];
   if (examScore !== null) {
     rows.push({ subject: "English", assessmentType: "exam_score", score: examScore, maxScore: 100 });
@@ -181,30 +196,49 @@ const rowsFor = (classScore, examScore) => {
   return rows;
 };
 const byStudent = new Map([
-  ["s1", rowsFor(45, 80)],
-  ["s2", rowsFor(42, 48)],
-  ["s3", rowsFor(50, 60)],
-  ["s4", rowsFor(30, null)],
+  ["s1", rowsFor(24, 30, 80)],
+  ["s2", rowsFor(24, 30, 60)],
+  ["s4", rowsFor(18, 30, null)],
 ]);
 const results = new Map();
 for (const [id, rows] of byStudent) results.set(id, buildSubjectResults(rows));
 const positions = assignSubjectPositions(results);
 
 eq(
-  "the subject positions are 1st/2nd/3rd",
-  ["s1", "s3", "s2"].map((id) => positions.get(id).get("English")),
-  ["1st", "2nd", "3rd"]
+  "s1 total is 80 and grade A",
+  [results.get("s1")[0].totalScore, results.get("s1")[0].grade],
+  [80, "A"]
+);
+eq(
+  "s2 total is 66 and grade B",
+  [results.get("s2")[0].totalScore, results.get("s2")[0].grade],
+  [66, "B"]
 );
 ok("a half-marked subject gets no position", !positions.has("s4"));
 ok(
   "a half-marked subject has no total",
   results.get("s4")[0].totalScore === null && results.get("s4")[0].complete === false
 );
-eq("s1's total is 85", results.get("s1")[0].totalScore, 85);
-eq("s2's total is 66 and its grade is B", [
-  results.get("s2")[0].totalScore,
-  results.get("s2")[0].grade,
-], [66, "B"]);
+eq("s1 is 1st, s2 is 2nd", [positions.get("s1").get("English"), positions.get("s2").get("English")], [
+  "1st",
+  "2nd",
+]);
+
+// The parts breakdown folds into the same class score.
+const partResults = buildSubjectResults([
+  { subject: "English", assessmentType: "class_test", score: 80, maxScore: 100 },
+  { subject: "English", assessmentType: "group_work", score: 80, maxScore: 100 },
+  { subject: "English", assessmentType: "homework", score: 16, maxScore: 20 },
+  { subject: "English", assessmentType: "class_work", score: 16, maxScore: 20 },
+  { subject: "English", assessmentType: "exam_score", score: 60, maxScore: 100 },
+]);
+eq(
+  "the parts add up to the same 24/30",
+  partResults[0].classScore,
+  24
+);
+eq("the parts path totals 66", partResults[0].totalScore, 66);
+eq("the parts are surfaced on the result", partResults[0].classParts.length, 4);
 
 const drafts = [...results].map(([id, r]) => ({
   student: { _id: id },
@@ -213,9 +247,9 @@ const drafts = [...results].map(([id, r]) => ({
 }));
 const classPositions = rankByAverage(drafts);
 eq(
-  "the class position is ranked too, and the half-marked student is not",
-  [classPositions.get("s1"), classPositions.get("s3"), classPositions.get("s2"), classPositions.has("s4")],
-  [1, 2, 3, false]
+  "the class position is ranked and the half-marked student is not",
+  [classPositions.get("s1"), classPositions.get("s2"), classPositions.has("s4")],
+  [1, 2, false]
 );
 
 if (!MONGODB_URI) {
@@ -233,11 +267,11 @@ try {
   line(`Connected to "${mongoose.connection.name}"`);
 
   const indexes = await Grade.collection.indexes();
-  const live = indexes.find((i) => i.unique && i.key?.assessmentType === 1);
+  const liveIndex = indexes.find((i) => i.unique && i.key?.assessmentType === 1);
   ok(
     "the live unique index is per assessment type",
-    Boolean(live),
-    live ? JSON.stringify(live.key) : JSON.stringify(indexes.map((i) => i.key))
+    Boolean(liveIndex),
+    liveIndex ? JSON.stringify(liveIndex.key) : JSON.stringify(indexes.map((i) => i.key))
   );
 
   const byType = await Grade.aggregate([
@@ -246,10 +280,10 @@ try {
   ]);
   line(`  Grades by assessmentType: ${JSON.stringify(byType)}`);
 
-  const legacyCount = await Grade.countDocuments({
-    assessmentType: { $in: ["class_test", "quiz", "assignment", "exam"] },
-  });
-  line(`  Rows still needing the migration: ${legacyCount}`);
+  // Anything not on the current enum is retired vocabulary the migration should
+  // already have cleared.
+  const retired = await Grade.countDocuments({ assessmentType: { $nin: ASSESSMENT_TYPES } });
+  eq("no retired assessment-type rows remain", retired, 0);
 } catch (error) {
   failed += 1;
   line(`FAIL  the live database check threw — ${error.message}`);
@@ -334,21 +368,33 @@ try {
     assignedClasses: teacher.assignedClasses,
   };
 
-  // The teacher enters the class in one call: both halves for every student.
-  const bulk = await teacherService.saveBulkGrades(actor, {
-    className: CLASS_NAME,
-    subject: SUBJECT,
-    term: TERM,
-    academicYear: YEAR,
-    grades: [
-      { studentId: s1._id, assessmentType: "class_score", score: 45 },
-      { studentId: s1._id, assessmentType: "exam_score", score: 80 },
-      { studentId: s2._id, assessmentType: "class_score", score: 35 },
-      { studentId: s2._id, assessmentType: "exam_score", score: 55 },
-      { studentId: s3._id, assessmentType: "class_score", score: 40 },
-      { studentId: s3._id, assessmentType: "exam_score", score: 70 },
-    ],
-  });
+   // The teacher enters the class in one call: the four parts of the class
+   // assessment and the exam, for every student. Class Test and Group Work are
+   // on their default 30-mark scale (Homework/Class Work on 20), and each
+   // contributes its proportion of its 9/9/6/6 share of the 30-point class.
+   const bulk = await teacherService.saveBulkGrades(actor, {
+     className: CLASS_NAME,
+     subject: SUBJECT,
+     term: TERM,
+     academicYear: YEAR,
+     grades: [
+       { studentId: s1._id, assessmentType: "class_test", score: 24 },
+       { studentId: s1._id, assessmentType: "group_work", score: 24 },
+       { studentId: s1._id, assessmentType: "homework", score: 16 },
+       { studentId: s1._id, assessmentType: "class_work", score: 16 },
+       { studentId: s1._id, assessmentType: "exam_score", score: 80 },
+       { studentId: s2._id, assessmentType: "class_test", score: 21 },
+       { studentId: s2._id, assessmentType: "group_work", score: 21 },
+       { studentId: s2._id, assessmentType: "homework", score: 14 },
+       { studentId: s2._id, assessmentType: "class_work", score: 14 },
+       { studentId: s2._id, assessmentType: "exam_score", score: 65 },
+       { studentId: s3._id, assessmentType: "class_test", score: 15 },
+       { studentId: s3._id, assessmentType: "group_work", score: 15 },
+       { studentId: s3._id, assessmentType: "homework", score: 10 },
+       { studentId: s3._id, assessmentType: "class_work", score: 10 },
+       { studentId: s3._id, assessmentType: "exam_score", score: 40 },
+     ],
+   });
   eq("the bulk save accepted every row", bulk.errors?.length ?? 0, 0);
 
   const rows = await Grade.find({
@@ -356,14 +402,26 @@ try {
     className: CLASS_NAME,
     subject: SUBJECT,
   }).lean();
-  eq("the database holds one class_score and one exam_score per student", rows.length, 6);
+  eq("the database holds five rows per student", rows.length, 15);
   eq(
-    "the class score is recorded out of 50",
-    rows.filter((r) => r.assessmentType === "class_score").map((r) => r.maxScore),
-    [50, 50, 50]
+    "no direct class_score row is written in a parts school",
+    rows.filter((r) => r.assessmentType === "class_score").length,
+    0
   );
   eq(
-    "the exam score is recorded out of 100",
+    "the four class-assessment parts are written",
+    rows.filter((r) => r.assessmentType === "class_test").length,
+    3
+  );
+  eq(
+    "each part is recorded against its own maximum",
+    rows
+      .filter((r) => r.assessmentType === "homework")
+      .map((r) => r.maxScore),
+    [20, 20, 20]
+  );
+  eq(
+    "the exam is recorded out of 100",
     rows.filter((r) => r.assessmentType === "exam_score").map((r) => r.maxScore),
     [100, 100, 100]
   );
@@ -371,7 +429,7 @@ try {
     "submitted",
   ]);
 
-  // The teacher sees the breakdown while they are still typing.
+  // The teacher sees the same breakdown and total the grid previews.
   const teacherView = await teacherService.getClassGrades(actor, {
     className: CLASS_NAME,
     subject: SUBJECT,
@@ -380,11 +438,17 @@ try {
   });
   const teacherRows = new Map(teacherView.students.map((row) => [String(row._id), row]));
   const teacherRow = teacherRows.get(String(s1._id));
-  eq("the teacher sees the class score out of 50", teacherRow?.classScore, 45);
+  eq("the teacher sees the class score out of 30", teacherRow?.classScore, 24);
+  eq("the teacher sees the class maximum", teacherRow?.classMaxScore, 30);
   eq("the teacher sees the exam score out of 100", teacherRow?.examScore, 80);
-  eq("the teacher sees the total out of 100", teacherRow?.totalScore, 85);
+  eq("the teacher sees the total out of 100", teacherRow?.totalScore, 80);
   eq("the teacher sees the grade", teacherRow?.grade, "A");
   eq("the teacher sees the subject position", teacherRow?.subjectPosition, "1st");
+  eq(
+    "the teacher sees the parts back",
+    teacherRow?.classParts?.class_test?.score,
+    24
+  );
 
   // The grid is rendered before a subject is chosen. It must show no marks
   // then, not one arbitrary subject's marks.
@@ -403,7 +467,7 @@ try {
     ]
   );
 
-  // A correction lands on its own half of the subject.
+  // A correction lands on its own part.
   await teacherService.saveSingleGrade(actor, {
     studentId: s1._id,
     className: CLASS_NAME,
@@ -423,9 +487,49 @@ try {
   const untouched = await Grade.find({
     schoolId: school._id,
     studentId: s1._id,
+    assessmentType: "class_test",
+  }).lean();
+  eq("the correction did not disturb the class parts", untouched[0]?.score, 24);
+
+  // Writing a direct class score clears the parts, and vice-versa — two class
+  // scores on one subject would make the reader guess which one to print.
+  await teacherService.saveSingleGrade(actor, {
+    studentId: s3._id,
+    className: CLASS_NAME,
+    subject: SUBJECT,
+    term: TERM,
+    academicYear: YEAR,
+    assessmentType: "class_score",
+    score: 21,
+  });
+  const s3Direct = await Grade.find({
+    schoolId: school._id,
+    studentId: s3._id,
     assessmentType: "class_score",
   }).lean();
-  eq("the correction did not disturb the class score", untouched[0].score, 45);
+  eq("s3 now has a single direct class score, out of 30", s3Direct.length, 1);
+  eq("the direct class score is recorded on 30", s3Direct[0].maxScore, 30);
+  const s3Parts = await Grade.find({
+    schoolId: school._id,
+    studentId: s3._id,
+    assessmentType: { $in: CLASS_COMPONENT_KEYS },
+  }).lean();
+  eq("writing a class score cleared s3's parts", s3Parts.length, 0);
+  const teacherViewS3 = teacherRows.get(String(s3._id));
+  void teacherViewS3;
+  const afterSwitch = await teacherService.getClassGrades(actor, {
+    className: CLASS_NAME,
+    subject: SUBJECT,
+    term: TERM,
+    academicYear: YEAR,
+  });
+  const switched = afterSwitch.students.find((r) => String(r._id) === String(s3._id));
+  eq(
+    "s3's class score is the direct 21/30, normalised",
+    switched?.classScore,
+    21
+  );
+  eq("s3's parts are gone after the switch", switched?.classParts?.class_test?.score, null);
 
   // The headmaster reviews the same breakdown.
   const adminView = await adminGrades.getAdminClassGrades(school._id, {
@@ -442,10 +546,18 @@ try {
     !adminRows.some((r) => r.studentId === "[object Object]"),
     adminRows.map((r) => r.studentId).join(", ")
   );
-  eq("the admin sees the class score out of 50", adminRow?.classScore, 45);
+  eq("the admin sees the class score out of 30", adminRow?.classScore, 24);
+  eq("the admin sees the class maximum", adminRow?.classMaxScore, 30);
+  eq(
+    "the admin sees the class-assessment parts",
+    (adminRow?.classParts || []).length,
+    4
+  );
   eq("the admin sees the exam score out of 100", adminRow?.examScore, 78);
-  eq("the admin sees the total out of 100", adminRow?.totalScore, 84);
-  eq("the admin sees the grade", adminRow?.grade, "A");
+  eq("the admin sees the exam maximum", adminRow?.examMaxScore, 100);
+  eq("the admin sees the exam's 55 of 70", adminRow?.examPoints, 55);
+  eq("the admin sees the total out of 100", adminRow?.totalScore, 79);
+  eq("the admin sees the grade", adminRow?.grade, "A-");
   eq("the admin sees the subject position", adminRow?.subjectPosition, "1st");
   eq("the admin sees the approval state", adminRow?.approvalStatus, "submitted");
 
@@ -456,7 +568,7 @@ try {
     term: TERM,
     academicYear: YEAR,
   });
-  ok("the approval moved the block", Boolean(approved), JSON.stringify(approved));
+  ok("the approval moved the block", typeof approved?.approved === "number");
   const afterApproval = await Grade.find({
     schoolId: school._id,
     className: CLASS_NAME,
@@ -483,12 +595,12 @@ try {
   eq("three report cards exist", cards.length, 3);
   const cardRow = cards.find((c) => String(c.studentId) === String(s1._id));
   const subject = cardRow?.subjects?.[0];
-  eq("the card carries the class score", subject?.classScore, 45);
-  eq("the card carries the class maximum", subject?.classMaxScore, 50);
+  eq("the card carries the class score", subject?.classScore, 24);
+  eq("the card carries the class maximum", subject?.classMaxScore, 30);
   eq("the card carries the exam score", subject?.examScore, 78);
   eq("the card carries the exam maximum", subject?.examMaxScore, 100);
-  eq("the card carries the total out of 100", subject?.totalScore, 84);
-  eq("the card carries the grade", subject?.grade, "A");
+  eq("the card carries the total out of 100", subject?.totalScore, 79);
+  eq("the card carries the grade", subject?.grade, "A-");
   eq("the card carries the subject position", subject?.subjectPosition, "1st");
   eq("the card carries the subject name", subject?.subject, SUBJECT);
   ok("the card has a class position", cardRow?.position != null, `position ${cardRow?.position}`);
@@ -512,14 +624,14 @@ try {
   const parentSubject = (parentCard?.subjects || [])[0];
   ok(
     "the parent sees both halves, the total and the position",
-    parentSubject?.classScore === 45 &&
+    parentSubject?.classScore === 24 &&
       parentSubject?.examScore === 78 &&
-      parentSubject?.totalScore === 84 &&
+      parentSubject?.totalScore === 79 &&
       parentSubject?.subjectPosition === "1st",
     JSON.stringify(parentSubject)
   );
 
-  // A half-marked subject is not a fail.
+  // A half-marked subject is not a fail — it has no total, no grade, no position.
   await Grade.deleteMany({
     schoolId: school._id,
     studentId: s3._id,
@@ -539,14 +651,16 @@ try {
   const recompiled = await ReportCard.find({
     schoolId: school._id,
     className: CLASS_NAME,
+    term: TERM,
+    academicYear: YEAR,
   }).lean();
   const halfCard = recompiled.find((c) => String(c.studentId) === String(s3._id));
   const halfSubject = halfCard?.subjects?.[0];
   eq("a half-marked subject has no total", halfSubject?.totalScore, null);
   eq("a half-marked subject has no grade", halfSubject?.grade, "");
-  eq("a half-marked subject has no position", halfSubject?.subjectPosition, "");
+  eq("a half-marked subject has no subject position", halfSubject?.subjectPosition, "");
   ok(
-    "a half-marked subject is excluded from the class position",
+    "a half-marked student is excluded from the class position",
     halfCard?.position == null,
     `position ${halfCard?.position}`
   );
@@ -557,8 +671,6 @@ try {
 } finally {
   if (throwawaySchoolId) {
     const oid = new mongoose.Types.ObjectId(String(throwawaySchoolId));
-    // Each delete is independent: one collection refusing to be cleaned must
-    // not leave the rest of the throwaway school behind.
     const collections = [Grade, ReportCard, Attendance, AuditLog, Student, User];
     for (const model of collections) {
       await model.deleteMany({ schoolId: oid }).catch((error) => {

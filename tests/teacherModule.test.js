@@ -77,16 +77,18 @@ describe('teacher validation — required inputs', () => {
     }).error);
   });
 
-  test('a bulk grade save accepts 400 rows and refuses 401', () => {
-    // A subject is now two rows — a class score and an exam score — so a class
-    // of two hundred students needs four hundred rows in one call. The ceiling
-    // is raised to match, and 401 is still refused.
+  test('a bulk grade save accepts a full class and refuses one over the limit', () => {
+    // A subject is now several rows per student — a class test, group work,
+    // homework, class work, and the exam — so a class of two hundred students
+    // needs up to a thousand rows in one call. The ceiling is raised to match,
+    // and one row over is still refused.
     // 24 hex characters, the ObjectId length the schema demands.
-    const rows = Array.from({ length: 400 }, (_, i) => ({
+    const makeRow = (i) => ({
       studentId: `64b7f9c2e1a2b3c4d5e6f7${String(i % 100).padStart(2, '0')}`,
-      assessmentType: i % 2 === 0 ? 'class_score' : 'exam_score',
+      assessmentType: ['class_test', 'group_work', 'homework', 'class_work', 'exam_score'][i % 5],
       score: 50,
-    }));
+    });
+    const rows = Array.from({ length: 1000 }, (_, i) => makeRow(i));
     assert.ok(validate(saveBulkGradesSchema, {
       className: 'JHS 2A',
       subject: 'Mathematics',
@@ -94,10 +96,7 @@ describe('teacher validation — required inputs', () => {
       grades: rows,
     }).error === undefined);
 
-    const tooMany = [
-      ...rows,
-      { studentId: '64b7f9c2e1a2b3c4d5e6f7aa', assessmentType: 'class_score', score: 50 },
-    ];
+    const tooMany = [...rows, makeRow(1000)];
     assert.ok(validate(saveBulkGradesSchema, {
       className: 'JHS 2A',
       subject: 'Mathematics',
@@ -119,16 +118,25 @@ describe('teacher validation — required inputs', () => {
   });
 
   test('a retired assessment type is refused', () => {
-    // The old vocabulary (class_test, quiz, assignment) is gone: the terminal
-    // report has two columns and a mark that is in neither has nowhere to
-    // print.
-    for (const assessmentType of ['class_test', 'quiz', 'assignment', 'exam']) {
+    // The class-score parts (class_test, group_work, homework, class_work) and the
+    // whole-class class_score are all on the report; the old vocabulary that had
+    // no column to print in is refused.
+    for (const assessmentType of ['quiz', 'assignment', 'exam', 'final']) {
       assert.ok(validate(saveBulkGradesSchema, {
         className: 'JHS 2A',
         subject: 'Mathematics',
         term: 'Term 2',
         grades: [{ studentId: '64b7f9c2e1a2b3c4d5e6f708', assessmentType, score: 42 }],
       }).error, `${assessmentType} should be refused`);
+    }
+    // And the class-score parts are accepted, not retired.
+    for (const assessmentType of ['class_test', 'group_work', 'homework', 'class_work', 'class_score', 'exam_score']) {
+      assert.ok(!validate(saveBulkGradesSchema, {
+        className: 'JHS 2A',
+        subject: 'Mathematics',
+        term: 'Term 2',
+        grades: [{ studentId: '64b7f9c2e1a2b3c4d5e6f708', assessmentType, score: 42 }],
+      }).error, `${assessmentType} should be accepted`);
     }
   });
 });

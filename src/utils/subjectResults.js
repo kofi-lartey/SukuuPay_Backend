@@ -10,22 +10,27 @@
  *
  * ## The pieces
  *
- *  - `buildSubjectResults` folds one student's raw grade rows (a `class_score`
- *    row and an `exam_score` row per subject) into one result per subject.
+ *  - `buildSubjectResults` folds one student's raw grade rows (the class-score
+ *    parts, the exam score, and the optional direct class score) into one
+ *    result per subject.
  *  - `assignSubjectPositions` ranks the class within each subject.
  *  - `rankByAverage` ranks the class overall, by the average of the subject
  *    totals, for the "Position: 4 of 30" line.
  *
  * ## Incomplete subjects
  *
- * A subject with only one of its two halves recorded is **incomplete**, and it
- * says so: `complete: false`, no total, no grade. This is not a nicety. A
- * teacher who has entered the class scores but not yet the exam scores would
- * otherwise produce report cards reading "Total 42, Grade A" for every child
- * in the class — a number that looks like a result and is not one, published to
- * parents. An incomplete subject is excluded from the average and from the
- * ranking for the same reason: a student is not "first" because the marks that
- * would have put them second are missing.
+ * A subject whose class assessment or whose exam is missing is **incomplete**,
+ * and it says so: `complete: false`, no total, no grade. This is not a
+ * nicety. A teacher who has entered the class scores but not yet the exam
+ * scores would otherwise produce report cards reading "Total 42, Grade A" for
+ * every child in the class — a number that looks like a result and is not one,
+ * published to parents. An incomplete subject is excluded from the average and
+ * from the ranking for the same reason: a student is not "first" because the
+ * marks that would have put them second are missing.
+ *
+ * A class assessment is itself incomplete unless *every* part of the school's
+ * breakdown is in. A missing part is not a zero: inventing the mark would be a
+ * worse lie than printing nothing.
  *
  * ## Ranking
  *
@@ -37,11 +42,13 @@
  */
 import {
   calculateTotalScore,
+  calculateClassScore,
+  normaliseClassScore,
   gradeForScore,
   meaningForGrade,
-  CLASS_SCORE_MAX,
   EXAM_SCORE_MAX,
 } from "./gradeBands.js";
+import { normalizeGradingConfig, partsForSubject } from "./gradingConfig.js";
 
 /**
  * "1st", "2nd", "3rd", "4th" — the ordinal a report card prints.
@@ -62,15 +69,23 @@ export const positionLabel = (rank) => {
 /**
  * Fold one student's raw grade rows into one result per subject.
  *
- * `rows` are the raw `Grade` documents for a single student: a `class_score`
- * row and an `exam_score` row per subject. A subject with only one of the two
- * is returned `complete: false` — see the note at the top of this file.
+ * `rows` are the raw `Grade` documents for a single student: the class-score
+ * parts (a class test, group work, homework, class work), the exam score,
+ * and — for a school that does not break the class assessment down — a
+ * single `class_score` row, per subject. A subject whose class assessment or
+ * whose exam is missing is returned `complete: false` — see the note at the
+ * top of this file.
+ *
+ * `grading` is the school's policy (`utils/gradingConfig.js`): the 30/70
+ * split and the class-score breakdown. It is an argument rather than a
+ * constant because the split is a school policy, not a law of the country.
  *
  * The results come back sorted by subject, because that is the order a report
  * card lists them in and a stable order keeps two compiles of the same class
  * byte-identical.
  */
-export const buildSubjectResults = (rows = []) => {
+export const buildSubjectResults = (rows = [], { grading } = {}) => {
+  const policy = normalizeGradingConfig(grading);
   const bySubject = new Map();
 
   for (const row of rows) {
@@ -87,27 +102,83 @@ export const buildSubjectResults = (rows = []) => {
     const classRow = bucket.class_score;
     const examRow = bucket.exam_score;
 
-    const classScore = classRow ? Number(classRow.score) : null;
-    const classMaxScore = classRow
-      ? Number(classRow.maxScore) || CLASS_SCORE_MAX
-      : CLASS_SCORE_MAX;
+    // The class score, out of the class weight (30 by default). It comes from
+    // the parts when the school runs a breakdown, and from a direct class
+    // score row when it does not.
+    const parts = partsForSubject(bucket, policy.components);
+    const partsUsed = parts.filter((part) => part.score !== null);
+
+    let classScore = null;
+    let classMaxScore = policy.classMax;
+    let classComplete = false;
+
+    if (partsUsed.length) {
+      const folded = calculateClassScore(parts);
+      classComplete = folded.complete;
+      // The class score is only a result when *every* part is in — an
+      // incomplete breakdown prints nothing, not a partial sum, on the report
+      // card. The teacher's grid still previews the partial sum live; this is
+      // the compile-time fold that becomes the card.
+      classScore = folded.complete ? folded.classScore : null;
+    } else if (classRow) {
+      // A direct class score (one a school recorded as a single mark). Its raw
+      // mark is rescaled onto the class weight so a legacy /50 mark reads as the
+      // right /30 value without a second data migration — only the proportion is
+      // preserved, so 45/50 and 27/30 contribute identically to the total.
+      classScore = normaliseClassScore(classRow.score, classRow.maxScore, {
+        classWeight: policy.classWeight,
+      });
+      classMaxScore = policy.classMax;
+      classComplete = true;
+    }
+
     const examScore = examRow ? Number(examRow.score) : null;
     const examMaxScore = examRow
-      ? Number(examRow.maxScore) || EXAM_SCORE_MAX
-      : EXAM_SCORE_MAX;
+      ? Number(examRow.maxScore) || policy.examMax
+      : policy.examMax;
 
-    const complete = classRow != null && examRow != null;
+    // Both the class assessment and the exam have to be in for the subject to
+    // be a result — and the class assessment is only in when *every* part of
+    // the breakdown is.
+    const complete = classComplete && classScore !== null && examScore !== null;
 
-    const { totalScore, grade, meaning } = complete
-      ? calculateTotalScore(classScore, classMaxScore, examScore, examMaxScore)
-      : { totalScore: null, grade: "", meaning: "" };
+    const { totalScore, grade, meaning, classPoints, examPoints } = complete
+      ? calculateTotalScore(
+          classScore,
+          classMaxScore,
+          examScore,
+          examMaxScore,
+          policy
+        )
+      : {
+          totalScore: null,
+          grade: "",
+          meaning: "",
+          classPoints: null,
+          examPoints: null,
+        };
 
     results.push({
       subject,
       classScore,
       classMaxScore,
+      // The parts the breakdown was folded from, so the headmaster's preview
+      // can show what was actually marked and not only the sum.
+      classParts: partsUsed.length
+        ? parts.map((part) => ({
+            key: part.key,
+            label: part.label,
+            weight: part.weight,
+            score: part.score,
+            maxScore: part.maxScore,
+          }))
+        : [],
       examScore,
       examMaxScore,
+      // The two contributions to the total, as the report prints them: the
+      // class score out of 30 and the exam out of 70.
+      classPoints,
+      examPoints,
       totalScore,
       grade,
       meaning,
@@ -218,15 +289,17 @@ export const averageOfTotals = (results = []) => {
  * The teacher's own compile path carries its marks in the request body rather
  * than reading them from the grade book, and its rows come in two shapes:
  *
- *  - the new breakdown — `{ subject, classScore, examScore }` — which is
- *    folded exactly as a pair of raw grade rows would be;
+ *  - the breakdown — `{ subject, classScore, examScore }` — where the class
+ *    score is out of the class weight (30) and the exam out of its own
+ *    maximum (100), folded exactly as the raw grade rows would be;
  *  - the pre-split single figure — `{ subject, score, maxScore }` — which is
  *    already a total and is taken as one.
  *
- * A row with only one half of the new breakdown is incomplete, on the same
- * terms as everywhere else: no total, no grade, no position.
+ * A row with only one half of the breakdown is incomplete, on the same terms
+ * as everywhere else: no total, no grade, no position.
  */
-export const buildSubjectResultsFromPayload = (rows = []) => {
+export const buildSubjectResultsFromPayload = (rows = [], { grading } = {}) => {
+  const policy = normalizeGradingConfig(grading);
   const results = [];
 
   for (const row of rows) {
@@ -235,16 +308,19 @@ export const buildSubjectResultsFromPayload = (rows = []) => {
     const hasBreakdown = row.classScore != null || row.examScore != null;
 
     if (!hasBreakdown) {
-      // The pre-split shape: one figure that is already the total.
+      // The pre-split shape: one figure that is already a total.
       const score = Number(row.score);
-      const maxScore = Number(row.maxScore) || EXAM_SCORE_MAX;
+      const maxScore = Number(row.maxScore) || policy.examMax;
       const grade = gradeForScore(score, maxScore);
       results.push({
         subject: row.subject,
         classScore: null,
-        classMaxScore: CLASS_SCORE_MAX,
+        classMaxScore: policy.classMax,
+        classParts: [],
         examScore: null,
-        examMaxScore: EXAM_SCORE_MAX,
+        examMaxScore: policy.examMax,
+        classPoints: null,
+        examPoints: null,
         totalScore: score,
         grade,
         meaning: meaningForGrade(grade),
@@ -254,21 +330,36 @@ export const buildSubjectResultsFromPayload = (rows = []) => {
     }
 
     const classScore = row.classScore != null ? Number(row.classScore) : null;
-    const classMaxScore = Number(row.classMaxScore) || CLASS_SCORE_MAX;
+    const classMaxScore = Number(row.classMaxScore) || policy.classMax;
     const examScore = row.examScore != null ? Number(row.examScore) : null;
-    const examMaxScore = Number(row.examMaxScore) || EXAM_SCORE_MAX;
+    const examMaxScore = Number(row.examMaxScore) || policy.examMax;
     const complete = classScore != null && examScore != null;
 
-    const { totalScore, grade, meaning } = complete
-      ? calculateTotalScore(classScore, classMaxScore, examScore, examMaxScore)
-      : { totalScore: null, grade: "", meaning: "" };
+    const { totalScore, grade, meaning, classPoints, examPoints } = complete
+      ? calculateTotalScore(
+          classScore,
+          classMaxScore,
+          examScore,
+          examMaxScore,
+          policy
+        )
+      : {
+          totalScore: null,
+          grade: "",
+          meaning: "",
+          classPoints: null,
+          examPoints: null,
+        };
 
     results.push({
       subject: row.subject,
       classScore,
       classMaxScore,
+      classParts: [],
       examScore,
       examMaxScore,
+      classPoints,
+      examPoints,
       totalScore,
       grade,
       meaning,

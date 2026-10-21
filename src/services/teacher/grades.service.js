@@ -5,34 +5,28 @@ import { resolveTerm } from "../parent/portalContext.js";
 import {
   gradeForScore,
   calculateTotalScore,
-  CLASS_SCORE_MAX,
+  calculateClassScore,
+  normaliseClassScore,
   EXAM_SCORE_MAX,
 } from "../../utils/gradeBands.js";
 import {
   buildSubjectResults,
   assignSubjectPositions,
 } from "../../utils/subjectResults.js";
+import {
+  ASSESSMENT_TYPES,
+  CLASS_COMPONENT_KEYS,
+  getSchoolGrading,
+  normalizeGradingConfig,
+  partsForSubject,
+} from "../../utils/gradingConfig.js";
 import { initialsOf } from "./classes.service.js";
 import { log as auditLog } from "../../utils/auditService.js";
 import { AUDIT_ACTIONS } from "../../config/constants.js";
 import { resolveSchoolAcademicYear } from "../../utils/termDates.js";
 import ApiError from "../../utils/ApiError.js";
 
-/**
- * The two halves of a Ghanaian terminal report row.
- *
- * A subject is two marks on a Ghanaian report card: the **class score**
- * (continuous assessment, out of 50) and the **exam score** (out of 100).
- * The teacher enters both; the total, the grade and the subject position are
- * the server's arithmetic.
- */
-export const ASSESSMENT_TYPES = ["class_score", "exam_score"];
-
-/** The mark each assessment type is recorded against unless the school says otherwise. */
-const DEFAULT_MAX_SCORE = {
-  class_score: CLASS_SCORE_MAX,
-  exam_score: EXAM_SCORE_MAX,
-};
+export { ASSESSMENT_TYPES };
 
 /** The widest a school may widen a mark, so a stray `maxScore: 100000` is refused. */
 const MAX_ALLOWED_SCORE = 200;
@@ -41,13 +35,18 @@ const MAX_ALLOWED_SCORE = 200;
  * `GET /teacher/grades?className=JHS 2A&term=Term 2&subject=Mathematics`
  *
  * The class's grade book for one subject, formatted so the bulk entry grid
- * renders every student and their two marks in one pass.
+ * renders every student and their marks in one pass.
  *
  * Every student in the class appears, including those with no score yet, and a
  * student with no score reads `classScore: null` rather than being omitted.
  * That is the whole point: a grid that reflows as marks are entered loses a
  * teacher's place mid-entry, and a missing row reads as "this student is not
  * in the class" when what it means is "this student has not been assessed".
+ *
+ * The response carries the school's **grading policy** — the 30/70 split and
+ * the class-score breakdown — because the grid's columns are the policy's
+ * columns. A school that does not run a group project must not be shown a
+ * group-work box, and a school that runs 40/60 must see its own numbers.
  *
  * The total and grade are computed here as well as at compile time, so the
  * teacher sees the same number the report card will carry while they are
@@ -78,6 +77,7 @@ export const getClassGrades = async (user, { className, term, subject, academicY
   // than an error, so the page never has a "pick a subject" failure state.
   const resolvedTerm = resolveTerm(term, school);
   const resolvedYear = academicYear || resolveSchoolAcademicYear(school);
+  const policy = getSchoolGrading(school);
 
   const filter = {
     schoolId: user.schoolId,
@@ -100,8 +100,8 @@ export const getClassGrades = async (user, { className, term, subject, academicY
         .lean()
     : [];
 
-  // student ─▶ assessmentType. One row per half of the subject, keyed so the
-  // pair can be read back together.
+  // student ─▶ assessmentType. One row per part of the subject, keyed so the
+  // whole set can be read back together.
   const byStudent = new Map();
   for (const g of grades) {
     const key = String(g.studentId);
@@ -111,16 +111,13 @@ export const getClassGrades = async (user, { className, term, subject, academicY
   }
 
   // Where each student came in this subject — the same competition ranking the
-  // report card carries, computed from the same two halves, so the teacher
-  // reads the number the card will print before anything is approved.
+  // report card carries, computed from the same marks, so the teacher reads
+  // the number the card will print before anything is approved.
   const resultsByStudent = new Map();
   for (const [key, bucket] of byStudent) {
     resultsByStudent.set(
       key,
-      buildSubjectResults([
-        ...(bucket.class_score ? [bucket.class_score] : []),
-        ...(bucket.exam_score ? [bucket.exam_score] : []),
-      ])
+      buildSubjectResults(Object.values(bucket), { grading: policy })
     );
   }
   const positions = assignSubjectPositions(resultsByStudent);
@@ -130,28 +127,53 @@ export const getClassGrades = async (user, { className, term, subject, academicY
     term: resolvedTerm,
     academicYear: resolvedYear,
     subject: subject || null,
-    // The two marks a Ghanaian terminal report is built from. They are the
-    // report's own maxima, not a school's discretion: the class score is out
-    // of 50 and the exam out of 100.
-    maxClassScore: CLASS_SCORE_MAX,
-    maxExamScore: EXAM_SCORE_MAX,
+    // The policy the grid's columns are built from: the 30/70 split and the
+    // parts the class assessment is made of.
+    grading: {
+      classWeight: policy.classWeight,
+      examWeight: policy.examWeight,
+      classMax: policy.classMax,
+      examMax: policy.examMax,
+      components: policy.components,
+    },
     students: students.map((s) => {
       const bucket = byStudent.get(String(s._id)) || {};
-      const classRow = bucket.class_score;
       const examRow = bucket.exam_score;
+      const classRow = bucket.class_score;
 
-      const classScore = classRow ? classRow.score : null;
+      // The class score, from the parts when the school runs a breakdown and
+      // from the direct class-score row when it does not.
+      const parts = partsForSubject(bucket, policy.components);
+      const partsUsed = parts.filter((part) => part.score !== null);
+      const folded = partsUsed.length
+        ? calculateClassScore(parts)
+        : classRow
+          ? (() => {
+              const rawMax = Number(classRow.maxScore) || policy.classMax;
+              return {
+                classScore: normaliseClassScore(classRow.score, rawMax, policy),
+                classMax: policy.classMax,
+                complete: true,
+              };
+            })()
+          : { classScore: null, classMax: policy.classMax, complete: false };
+
+      const classScore = folded.classScore;
+      const classMaxScore = policy.classMax;
       const examScore = examRow ? examRow.score : null;
-      const complete = classRow != null && examRow != null;
+      const examMaxScore = examRow ? examRow.maxScore || policy.examMax : policy.examMax;
 
-      const { totalScore, grade, meaning } = complete
+      const complete = folded.complete && classScore !== null && examScore !== null;
+
+      const { totalScore, grade, meaning, examPoints } = complete
         ? calculateTotalScore(
             classScore,
-            classRow.maxScore || CLASS_SCORE_MAX,
+            classMaxScore,
             examScore,
-            examRow.maxScore || EXAM_SCORE_MAX
+            examMaxScore,
+            policy
           )
-        : { totalScore: null, grade: null, meaning: null };
+        : { totalScore: null, grade: null, meaning: null, examPoints: null };
 
       const positionsForStudent = positions.get(String(s._id)) || new Map();
 
@@ -160,16 +182,34 @@ export const getClassGrades = async (user, { className, term, subject, academicY
         studentId: s.studentId,
         studentName: s.studentName,
         initials: initialsOf(s.studentName),
+        // Each part of the class assessment, keyed by its assessment type, so
+        // the grid can rehydrate one box per part.
+        classParts: Object.fromEntries(
+          policy.components.map((part) => {
+            const row = bucket[part.key];
+            return [
+              part.key,
+              row
+                ? { score: row.score, maxScore: row.maxScore || part.maxScore }
+                : { score: null, maxScore: part.maxScore },
+            ];
+          })
+        ),
         classScore,
+        classMaxScore,
         examScore,
+        examMaxScore,
+        // The exam's points in the total — out of 70 — which is the figure the
+        // report card prints beside the class score.
+        examPoints,
         totalScore,
         grade,
         meaning,
-        // Whether the pair is complete enough to be banded. The grid shows a
+        // Whether the subject is complete enough to be banded. The grid shows a
         // dash rather than a grade until it is.
         complete,
         // Where the student came in this subject, or "" while the subject is
-        // incomplete — a half-marked pair has no total to rank on.
+        // incomplete — a partly marked subject has no total to rank on.
         subjectPosition: positionsForStudent.get(subject) || "",
       };
     }),
@@ -211,27 +251,61 @@ export const getStudentGrades = async (user, studentId, { term, academicYear } =
     bySubject.set(g.subject, bucket);
   }
 
-  const subjects = [...bySubject.entries()].map(([subject, bucket]) => {
-    const classRow = bucket.class_score;
-    const examRow = bucket.exam_score;
-    const complete = classRow != null && examRow != null;
+  const policy = getSchoolGrading(school);
 
-    const { totalScore, grade, meaning } = complete
+  const subjects = [...bySubject.entries()].map(([subject, bucket]) => {
+    const examRow = bucket.exam_score;
+    const classRow = bucket.class_score;
+    const parts = partsForSubject(bucket, policy.components);
+    const partsUsed = parts.filter((part) => part.score !== null);
+    const folded = partsUsed.length
+      ? calculateClassScore(parts)
+      : classRow
+        ? {
+            classScore: Number(classRow.score),
+            classMax: Number(classRow.maxScore) || policy.classMax,
+            complete: true,
+          }
+        : { classScore: null, classMax: policy.classMax, complete: false };
+
+    const classScore = folded.classScore;
+    const classMaxScore = folded.classMax;
+    const examScore = examRow ? examRow.score : null;
+    const examMaxScore = examRow ? examRow.maxScore || policy.examMax : policy.examMax;
+    const complete = folded.complete && classScore !== null && examScore !== null;
+
+    const { totalScore, grade, meaning, examPoints } = complete
       ? calculateTotalScore(
-          classRow.score,
-          classRow.maxScore || CLASS_SCORE_MAX,
-          examRow.score,
-          examRow.maxScore || EXAM_SCORE_MAX
+          classScore,
+          classMaxScore,
+          examScore,
+          examMaxScore,
+          policy
         )
-      : { totalScore: null, grade: "", meaning: "" };
+      : { totalScore: null, grade: "", meaning: "", examPoints: null };
 
     return {
       subject,
-      classScore: classRow ? classRow.score : null,
-      examScore: examRow ? examRow.score : null,
+      classParts: Object.fromEntries(
+        policy.components.map((part) => {
+          const row = bucket[part.key];
+          return [
+            part.key,
+            row
+              ? { score: row.score, maxScore: row.maxScore || part.maxScore }
+              : { score: null, maxScore: part.maxScore },
+          ];
+        })
+      ),
+      classScore,
+      classMaxScore,
+      examScore,
+      examMaxScore,
+      examPoints,
       totalScore,
       grade,
       meaning,
+      complete,
     };
   });
 
@@ -241,6 +315,13 @@ export const getStudentGrades = async (user, studentId, { term, academicYear } =
     studentClass: student.studentClass,
     term: resolvedTerm,
     academicYear: resolvedYear,
+    grading: {
+      classWeight: policy.classWeight,
+      examWeight: policy.examWeight,
+      classMax: policy.classMax,
+      examMax: policy.examMax,
+      components: policy.components,
+    },
     subjects,
   };
 };
@@ -257,13 +338,20 @@ const readScore = (score, maxScore) => {
 /**
  * The mark a row is recorded against.
  *
- * The server owns the default — a class score is out of 50 and an exam score
- * out of 100 — and a school that marks its continuous assessment differently
+ * The server owns the default — a class score is out of the class weight, an
+ * exam out of 100, and each part of the class assessment out of the maximum
+ * the school marked it against — and a school that marks a part differently
  * may override it per row, bounded so a stray value cannot turn a mark into a
  * percentage of nothing.
  */
-const resolveMaxScore = (assessmentType, requested) => {
-  const fallback = DEFAULT_MAX_SCORE[assessmentType] || EXAM_SCORE_MAX;
+const resolveMaxScore = (assessmentType, requested, policy) => {
+  const fallback =
+    assessmentType === "class_score"
+      ? policy.classMax
+      : assessmentType === "exam_score"
+        ? policy.examMax
+        : policy.components.find((part) => part.key === assessmentType)?.maxScore ||
+          policy.examMax;
   const numeric = Number(requested);
   if (!Number.isFinite(numeric) || numeric < 1) return fallback;
   return Math.min(numeric, MAX_ALLOWED_SCORE);
@@ -304,6 +392,11 @@ const resolveWriteScope = async (user, { className, term, academicYear }) => {
 
   return {
     school,
+    // The school's grading policy: the 30/70 split and the class-score
+    // breakdown. The maxima a mark is recorded against come from it, so a
+    // class test marked out of 20 and one marked out of 100 are both accepted
+    // as the school meant them.
+    policy: getSchoolGrading(school),
     className,
     term: resolveTerm(term, school),
     academicYear: academicYear || resolveSchoolAcademicYear(school),
@@ -321,6 +414,47 @@ const classStudentIds = async (schoolId, className) => {
     .lean();
 
   return new Set(students.map((s) => String(s._id)));
+};
+
+/**
+ * Clear whichever of the two ways of recording a class score is not being
+ * used.
+ *
+ * A subject's class score is either a direct `class_score` row (a school that
+ * does not break the class assessment down) or the set of parts that make it
+ * up (a class test, group work, homework, class work). Both at once would
+ * leave two different class scores on the book, and the report would have to
+ * pick one.
+ */
+const clearTheOtherClassScore = async ({
+  schoolId,
+  studentId,
+  className,
+  subject,
+  term,
+  academicYear,
+  assessmentType,
+}) => {
+  const scope = {
+    schoolId,
+    studentId,
+    className,
+    subject,
+    term,
+    academicYear,
+  };
+
+  if (assessmentType === "class_score") {
+    await Grade.deleteMany({
+      ...scope,
+      assessmentType: { $in: CLASS_COMPONENT_KEYS },
+    });
+    return;
+  }
+
+  if (CLASS_COMPONENT_KEYS.includes(assessmentType)) {
+    await Grade.deleteMany({ ...scope, assessmentType: "class_score" });
+  }
 };
 
 /**
@@ -371,7 +505,7 @@ export const saveSingleGrade = async (user, payload) => {
     );
   }
 
-  const effectiveMax = resolveMaxScore(assessmentType, maxScore);
+  const effectiveMax = resolveMaxScore(assessmentType, maxScore, scope.policy);
 
   // Never trust a client-supplied score: the bound is the server's, not the
   // form's, and a mark above the maximum would silently become a 100+% grade.
@@ -379,6 +513,21 @@ export const saveSingleGrade = async (user, payload) => {
   if (!read.ok) {
     throw new ApiError(read.reason, 400, "INVALID_SCORE");
   }
+
+  // The class score and the breakdown are two ways of saying the same thing,
+  // so only one of them may be on the book. Writing a part clears any direct
+  // class score, and writing a direct class score clears the parts — otherwise
+  // the subject would have two class scores and the reader would have to guess
+  // which one the report meant.
+  await clearTheOtherClassScore({
+    schoolId: user.schoolId,
+    studentId,
+    className: scope.className,
+    subject,
+    term: scope.term,
+    academicYear: scope.academicYear,
+    assessmentType,
+  });
 
   const grade = await Grade.findOneAndUpdate(
     {
@@ -437,9 +586,11 @@ export const saveSingleGrade = async (user, payload) => {
  * teacher with thirty students on a flaky connection should not end the term
  * with a half-saved column.
  *
- * The payload is a *mix* of `class_score` and `exam_score` rows: the teacher
- * types both marks for the class and sends them in one call, and each row
- * carries its own `assessmentType` so the server knows which half of the
+ * The payload is a *mix* of rows: the parts of the class assessment (a class
+ * test, group work, homework, class work), the exam score, and — for a school
+ * that does not break the class assessment down — a single class score. The
+ * teacher types every mark for the class and sends them in one call, and each
+ * row carries its own `assessmentType` so the server knows which part of the
  * terminal report it is writing.
  *
  * `bulkWrite` with `{ ordered: false }`: a bad score fails *that row* and the
@@ -466,6 +617,10 @@ export const saveBulkGrades = async (user, payload) => {
 
   const errors = [];
   const operations = [];
+  // Which kind of class score this batch is recording, so the other kind can
+  // be cleared once the write is done.
+  const wroteClassScore = new Set();
+  const wroteComponents = new Set();
 
   for (const row of grades) {
     if (!row?.studentId) {
@@ -488,12 +643,19 @@ export const saveBulkGrades = async (user, payload) => {
       continue;
     }
 
-    const effectiveMax = resolveMaxScore(row.assessmentType, row.maxScore);
+    const effectiveMax = resolveMaxScore(row.assessmentType, row.maxScore, scope.policy);
 
     const read = readScore(row.score, effectiveMax);
     if (!read.ok) {
       errors.push({ studentId: row.studentId, reason: read.reason });
       continue;
+    }
+
+    // Note which kind of class score this batch is recording, so the other
+    // kind can be cleared once the write is done.
+    if (row.assessmentType === "class_score") wroteClassScore.add(String(row.studentId));
+    if (CLASS_COMPONENT_KEYS.includes(row.assessmentType)) {
+      wroteComponents.add(String(row.studentId));
     }
 
     operations.push({
@@ -506,8 +668,8 @@ export const saveBulkGrades = async (user, payload) => {
           term: scope.term,
           academicYear: scope.academicYear,
           // The assessment type is part of the upsert key: a student's class
-          // score and their exam score are two rows, and correcting one must
-          // never land on the other.
+          // test and their exam are two rows, and correcting one must never
+          // land on the other.
           assessmentType: row.assessmentType,
         },
         update: {
@@ -537,6 +699,32 @@ export const saveBulkGrades = async (user, payload) => {
   let result = { upsertedCount: 0, modifiedCount: 0 };
   if (operations.length) {
     result = await Grade.bulkWrite(operations, { ordered: false });
+  }
+
+  // A class score and its breakdown are two ways of saying the same thing, so
+  // only one of them may be on the book. Writing the parts clears any direct
+  // class score, and writing a direct class score clears the parts.
+  for (const studentKey of wroteComponents) {
+    await Grade.deleteMany({
+      schoolId: user.schoolId,
+      studentId: studentKey,
+      className: scope.className,
+      subject,
+      term: scope.term,
+      academicYear: scope.academicYear,
+      assessmentType: "class_score",
+    });
+  }
+  for (const studentKey of wroteClassScore) {
+    await Grade.deleteMany({
+      schoolId: user.schoolId,
+      studentId: studentKey,
+      className: scope.className,
+      subject,
+      term: scope.term,
+      academicYear: scope.academicYear,
+      assessmentType: { $in: CLASS_COMPONENT_KEYS },
+    });
   }
 
   await auditLog({

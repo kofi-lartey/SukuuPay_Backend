@@ -1,8 +1,10 @@
 import { ReportCard } from "../../models/ReportCard.js";
 import { Student } from "../../models/studentModel.js";
+import { School } from "../../models/schoolModel.js";
 import { Attendance } from "../../models/Attendance.js";
 import { log as auditLog } from "../../utils/auditService.js";
 import { gradeForScore } from "../../utils/gradeBands.js";
+import { getSchoolGrading } from "../../utils/gradingConfig.js";
 import {
   buildSubjectResultsFromPayload,
   assignSubjectPositions,
@@ -98,13 +100,18 @@ export const compileClassReportCards = async (schoolId, userId, payload) => {
     attendanceByStudent.set(key, tally);
   }
 
+  // The school's grading policy — the 30/70 split — decides how a class
+  // score and an exam mark become a total, and the card is written from it.
+  const school = await School.findById(schoolId).select("academic.grading").lean();
+  const policy = getSchoolGrading(school);
+
   // student ─▶ subject breakdown, and the class ranking within each subject.
   const subjectResultsByStudent = new Map();
   const rowsByStudent = new Map();
   const drafts = students.map((student) => {
     const key = String(student._id);
     const rows = scores[key] || [];
-    const results = buildSubjectResultsFromPayload(rows);
+    const results = buildSubjectResultsFromPayload(rows, { grading: policy });
     subjectResultsByStudent.set(key, results);
     // The payload rows again, keyed by subject, so a remark and a teacher's
     // name can ride along with the breakdown they belong to.
@@ -136,8 +143,10 @@ export const compileClassReportCards = async (schoolId, userId, payload) => {
       subject: result.subject,
       classScore: result.classScore,
       classMaxScore: result.classMaxScore,
-      examScore: result.examScore,
-      examMaxScore: result.examMaxScore,
+      // The exam's points out of 70 — the 70% it carries — so the class score
+      // and the exam add up to the total, as they do on the printed report.
+      examScore: result.examPoints,
+      examMaxScore: policy.examWeight,
       totalScore: result.totalScore,
       grade: result.grade,
       meaning: result.meaning,

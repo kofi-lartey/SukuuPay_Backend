@@ -14,6 +14,7 @@ import {
   averageOfTotals,
 } from "../../utils/subjectResults.js";
 import { resolveTermRange } from "../../utils/termDates.js";
+import { getSchoolGrading } from "../../utils/gradingConfig.js";
 import { generateReportCardPdf, uploadReportCardPdf } from "./reportCardPdf.service.js";
 import ApiError from "../../utils/ApiError.js";
 
@@ -84,7 +85,7 @@ const tallyAttendance = async (schoolId, school, { className, term, academicYear
  * Exam Score, Total, Grade, and the position the student came in that subject —
  * and that is exactly what this writes:
  *
- *     class score 42/50  +  exam score 48/100  →  total 66  →  grade B
+ *     class score 24/30  +  exam 60/100  →  total 66  →  grade B
  *
  * The total is the server's arithmetic, never the teacher's: the two halves
  * are normalised onto 50 points each and added, so a school marking its
@@ -135,8 +136,9 @@ export const compileClassReportsFromGrades = async (schoolId, userId, payload) =
     .select("studentId subject assessmentType score maxScore")
     .lean();
 
-  // student ─▶ [ raw grade rows ]. A subject is two rows: a class score and an
-  // exam score, and the pair is what makes a total.
+  // student ─▶ [ raw grade rows ]. A subject is a *set* of rows — the parts of
+  // the class assessment and the exam — and the whole set is what makes a
+  // total.
   const rowsByStudent = new Map();
   for (const g of grades) {
     const key = String(g.studentId);
@@ -145,10 +147,17 @@ export const compileClassReportsFromGrades = async (schoolId, userId, payload) =
     rowsByStudent.set(key, list);
   }
 
-  // Fold each student's pair of marks into one result per subject.
+  // The school's grading policy: the 30/70 split and the class-score
+  // breakdown. The card is compiled from it, so the school gets its own
+  // scheme and not the default.
+  const policy = getSchoolGrading(school);
+
+  // Fold each student's marks into one result per subject.
   const subjectResultsByStudent = new Map();
   const drafts = students.map((student) => {
-    const results = buildSubjectResults(rowsByStudent.get(String(student._id)) || []);
+    const results = buildSubjectResults(rowsByStudent.get(String(student._id)) || [], {
+      grading: policy,
+    });
     subjectResultsByStudent.set(String(student._id), results);
     return {
       student,
@@ -175,6 +184,11 @@ export const compileClassReportsFromGrades = async (schoolId, userId, payload) =
 
     const subjects = draft.results.map((result) => ({
       subject: result.subject,
+      // The two marking maxima the terminal report prints: the class score out
+      // of 30 and the exam mark out of 100. Both are raw figures the teacher
+      // wrote down. `totalScore` is the weighted sum (the class contributes its
+      // 30 points and the exam its 70), so "24/30 + 60/100 = 66" is honest in
+      // both the raw marks and the total that the band is read from.
       classScore: result.classScore,
       classMaxScore: result.classMaxScore,
       examScore: result.examScore,

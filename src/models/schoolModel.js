@@ -364,6 +364,45 @@ const schoolModel = new mongoose.Schema(
         enum: ["WAEC", "IB", "Cambridge", "Custom"],
         default: "WAEC",
       },
+      /**
+       * The school's grading policy: how the terminal report is weighted.
+       *
+       * The 30/70 split — class assessment 30%, end-of-term exam 70% — is
+       * the Ghanaian standard and the default. It lives here rather than in
+       * the arithmetic because it is a *policy*: a private school on a
+       * Cambridge-style curriculum runs 40/60, and a school that does not
+       * run a group project has no group-work column to weight.
+       *
+       * `components` is the class assessment's breakdown — the parts that make
+       * up the 30 points, and how many of the 30 each one is worth. The
+       * default is the common split: class test 9, group work 9, homework 6,
+       * class work 6. Each part is marked on its own maximum, which is the
+       * default here and recorded on the grade row when it is entered.
+       *
+       * Read through `utils/gradingConfig.js`, which fills in the defaults for
+       * a school that has never set any of this, so a missing field is a
+       * working policy and not a broken page.
+       */
+      grading: {
+        classWeight: { type: Number, default: 30, min: 0, max: 100 },
+        examWeight: { type: Number, default: 70, min: 0, max: 100 },
+        components: {
+          type: [
+            {
+              key: { type: String, required: true, trim: true },
+              label: { type: String, required: true, trim: true },
+              weight: { type: Number, required: true, min: 0 },
+              maxScore: { type: Number, default: 100, min: 1 },
+            },
+          ],
+          default: () => [
+            { key: "class_test", label: "Class Test", weight: 9, maxScore: 30 },
+            { key: "group_work", label: "Group Work", weight: 9, maxScore: 30 },
+            { key: "homework", label: "Homework", weight: 6, maxScore: 20 },
+            { key: "class_work", label: "Class Work", weight: 6, maxScore: 20 },
+          ],
+        },
+      },
     },
     notifications: {
       email: { type: Boolean, default: true },

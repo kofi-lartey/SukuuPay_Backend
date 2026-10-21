@@ -64,9 +64,15 @@ export const getStudentRecordsForTerm = async (token, { term } = {}) => {
     },
     subjects: (record.subjects || []).map((s) => ({
       subject: s.subject,
-      // The Ghanaian breakdown, as the terminal report prints it.
+      // The Ghanaian breakdown, as the terminal report prints it: the class
+      // score out of 30 and the exam mark out of 100, whose weighted points
+      // add up to the total out of 100.
       classScore: s.classScore ?? null,
+      classMaxScore: s.classMaxScore ?? 30,
+      classParts: s.classParts || [],
       examScore: s.examScore ?? null,
+      examMaxScore: s.examMaxScore ?? 100,
+      examPoints: s.examPoints ?? null,
       totalScore: s.totalScore ?? s.score ?? null,
       // The grade is stored at compile time and recomputed here as a fallback,
       // so a card compiled before `gradeBands.js` existed still reads a letter
