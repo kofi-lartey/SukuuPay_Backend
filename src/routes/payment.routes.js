@@ -23,7 +23,7 @@ import {
   moolreWebhookController,
   refundPaymentController,
 } from "../controllers/payment.controller.js";
-import { recordManualPaymentController } from "../controllers/manualPayment.controller.js";
+import { recordManualPaymentController, resendManualPaymentReceiptController } from "../controllers/manualPayment.controller.js";
 import { authenticate, authorize } from "../middleware/authenticate.js";
 import { validate } from "../middleware/validate.js";
 import { uploadParentAudioRoute, exposeParentAudioToBody } from "../middleware/upload.js";
@@ -301,6 +301,13 @@ paymentRoute.post(
   requireSchoolAdmin,
   validate(recordManualPaymentSchema),
   recordManualPaymentController
+);
+
+paymentRoute.post(
+  "/payments/:id/resend-sms",
+  authenticate,
+  requireSchoolAdmin,
+  resendManualPaymentReceiptController
 );
 
 // GET /payments - List payments with filters

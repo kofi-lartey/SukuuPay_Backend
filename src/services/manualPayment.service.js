@@ -186,10 +186,22 @@ export const recordManualPayment = async (body, user) => {
 
     if (notify) {
       try {
-        await notifyPaymentSettled(notify);
+        let notifyResult = await notifyPaymentSettled(notify);
+        // Resend once if the first SMS did not go out.
+        if (notifyResult?.parent?.sent === false) {
+          await Payment.updateOne(
+            { _id: notify._id },
+            { $set: { "notification.sentAt": null } }
+          );
+          notifyResult = await notifyPaymentSettled(notify);
+        }
+        if (notifyResult?.parent?.sent === false) {
+          console.error(
+            `[MANUAL-PAYMENT] Failed to notify for ${notify.paymentId}:`,
+            notifyResult.parent.reason
+          );
+        }
       } catch (error) {
-        // The money is recorded. A failure to announce it is a smaller problem
-        // than a recorded payment that reports an error to the bursar.
         console.error(
           `[MANUAL-PAYMENT] Failed to notify for ${notify.paymentId}:`,
           error.message
@@ -220,4 +232,12 @@ const nextPaymentSequence = async (schoolId, session) => {
   return `${year}-${String(doc?.seq || 1).padStart(6, "0")}`;
 };
 
-export default { recordManualPayment };
+export const resendManualPaymentReceipt = async (paymentId, user) => {
+  const payment = await Payment.findById(paymentId);
+  if (!payment) throw new ApiError("Payment not found", 404, "NOT_FOUND");
+  await Payment.updateOne({ _id: payment._id }, { $set: { "notification.sentAt": null } });
+  const result = await notifyPaymentSettled(payment);
+  return result;
+};
+
+export default { recordManualPayment, resendManualPaymentReceipt };
