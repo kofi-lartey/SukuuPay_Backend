@@ -16,6 +16,7 @@ import {
   previewTemplate,
   getSmsCredits,
   topUpSmsCredits,
+  getSmsRailStatus,
 } from '../services/sms.service.js';
 import { idempotencyKeyFrom } from '../utils/idempotency.js';
 
@@ -372,6 +373,33 @@ export const topUpSmsCreditsController = async (req, res) => {
       success: true,
       message: 'SMS credit added successfully',
       data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+      code: error.code,
+    });
+  }
+};
+
+// ── Rail status ──
+
+// GET /sms/rail-status — can this deployment actually send an SMS right now?
+//
+// A live probe of the gateway, not a report of what is configured. Every
+// reason a receipt can fail to reach a parent is invisible from the
+// configuration: no credit, no approved sender ID, no messaging account. This
+// asks the gateway, so an operator finds out here instead of from a parent
+// who never got a receipt.
+export const getSmsRailStatusController = async (req, res) => {
+  try {
+    const status = await getSmsRailStatus();
+
+    return res.status(200).json({
+      success: true,
+      message: 'SMS rail status retrieved successfully',
+      data: status,
     });
   } catch (error) {
     return res.status(error.status || 500).json({

@@ -226,8 +226,13 @@ export const readCreditsUsed = (payload) => {
  * @returns {Promise<{providerMessageId: string|null, creditsUsed: number|null, raw: object}>}
  * @throws {ArkeselTransportError} on any transport, provider or validation failure
  */
-export const sendArkeselSms = async ({ to, message, senderId, reference }) => {
-  if (!isArkeselSendConfigured()) {
+export const sendArkeselSms = async ({ to, message, senderId, reference, apiKey }) => {
+  // `apiKey` is the school's own Arkesel credential. A school with its own
+  // Arkesel account has its own balance and its own approved sender IDs, and
+  // the platform's key would spend the platform's credit under the platform's
+  // sender ID.
+  const key = String(apiKey || ARKESEL_API_KEY || '').trim();
+  if (!isArkeselSendConfigured() && !apiKey) {
     throw new ArkeselTransportError('Arkesel is not configured', {
       status: 503,
       code: 'ARKESEL_NOT_CONFIGURED',
@@ -270,7 +275,7 @@ export const sendArkeselSms = async ({ to, message, senderId, reference }) => {
         accept: 'application/json',
         // V2 moves the key from a query parameter to a header. A key in the query
         // string ends up in every access log along the way.
-        'api-key': ARKESEL_API_KEY,
+        'api-key': key,
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(ARKESEL_TIMEOUT_MS),

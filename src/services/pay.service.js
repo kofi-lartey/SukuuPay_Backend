@@ -20,6 +20,7 @@ import {
 } from "../utils/planHelpers.js";
 import { startOfDayAccra } from "../utils/dateHelpers.js";
 import { PORTAL_NETWORK_ALIASES } from "../validations/payment.validation.js";
+import { countParentUnread } from "./parent/notifications.service.js";
 
 /**
  * The parent pay portal's own service layer.
@@ -420,7 +421,7 @@ const projectPayment = (payment) => ({
 export const getPortalView = async (token) => {
   const student = await requireStudentByToken(token);
 
-  const [school, plan, recentPayments] = await Promise.all([
+  const [school, plan, recentPayments, unreadCount] = await Promise.all([
     fetchSchool(student.schoolId),
     findLivePlan(student._id),
     Payment.find({
@@ -436,6 +437,10 @@ export const getPortalView = async (token) => {
       .sort({ completedAt: -1, createdAt: -1 })
       .limit(RECENT_PAYMENT_LIMIT)
       .lean(),
+    // The bell in the parent's top bar reads this. It was never sent, so the
+    // dot was permanently dark: a parent with a receipt waiting for them was
+    // shown nothing at all.
+    countParentUnread(token),
   ]);
 
   const now = new Date();
@@ -445,6 +450,9 @@ export const getPortalView = async (token) => {
     school: projectSchool(school),
     paymentPlan: projectPlan(plan, now),
     recentPayments: recentPayments.map(projectPayment),
+    // How many alerts are waiting for the parent — a payment receipt, a
+    // message from the school, a plan awaiting a decision.
+    unreadCount,
     // Read-only reasons for the page to explain itself, so the client never has to
     // re-derive "why can't I pay" from a status enum.
     suspended: student.status === "suspended",
@@ -1635,6 +1643,15 @@ export const verifyPaymentByReference = async (token, reference) => {
       status: 'success',
       completedAt: payment.completedAt,
       receiptNumber: payment.receiptNumber || null,
+      // Whether the receipt SMS actually went out.
+      //
+      // `null` means the platform does not know — a payment settled before this
+      // was recorded, or a settlement whose notification never ran. `false`
+      // means it tried and failed, and the parent should not be told a receipt
+      // is on its way when it is not.
+      receiptSent: Array.isArray(payment.notification?.channels)
+        ? payment.notification.channels.includes('sms')
+        : null,
       // The parent's new balance, so the success screen does not have to re-fetch
       // the whole portal to tell them what they still owe.
       balance: Math.max(student.balance || 0, 0),

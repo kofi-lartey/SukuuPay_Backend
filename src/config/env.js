@@ -383,6 +383,29 @@ export const MOOLRE_ACCOUNT_NUMBER = process.env.MOOLRE_ACCOUNT_NUMBER;
 // deployment only ever changes this one value.
 export const MOOLRE_BASE_URL = process.env.MOOLRE_BASE_URL || 'https://api.moolre.com';
 
+// The base URL for the **messaging** (VAS) API.
+//
+// It is a separate value because Moolre's sandbox does not have a messaging
+// account at all: `POST /open/sms/send` against `sandbox.moolre.com` answers
+// `SMS02 — SMS Account not found`, and the balance query answers the same
+// thing. The sandbox is a *payment* simulator; it has no wallet for
+// messaging.
+//
+// So a deployment that collects payments against the sandbox and still owes a
+// parent a receipt has to reach the live VAS endpoint, or the receipt can
+// never be sent at all — which is not a configuration mistake but a
+// provider fact, and it fails silently, because the SMS is a best-effort
+// channel that reports failure in its return value.
+//
+// The default therefore follows the **payments** base URL *upwards*: sandbox
+// payments reach the live messaging API, and production payments reach
+// production. Set `MOOLRE_SMS_BASE_URL` explicitly to point the messaging API
+// somewhere else — including back at the sandbox, for a deployment that must
+// not spend real money on real messages.
+export const MOOLRE_SMS_BASE_URL =
+  process.env.MOOLRE_SMS_BASE_URL ||
+  (MOOLRE_BASE_URL.includes('sandbox') ? 'https://api.moolre.com' : MOOLRE_BASE_URL);
+
 // Where the hosted checkout lives.
 //
 // **Not used by the client.** The checkout URL is not a page this platform

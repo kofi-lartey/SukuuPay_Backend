@@ -42,13 +42,99 @@ const countSegments = (text) => {
  * silently logging and reporting success.
  */
 const SEND_CLIENTS = {
-  moolre: { configured: isMoolreSmsConfigured, send: sendMoolreSms },
-  arke: { configured: isArkeselSendConfigured, send: sendArkeselSms },
+  // `configured` takes the school, because a school can bring its own
+  // credential: `school.sms.apiKey` is that school's key for this provider,
+  // and it makes the provider usable even when the platform's own key is
+  // absent.
+  moolre: {
+    configured: (school) => isMoolreSmsConfigured() || Boolean(school?.sms?.apiKey),
+    send: sendMoolreSms,
+  },
+  arke: {
+    configured: (school) => isArkeselSendConfigured() || Boolean(school?.sms?.apiKey),
+    send: sendArkeselSms,
+  },
   mnotify: { configured: () => false, send: null },
 };
 
 /** Resolves the provider for a school, falling back to the platform default. */
 const resolveProvider = (school) => school?.sms?.provider || SMS_DEFAULT_PROVIDER;
+
+/**
+ * Hands a message to a gateway, and nothing else.
+ *
+ * No row is written and no credit is touched — the caller owns both. That is
+ * what makes this the **one transmit path**: the school's own reminders, the
+ * platform's broadcast and the payment receipt all reach a gateway through
+ * this function, so a provider that is out of credit, missing a sender ID or
+ * pointing at the wrong account fails the same way in all three.
+ *
+ * It never throws. The failure comes back in the return value, because the
+ * callers that use it are reporting an outcome to a human either way.
+ *
+ * @returns {Promise<{sent: boolean, provider: string, reason: string|null,
+ *   providerMessageId: string|null, creditsUsed: number|null}>}
+ */
+export const transmitSms = async ({ to, message, school, senderId, apiKey, ref } = {}) => {
+  const provider = resolveProvider(school);
+  const client = SEND_CLIENTS[provider];
+
+  if (!client) {
+    return {
+      sent: false,
+      provider,
+      reason: `Unknown SMS provider "${provider}"`,
+      providerMessageId: null,
+      creditsUsed: null,
+    };
+  }
+
+  if (!client.send) {
+    return {
+      sent: false,
+      provider,
+      reason: `SMS provider "${provider}" has no send integration wired yet`,
+      providerMessageId: null,
+      creditsUsed: null,
+    };
+  }
+
+  if (!client.configured(school)) {
+    return {
+      sent: false,
+      provider,
+      reason: `SMS provider "${provider}" is not configured`,
+      providerMessageId: null,
+      creditsUsed: null,
+    };
+  }
+
+  try {
+    const result = await client.send({
+      to,
+      message,
+      senderId: senderId || school?.sms?.senderId || undefined,
+      apiKey: apiKey || school?.sms?.apiKey || undefined,
+      reference: ref,
+    });
+
+    return {
+      sent: true,
+      provider,
+      reason: null,
+      providerMessageId: result?.providerMessageId ?? null,
+      creditsUsed: result?.creditsUsed ?? null,
+    };
+  } catch (error) {
+    return {
+      sent: false,
+      provider,
+      reason: error?.message || 'The SMS gateway rejected the message',
+      providerMessageId: null,
+      creditsUsed: null,
+    };
+  }
+};
 
 /** Persists a terminal outcome on the row without ever throwing. */
 const mark = async (row, status, reason) => {
@@ -110,44 +196,38 @@ export const sendSms = async ({
       return { sent: false, provider, reason: 'No recipient phone number', messageId: saved?._id || null };
     }
 
-    const client = SEND_CLIENTS[provider];
-    if (!client) {
-      const reason = `Unknown SMS provider "${provider}"`;
-      await mark(saved, 'failed', reason);
-      return { sent: false, provider, reason, messageId: saved?._id || null };
-    }
-
-    if (!client.send) {
-      const reason = `SMS provider "${provider}" has no send integration wired yet`;
-      console.warn(`[SMS] ${reason}`);
-      await mark(saved, 'failed', reason);
-      return { sent: false, provider, reason, messageId: saved?._id || null };
-    }
-
-    if (!client.configured()) {
-      const reason = `SMS provider "${provider}" is not configured`;
-      console.warn(`[SMS] ${reason}`);
-      await mark(saved, 'failed', reason);
-      return { sent: false, provider, reason, messageId: saved?._id || null };
-    }
-
     // ── Transmit ──
-    // `saved.paymentId`-style correlation is not available here, so the
-    // reference handed to the gateway is derived from the row's own id, which is
-    // stable and lets a gateway-side duplicate be recognised.
-    const result = await client.send({
+    // The gateway call itself is `transmitSms`, the shared primitive: the
+    // school's reminders, the platform's broadcast and the payment receipt all
+    // reach a gateway through it, so a provider that is out of credit, missing
+    // a sender ID or pointing at the wrong account fails the same way in all
+    // three.
+    //
+    // The reference handed to the gateway is derived from the row's own id,
+    // which is stable and lets a gateway-side duplicate be recognised.
+    const result = await transmitSms({
       to,
       message,
-      senderId: school?.sms?.senderId || undefined,
-      reference: saved?._id ? String(saved._id) : undefined,
+      school,
+      ref: saved?._id ? String(saved._id) : undefined,
     });
+
+    if (!result.sent) {
+      await mark(saved, 'failed', result.reason);
+      return {
+        sent: false,
+        provider: result.provider,
+        reason: result.reason,
+        messageId: saved?._id || null,
+      };
+    }
 
     if (saved) {
       // providerMessageId is what the delivery-report webhook looks the message
       // up by. Without it the report degrades to phone-number matching inside a
       // 24h window, which can attach a report to an unrelated send.
-      saved.provider = provider;
-      saved.providerMessageId = result?.providerMessageId ?? null;
+      saved.provider = result.provider;
+      saved.providerMessageId = result.providerMessageId ?? null;
       saved.status = 'submitted';
       saved.submittedAt = new Date();
       await saved.save();
@@ -155,8 +235,8 @@ export const sendSms = async ({
 
     return {
       sent: true,
-      provider,
-      providerMessageId: result?.providerMessageId ?? null,
+      provider: result.provider,
+      providerMessageId: result.providerMessageId ?? null,
       messageId: saved?._id || null,
     };
   } catch (error) {

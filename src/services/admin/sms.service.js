@@ -3,7 +3,7 @@ import { School } from '../../models/schoolModel.js';
 import { User } from '../../models/userModel.js';
 import { SmsMessage } from '../../models/smsMessageModel.js';
 import { SmsCreditTopUp } from '../../models/smsCreditTopUpModel.js';
-import { ARKESEL_SENDER_ID } from '../../config/env.js';
+import { ARKESEL_SENDER_ID, MOOLRE_SMS_SENDER_ID } from '../../config/env.js';
 import { getCachedPlatformSettings } from '../platformSettings.service.js';
 import { submitMessage, countSmsParts } from '../sms.service.js';
 import ApiError from '../../utils/ApiError.js';
@@ -521,23 +521,23 @@ export const broadcastToSchoolAdmins = async (
   const settings = await getCachedPlatformSettings();
   const provider = settings?.sms?.provider || 'arke';
 
-  if (provider !== 'arke') {
-    throw new ApiError(
-      `This deployment is configured for the "${provider}" SMS gateway, which has no transmit client wired (see services/sms.service.js). Set PlatformSettings.sms.provider to "arke" to send.`,
-      409,
-      'SMS_PROVIDER_UNSUPPORTED'
-    );
-  }
-
   // The synthetic sender. `submitMessage` only reads `sms.provider` and
   // `sms.senderId`, so this is everything it needs — and giving it the shape of a
   // `School` is what lets one transmit path serve both callers instead of two
   // implementations drifting apart.
+  //
+  // The sender ID belongs to the **provider**: a sender ID is registered with a
+  // specific operator, so sending "SukuuPay" through a gateway that has not
+  // approved it is dropped by the handset with no report, and the platform
+  // would be broadcasting into a void and reporting a success.
   const platformSender = {
     _id: null,
     sms: {
       provider,
-      senderId: ARKESEL_SENDER_ID || '',
+      senderId:
+        settings?.sms?.senderId ||
+        (provider === 'moolre' ? MOOLRE_SMS_SENDER_ID : ARKESEL_SENDER_ID) ||
+        '',
     },
   };
 

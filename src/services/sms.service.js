@@ -44,13 +44,60 @@ import { checkIdempotency, rememberIdempotency, hashPayload } from '../utils/ide
 import { consumeRateLimit } from '../utils/rateLimiter.js';
 import { normalisePhone, maskPhone, formatPhone, toGhanaE164, networkForGhanaNumber } from '../utils/phoneNumbers.js';
 import { formatCedis, formatAccraDate } from '../utils/formatters.js';
-import { sendArkeselSms, isArkeselSendConfigured, getArkeselConfigStatus } from '../utils/arkeselApi.js';
+import { getArkeselConfigStatus } from '../utils/arkeselApi.js';
+import { getMoolreSmsReadiness } from '../utils/moolreSmsApi.js';
+import { availableSmsProviders, transmitSms } from '../utils/smsService.js';
+import { SMS_DEFAULT_PROVIDER, MOOLRE_SMS_BASE_URL } from '../config/env.js';
 import {
   LIMITS,
   SMS_PRESET_TEMPLATES,
   SMS_TOKENS,
   SMS_CREDIT_RATE_PES,
 } from '../config/constants.js';
+
+/**
+ * Can this deployment send an SMS right now?
+ *
+ * The question a school actually asks — "is the receipt going to reach the
+ * parent?" — and the only honest way to answer it is to ask the gateway,
+ * because every one of the failure modes is invisible from the outside:
+ *
+ *   - **no credit** — the account has none left;
+ *   - **no approved sender ID** — Moolre answers `ASMS07`, and the portal may
+ *     show the ID as approved on a *different* SMS service, where it does not
+ *     apply: the registry is per service, not per merchant;
+ *   - **no messaging account** — the sandbox has none, so a sandbox-configured
+ *     deployment can never send.
+ *
+ * A receipt that cannot be sent is a receipt nobody is told about, and the
+ * failure is silent by construction: SMS is a best-effort channel that reports
+ * failure in its return value. So it is asked about here, out loud.
+ *
+ * The probe is live, so it is deliberately **not** on the load-balancer health
+ * check — that one has to stay cheap enough to run every few seconds.
+ */
+export const getSmsRailStatus = async () => {
+  let moolre;
+  try {
+    moolre = await getMoolreSmsReadiness();
+  } catch (error) {
+    moolre = { ready: false, reasons: [error.message], balance: null, senderId: null };
+  }
+
+  return {
+    defaultProvider: SMS_DEFAULT_PROVIDER,
+    sendProviders: availableSmsProviders(),
+    moolre: {
+      ...moolre,
+      // The base the messaging API is reached at. It is deliberately separate
+      // from the payments base URL: the sandbox has no messaging account, so a
+      // sandbox deployment that owes a parent a receipt has to reach the live
+      // messaging API.
+      baseUrl: MOOLRE_SMS_BASE_URL,
+    },
+    arkesel: getArkeselConfigStatus(),
+  };
+};
 
 // ──────────────────── Token rendering ────────────────────
 
@@ -269,12 +316,17 @@ const refundCredits = async (schoolId, units) => {
 /**
  * Submits one rendered message.
  *
- * Arkesel is the only transmit path wired, because it is the only one the
- * codebase has a client for (`utils/arkeselApi.js`). A school on `mnotify`
- * is refused with an explanation rather than silently routed through
- * Arkesel: the sender ID is registered with a specific operator, so a message
- * sent through the wrong gateway is dropped by the handset with no report, and
- * the school would be billed for messages nobody received.
+ * The transmit is `transmitSms`, the shared primitive in `utils/smsService.js` —
+ * the same one the payment receipt goes through. It used to be hard-wired to
+ * Arkesel, because Arkesel was the only provider the codebase had a client for.
+ * That made every school on a different provider unable to send at all, and it
+ * was invisible: the platform looked configured while the school's reminders,
+ * plan notices and parent messages all failed.
+ *
+ * The sender ID stays with the provider the school is configured for. A sender
+ * ID is registered with a specific operator, so a message sent through the
+ * wrong gateway is dropped by the handset with no report — and the school would
+ * be billed for messages nobody received.
  *
  * A transport failure is returned, not thrown. The caller has already spent a
  * credit and created a `SmsMessage` row at this point, and a thrown error would
@@ -283,46 +335,52 @@ const refundCredits = async (schoolId, units) => {
  *
  * **Exported for the platform console's broadcast**, which is the one caller that
  * has no `School` of its own. It passes a synthetic `{ sms: { provider, senderId } }`
- * object carrying the platform's own gateway settings, and therefore draws on the
- * deployment-level `ARKESEL_API_KEY` rather than any school's `sms.balance` — which
- * is correct: an announcement about a platform outage is the platform's cost, not a
- * charge against a customer's credit. Exporting it rather than reimplementing it is
- * what keeps "one transmit path" true; a second implementation would drift on the
- * provider check and the sender-ID fallback within a month.
+ * object carrying the platform's own gateway settings, and therefore draws on
+ * the deployment-level credential rather than any school's `sms.balance` —
+ * which is correct: an announcement about a platform outage is the platform's
+ * cost, not a charge against a customer's credit. Exporting it rather than
+ * reimplementing it is what keeps "one transmit path" true; a second
+ * implementation would drift on the provider check and the sender-ID fallback
+ * within a month.
  */
 export const submitMessage = async ({ to, body, school }) => {
-  const provider = school?.sms?.provider || 'arke';
-  if (provider !== 'arke') {
+  const provider = school?.sms?.provider || SMS_DEFAULT_PROVIDER;
+
+  // The transmit itself is `transmitSms`, the shared primitive. It used to be
+  // hard-wired to Arkesel, and the refusal below is the result: a school whose
+  // SMS provider was anything else could not send at all, and the school's
+  // reminders, plan notices and parent messages all failed while the platform
+  // sat there looking configured.
+  //
+  // A school on a provider this deployment has no client for is refused
+  // honestly, with the provider named, rather than being told the message went
+  // out.
+  const outcome = await transmitSms({
+    to,
+    message: body,
+    school,
+    senderId: String(school?.sms?.senderId || '').trim() || undefined,
+  });
+
+  if (!outcome.sent) {
     return {
       ok: false,
-      code: 'SMS_PROVIDER_UNSUPPORTED',
-      reason: `This school is configured for the "${provider}" SMS gateway, which has no transmit client in this deployment. Set school.sms.provider to "arke" to send.`,
+      code:
+        outcome.reason === `SMS provider "${provider}" has no send integration wired yet`
+          ? 'SMS_PROVIDER_UNSUPPORTED'
+          : outcome.reason === `SMS provider "${provider}" is not configured`
+            ? 'SMS_GATEWAY_NOT_CONFIGURED'
+            : 'SMS_GATEWAY_ERROR',
+      reason: outcome.reason,
     };
   }
 
-  if (!isArkeselSendConfigured()) {
-    return {
-      ok: false,
-      code: 'SMS_GATEWAY_NOT_CONFIGURED',
-      reason:
-        'No SMS gateway is configured on this deployment. Set ARKESEL_API_KEY (and ARKESEL_SENDER_ID) to enable sending.',
-    };
-  }
-
-  try {
-    const result = await sendArkeselSms({
-      to,
-      message: body,
-      senderId: String(school?.sms?.senderId || '').trim() || undefined,
-    });
-    return { ok: true, providerMessageId: result.providerMessageId, creditsUsed: result.creditsUsed };
-  } catch (error) {
-    return {
-      ok: false,
-      code: error?.code || 'SMS_GATEWAY_ERROR',
-      reason: error?.message || 'The SMS gateway rejected the message',
-    };
-  }
+  return {
+    ok: true,
+    providerMessageId: outcome.providerMessageId,
+    creditsUsed: outcome.creditsUsed,
+    provider: outcome.provider,
+  };
 };
 
 // ──────────────────── Recipients ────────────────────

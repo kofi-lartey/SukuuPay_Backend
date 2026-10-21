@@ -9,6 +9,7 @@ import { PlatformLedger } from "../models/PlatformLedger.js";
 // a binding twice.
 import { applyPaymentToPlan as applyToSchedule } from "../utils/planHelpers.js";
 import auditService from "../utils/auditService.js";
+import { notifyPaymentSettled } from "./paymentNotification.service.js";
 
 /**
  * Applying a settled payment to the ledger: the student's balance, the plan's
@@ -281,6 +282,21 @@ export const settlePayment = async (payment) => {
   await recordSchoolCollection(payment);
 
   await bookPlatformLedgerEntries(payment);
+
+  // The parent and the school are told last, and after the balance has moved,
+  // so the receipt quotes the balance the parent now actually has. The
+  // notification is claimed atomically, so a gateway retry cannot send a
+  // second receipt for a payment that was already announced.
+  try {
+    await notifyPaymentSettled(payment);
+  } catch (error) {
+    // The money has moved. A failure to announce it is a smaller problem than
+    // a settlement that aborts and leaves the parent's payment uncounted.
+    console.error(
+      `[PAY-APPLY] Failed to notify for ${payment.paymentId}:`,
+      error.message
+    );
+  }
 
   await auditService.log({
     action: "payment.settlement_applied",

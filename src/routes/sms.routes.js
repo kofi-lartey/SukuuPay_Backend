@@ -17,6 +17,7 @@ import {
   previewTemplateController,
   getSmsCreditsController,
   topUpSmsCreditsController,
+  getSmsRailStatusController,
 } from '../controllers/sms.controller.js';
 import { authenticate, authorize } from '../middleware/authenticate.js';
 import { validate } from '../middleware/validate.js';
@@ -54,6 +55,19 @@ const requireSender = authorize('super_admin', 'school_admin', 'accountant');
 const requireReader = authorize('super_admin', 'school_admin', 'accountant', 'teacher');
 
 // ──────────────────── Credits ────────────────────
+
+// GET /sms/rail-status — can this deployment send an SMS right now?
+//
+// A **live** probe of the gateway, not a report of what is configured. Every
+// reason a receipt can fail to reach a parent is invisible from the
+// configuration: no credit, no approved sender ID, no messaging account on
+// this service. This asks the gateway, so an operator finds out here rather
+// than from a parent who never got a receipt.
+//
+// Platform-wide rather than per school, so it is a **super admin** read: it
+// reports the platform's own messaging accounts, and the credentials involved
+// are not a school's to see.
+smsRoute.get('/sms/rail-status', authenticate, authorize('super_admin'), getSmsRailStatusController);
 
 // GET /sms/credits/:schoolId — balance, usage and gateway readiness.
 smsRoute.get(

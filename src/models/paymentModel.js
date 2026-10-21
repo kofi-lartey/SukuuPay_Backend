@@ -290,6 +290,24 @@ const paymentSchema = new mongoose.Schema(
       default: null,
     },
 
+    // ── Settlement notifications ──
+    //
+    // The claim that makes "tell the parent and the school" happen exactly once.
+    //
+    // It is taken the same way the settlement claim is — atomically, by a
+    // conditional update, before anything is sent — because a gateway that is
+    // not answered retries, and a provider that retries after a partial
+    // failure would otherwise leave a parent with two "payment received"
+    // messages for one payment. A family that is told twice is a family that
+    // stops believing the school.
+    //
+    // `channels` records which channels actually delivered, so a school that
+    // asks "did the receipt go out?" has an answer that is not a guess.
+    notification: {
+      sentAt: { type: Date, default: null },
+      channels: { type: [String], default: [] },
+    },
+
     // ── Audit ──
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,

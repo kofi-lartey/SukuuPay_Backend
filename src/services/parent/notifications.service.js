@@ -96,19 +96,16 @@ export const buildNotificationRows = (student, payments, messages, plans) => {
 };
 
 /**
- * `GET /pay/:token/notifications`
+ * The student's own activity, and which of the derived alerts the parent has
+ * already cleared.
  *
- * Derives the parent's notifications from the student's payment, message and
- * plan activity, then stamps each with the parent's read state from
- * `ParentPortalReadState`. The `filter` query is a `NOTIFICATION_TYPES` substring
- * (`payments`, `attendance`, `records`, `messages`), matched the same way the
- * fixture did so the page's pills keep working.
+ * Both the list and the unread count are answered from this, so the number on
+ * the bell is the number of rows on the page — computed twice from two
+ * different queries, the badge and the list would eventually disagree, and a
+ * badge that says "3" over an empty list is worse than no badge.
  */
-export const listParentNotifications = async (token, { filter, page, perPage }) => {
+const collectParentNotifications = async (token) => {
   const { student } = await resolvePortalStudent(token);
-
-  const perPageN = Math.min(Math.max(1, Number(perPage) || 30), 100);
-  const pageN = Math.max(1, Number(page) || 1);
 
   const [payments, messages, plans] = await Promise.all([
     Payment.find({
@@ -134,11 +131,7 @@ export const listParentNotifications = async (token, { filter, page, perPage }) 
       .lean(),
   ]);
 
-  let rows = buildNotificationRows(student, payments, messages, plans);
-
-  if (filter && filter !== "all") {
-    rows = rows.filter((row) => row.type.includes(filter));
-  }
+  const rows = buildNotificationRows(student, payments, messages, plans);
 
   const readState = await ParentPortalReadState.findOne({
     studentId: student._id,
@@ -146,6 +139,32 @@ export const listParentNotifications = async (token, { filter, page, perPage }) 
   }).lean();
 
   const dismissed = new Set(readState?.readNotificationIds || []);
+
+  return { student, rows, dismissed, readState };
+};
+
+/**
+ * `GET /pay/:token/notifications`
+ *
+ * Derives the parent's notifications from the student's payment, message and
+ * plan activity, then stamps each with the parent's read state from
+ * `ParentPortalReadState`. The `filter` query is a `NOTIFICATION_TYPES` substring
+ * (`payments`, `attendance`, `records`, `messages`), matched the same way the
+ * fixture did so the page's pills keep working.
+ */
+export const listParentNotifications = async (token, { filter, page, perPage }) => {
+  const perPageN = Math.min(Math.max(1, Number(perPage) || 30), 100);
+  const pageN = Math.max(1, Number(page) || 1);
+
+  const { student, rows: allRows, dismissed, readState } =
+    await collectParentNotifications(token);
+
+  let rows = allRows;
+
+  if (filter && filter !== "all") {
+    rows = rows.filter((row) => row.type.includes(filter));
+  }
+
   rows = rows.map((row) =>
     dismissed.has(row._id) ? { ...row, readAt: row.readAt || readState?.updatedAt?.toISOString() || new Date().toISOString() } : row
   );
@@ -176,6 +195,21 @@ export const listParentNotifications = async (token, { filter, page, perPage }) 
       perPage: perPageN,
     },
   };
+};
+
+/**
+ * How many alerts the parent has not opened yet.
+ *
+ * The bell in the parent's top bar reads this. It was reading a field the
+ * portal view never returned, so the dot was permanently dark — a parent who
+ * had a receipt waiting for them was never shown anything.
+ *
+ * The count is over the **unfiltered** set: the bell says how much is
+ * waiting, and the page's filters are the parent's business, not the badge's.
+ */
+export const countParentUnread = async (token) => {
+  const { rows, dismissed } = await collectParentNotifications(token);
+  return rows.filter((row) => !dismissed.has(row._id)).length;
 };
 
 /**

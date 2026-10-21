@@ -5,6 +5,7 @@ import { School } from "../models/schoolModel.js";
 import { Counter } from "../models/counterModel.js";
 import { ApiError } from "./student.service.js";
 import * as auditService from "../utils/auditService.js";
+import { notifyPaymentSettled } from "./paymentNotification.service.js";
 
 /**
  * Record a payment taken at the bursar's desk.
@@ -31,6 +32,11 @@ import * as auditService from "../utils/auditService.js";
  * - **`settlement.appliedAt` is set.** The provider webhook that normally
  *   claims a settlement checks it first, so a later callback for a
  *   provider-invented reference is a no-op rather than a second credit.
+ * - **It tells the parent.** Cash taken at the desk is still the family's
+ *   money, and the parent is still owed a receipt — the same receipt a
+ *   gateway payment sends. The notification is raised after the transaction
+ *   commits, so a rollback cannot leave a family told about a payment that
+ *   was never recorded.
  *
  * Amounts are integer pesewas, like every other money field in this API.
  */
@@ -69,6 +75,8 @@ export const recordManualPayment = async (body, user) => {
   const session = await Payment.startSession();
   try {
     let result;
+    // The payment the notification is raised for, once the transaction commits.
+    let notify = null;
     await session.withTransaction(async () => {
       const isObjectId = mongoose.Types.ObjectId.isValid(studentRef);
       const student = await Student.findOne({
@@ -168,7 +176,26 @@ export const recordManualPayment = async (body, user) => {
           balance: student.balance,
         },
       };
+
+      // The parent is told once the transaction has committed, not inside it:
+      // an SMS gateway called from inside a transaction holds the session open
+      // for the length of a network round trip, and a rollback would still have
+      // sent the message. The claim on the payment makes it exactly once.
+      notify = payment[0];
     });
+
+    if (notify) {
+      try {
+        await notifyPaymentSettled(notify);
+      } catch (error) {
+        // The money is recorded. A failure to announce it is a smaller problem
+        // than a recorded payment that reports an error to the bursar.
+        console.error(
+          `[MANUAL-PAYMENT] Failed to notify for ${notify.paymentId}:`,
+          error.message
+        );
+      }
+    }
 
     return result;
   } finally {
