@@ -367,8 +367,17 @@ export const initiatePayment = async ({
   }
 
   // `TP17` — the number is verified. The prompt goes out on the next call.
+  //
+  // The follow-up call must NOT carry `otpcode`: Moolre treats a request that
+  // still carries the code as a fresh verification attempt and re-issues an OTP
+  // (`TP14`) instead of sending the USSD prompt (`TR099`). That is what made
+  // every submitted code read as "not accepted" — the parent kept getting new
+  // codes and the prompt never arrived.
   if (code === 'TP17') {
-    payload = await request('/open/transact/payment', { body, envelope: true });
+    const promptBody = buildBody({
+      ...(isSandbox && skipOtp ? { skipotp: true } : {}),
+    });
+    payload = await request('/open/transact/payment', { body: promptBody, envelope: true });
     code = payload?.code;
   }
 
