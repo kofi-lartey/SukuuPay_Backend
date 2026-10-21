@@ -1,6 +1,7 @@
 import { Student } from "../../models/studentModel.js";
 import { School } from "../../models/schoolModel.js";
 import ApiError from "../../utils/ApiError.js";
+import { resolveSchoolAcademicYear } from "../../utils/termDates.js";
 
 /**
  * The pay-token lookup every parent-portal academic read starts from.
@@ -48,11 +49,14 @@ export const resolvePortalStudent = async (token) => {
  * student keeps the year the record belongs to; the school's current year is the
  * fallback for a roster row imported before the field was written.
  */
-export const resolveAcademicYear = (student, school) =>
-  student.academicYear || school?.academic?.currentYear || "";
+export const resolveAcademicYear = (student, school) => {
+  if (student.academicYear) {
+    return resolveSchoolAcademicYear({ academic: { currentYear: student.academicYear } });
+  }
+  return resolveSchoolAcademicYear(school);
+};
 
-/** The term a read is for, defaulting to the school's current term. */
-export const resolveTerm = (term, school, fallback = "Term 2") => {
+export const resolveTerm = (term, school, fallback = "Term 1") => {
   const requested = String(term || "").trim();
   return requested || school?.academic?.currentTerm || fallback;
 };

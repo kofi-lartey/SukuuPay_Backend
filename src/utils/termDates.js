@@ -2,8 +2,7 @@
  * Term date ranges.
  *
  * A school either has explicit `academic.terms` on its record, or falls back to
- * the Ghanaian Basic school default. Both paths return the same shape so
- * callers never branch.
+ * the GES calendar. Both paths return the same shape so callers never branch.
  *
  * The defaults are the GES calendar for a school whose academic year is written
  * "2026/2027" — Term 1 from August to mid-November, Term 2 from January to
@@ -12,11 +11,14 @@
  * calendar a parent sees, and a school that breaks up on a different date sets
  * its own terms rather than living with the default.
  *
- * Note the asymmetry between the two paths, which is deliberate. An explicit
- * range is taken verbatim — the school said what it said. A default range is
- * built from the *start* year of the academic year string, because Term 2 and
- * Term 3 of "2026/2027" both fall in calendar 2027; deriving them from the end
- * year would push Term 1 a full year into the future.
+ * A default range is built from the *start* year of the academic year string,
+ * with one correction: a Ghanaian academic year "2026/2027" opens in August
+ * 2026, so Term 1 lives in the start year (Sep–Dec 2026) while Term 2 and Term
+ * 3 — which begin in January and April — live in the following calendar year
+ * (Jan–Apr 2027, Apr–Jul 2027). Using the start year for every term, as the
+ * previous implementation did, pushed Term 2 and Term 3 a full year into the
+ * past and caused the parent's attendance window to miss every register entry
+ * the teacher had actually made in the current term.
  */
 const DEFAULT_TERMS = {
   "Term 1": { startMonth: 8, startDay: 1, endMonth: 11, endDay: 15 },
@@ -31,8 +33,14 @@ export const resolveTermRange = (term, academicYear, school) => {
   }
 
   const [startYear] = String(academicYear || "").split("/");
-  const year = Number(startYear) || new Date().getFullYear();
+  const baseYear = Number(startYear) || new Date().getFullYear();
   const range = DEFAULT_TERMS[term] || DEFAULT_TERMS["Term 1"];
+
+  // Term 1 of a Ghanaian academic year opens in September (month index 8);
+  // Term 2 and Term 3 open in January and April, which belong to the next
+  // calendar year. Using the start year for every term left the window a year
+  // behind for Term 2/3, and the parent's attendance query returned nothing.
+  const year = range.startMonth >= 8 ? baseYear : baseYear + 1;
 
   const start = new Date(Date.UTC(year, range.startMonth, range.startDay));
   const end = new Date(Date.UTC(year, range.endMonth, range.endDay));

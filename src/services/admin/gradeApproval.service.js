@@ -75,7 +75,7 @@ export const submitClassGrades = async (schoolId, userId, payload) => {
 
   const result = await Grade.updateMany(filter, {
     $set: {
-    approvalStatus: { $in: ["draft", "submitted"] },
+      approvalStatus: "submitted",
       submittedAt: new Date(),
       submittedBy: userId,
     },

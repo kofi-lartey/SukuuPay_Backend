@@ -13,7 +13,8 @@ import assert from 'node:assert/strict';
 
 import { gradeForScore, GRADE_BANDS } from '../src/utils/gradeBands.js';
 import { colorForSubject } from '../src/utils/subjectColors.js';
-import { resolveTermRange, daysBetween, isoDay } from '../src/utils/termDates.js';
+import { resolveTermRange, daysBetween, isoDay, resolveSchoolAcademicYear } from '../src/utils/termDates.js';
+import { resolveAcademicYear } from '../src/services/parent/portalContext.js';
 import { isWithinRadius } from '../src/utils/geoDistance.js';
 import { parsePeriodTime, isOngoing } from '../src/services/parent/timetable.service.js';
 import { hashTokenForLog } from '../src/utils/tokens.js';
@@ -85,11 +86,18 @@ describe('colorForSubject — stable per name', () => {
 describe('resolveTermRange — GES default fallback', () => {
   const school = { academic: { currentYear: '2026/2027', currentTerm: 'Term 2' } };
 
-  test('Term 2 spans the start-year window in January', () => {
+  test('Term 2 falls in the year after the academic-year start (GES calendar)', () => {
     const r = resolveTermRange('Term 2', '2026/2027', school);
-    // startMonth 0 (Jan) day 5 -> startYear 2026; endMonth 3 (April) day 15.
-    assert.equal(r.start.toISOString().slice(0, 10), '2026-01-05');
-    assert.equal(r.end.toISOString().slice(0, 10), '2026-04-15');
+    // startMonth 0 (Jan) day 5 -> startYear+1 2027; endMonth 3 (April) day 15.
+    assert.equal(r.start.toISOString().slice(0, 10), '2027-01-05');
+    assert.equal(r.end.toISOString().slice(0, 10), '2027-04-15');
+  });
+
+  test('Term 3 also falls in the year after the academic-year start', () => {
+    const r = resolveTermRange('Term 3', '2026/2027', school);
+    // startMonth 3 (April) day 20 -> startYear+1 2027; endMonth 6 (July) day 30.
+    assert.equal(r.start.toISOString().slice(0, 10), '2027-04-20');
+    assert.equal(r.end.toISOString().slice(0, 10), '2027-07-30');
   });
 
   test('Term 1 starts in the start calendar year (GES September start)', () => {
@@ -124,7 +132,31 @@ describe('resolveTermRange — GES default fallback', () => {
   });
 });
 
-// ── Geofence arithmetic ──────────────────────────────────────────────────────
+// ── Parent portal academic-year resolution ─────────────────────────────────────
+
+describe('resolveAcademicYear — parent portal normalization', () => {
+  test('normalizes a bare school year to YYYY/YYYY so ReportCard queries match', () => {
+    // School.academic.currentYear defaults to a bare "2026"; ReportCards are
+    // stored as "2026/2027". The parent read must send the canonical form or
+    // the findOne() silently returns nothing.
+    const school = { academic: { currentYear: '2026' } };
+    assert.equal(resolveAcademicYear({ academicYear: null }, school), '2026/2027');
+  });
+
+  test('passes through an already-canonical school year unchanged', () => {
+    const school = { academic: { currentYear: '2026/2027' } };
+    assert.equal(resolveAcademicYear({ academicYear: null }, school), '2026/2027');
+  });
+
+  test('uses the student year when present, normalizing a bare one', () => {
+    const school = { academic: { currentYear: '2025' } };
+    assert.equal(resolveAcademicYear({ academicYear: '2026' }, school), '2026/2027');
+  });
+
+  test('falls back to the current year when nothing is configured', () => {
+    assert.match(resolveAcademicYear({ academicYear: null }, { academic: {} }), /^\d{4}\/\d{4}$/);
+  });
+});
 
 describe('isWithinRadius — haversine', () => {
   const accra = { lat: 5.5560, lng: -0.2054 };
