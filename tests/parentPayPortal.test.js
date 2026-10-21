@@ -485,6 +485,35 @@ describe('parent portal: initiate validation', () => {
     );
   });
 
+  test('carries the code the parent typed, and the payment it belongs to', () => {
+    // Moolre verifies the payer's number before it sends the approval prompt,
+    // and it answers a code by repeating the request with it. A request that
+    // drops the code is indistinguishable from a first attempt, so the parent
+    // is told their correct code "was not accepted" — every time.
+    const { error, value } = validate(initiatePaymentSchema, {
+      amount: 110000,
+      phone: '0557655008',
+      network: 'MTN',
+      otpCode: '123456',
+      reference: 'SUK-1792573601108-NIZC2A',
+    });
+
+    assert.ok(!error, 'a verification must be accepted by the schema');
+    assert.equal(value.otpCode, '123456');
+    assert.equal(value.reference, 'SUK-1792573601108-NIZC2A');
+  });
+
+  test('a first attempt carries no code', () => {
+    const { error, value } = validate(initiatePaymentSchema, {
+      amount: 110000,
+      phone: '0557655008',
+      network: 'MTN',
+    });
+
+    assert.ok(!error);
+    assert.equal(value.otpCode, undefined);
+  });
+
   test('refuses an amount below one cedi', () => {
     const { error } = validate(initiatePaymentSchema, { amount: 99, phone: '0241234567' });
     assert.ok(error);

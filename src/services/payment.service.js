@@ -197,16 +197,37 @@ export const initiatePayment = async (token, data) => {
   // it sent, and the code would be rejected.
   let reusedPayment = null;
   if (data.otpCode) {
-    reusedPayment = await Payment.findOne({
-      studentId: student._id,
-      provider: "moolre",
-      status: "pending",
-      amount: Number(data.amount),
-      momoPhoneNumber: data.phone || data.phoneNumber || primaryParent?.phone,
-      deletedAt: null,
-    })
-      .sort({ createdAt: -1 })
-      .lean();
+    // The client is asked to send the reference of the payment it is waiting
+    // on. That names the transaction exactly, and it is the only lookup that
+    // cannot drift: the amount and the number are re-sent by the client, and a
+    // parent who edits either of them in the meantime would otherwise send
+    // their code to a payment Moolre never issued it for.
+    if (data.reference) {
+      reusedPayment = await Payment.findOne({
+        reference: data.reference,
+        studentId: student._id,
+        provider: "moolre",
+        // A settled or failed payment is not waiting for a code, and a code
+        // cannot revive it — so only a live one may be continued.
+        status: { $in: ["pending", "processing"] },
+        deletedAt: null,
+      }).lean();
+    }
+
+    // No reference, or one that names nothing of this student's: fall back to
+    // the newest pending payment for the same amount and the same number.
+    if (!reusedPayment) {
+      reusedPayment = await Payment.findOne({
+        studentId: student._id,
+        provider: "moolre",
+        status: "pending",
+        amount: Number(data.amount),
+        momoPhoneNumber: data.phone || data.phoneNumber || primaryParent?.phone,
+        deletedAt: null,
+      })
+        .sort({ createdAt: -1 })
+        .lean();
+    }
   }
 
   const method = reusedPayment

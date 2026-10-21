@@ -154,6 +154,13 @@ export const initiatePaymentSchema = Joi.object({
   // the prompt on their handset. Without this field the payment can never
   // leave the "waiting for a code" state.
   otpCode: Joi.string().trim().max(12).optional().allow("", null),
+  // The reference of the payment already in flight.
+  //
+  // It is only meaningful alongside `otpCode`: Moolre verifies a phone number
+  // against a *transaction*, so the code has to be answered against the same
+  // reference it was sent for. Sending it lets the backend find that exact
+  // payment rather than inferring it from the amount and the number.
+  reference: Joi.string().trim().max(100).optional().allow("", null),
   feesBreakdown: Joi.array().items(Joi.object({
     label: Joi.string().trim().max(100).required(),
     amount: Joi.number().integer().min(0).required(),

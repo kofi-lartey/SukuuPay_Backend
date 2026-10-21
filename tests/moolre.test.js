@@ -298,6 +298,69 @@ describe('the Moolre phone-verification step', () => {
     assert.equal(result.transactionId, 'session-2');
   });
 
+  test('the prompt request carries the session Moolre handed back', async () => {
+    // Moolre names the verification session in its answer. The prompt request
+    // is the continuation of that session, so it has to carry the id — and the
+    // code must not come with it, or Moolre reads the request as a fresh
+    // verification attempt and issues another code instead of the prompt.
+    const responses = [
+      {
+        status: 1,
+        code: 'TP17',
+        message: 'Phone number verification was successful.',
+        data: { sessionid: 'session-9' },
+      },
+      { status: 1, code: 'TR099', message: null, data: 'session-10' },
+    ];
+    const requests = [];
+    let call = 0;
+    global.fetch = async (url, options = {}) => {
+      requests.push(options.body ? JSON.parse(options.body) : null);
+      const payload = responses[call] || responses[responses.length - 1];
+      call += 1;
+      return { ok: true, status: 200, text: async () => JSON.stringify(payload) };
+    };
+
+    await moolre.initiatePayment({
+      amount: 10,
+      phone: '0244000000',
+      network: 'MTN',
+      reference: 'SUK-1',
+      otpCode: '123456',
+    });
+
+    assert.equal(requests[0].otpcode, '123456', 'the code goes on the first request');
+    assert.equal(requests[1].sessionid, 'session-9', 'the session goes on the second');
+    assert.equal(requests[1].otpcode, undefined, 'the code does not go on the second');
+  });
+
+  test('a code Moolre refuses is reported as retryable, not as a broken integration', async () => {
+    // Moolre answers the follow-up with "a code was sent to you" again: the
+    // code was wrong and the number is still unverified. The parent should be
+    // told their code was not accepted, not shown a gateway error.
+    const responses = [
+      { status: 1, code: 'TP17', message: 'Phone number verification was successful.', data: 'all' },
+      { status: 1, code: 'TP14', message: 'Please complete the verification process sent to you via SMS and try again.', data: 'all' },
+    ];
+    let call = 0;
+    global.fetch = async (url, options = {}) => {
+      const payload = responses[call] || responses[responses.length - 1];
+      call += 1;
+      return { ok: true, status: 200, text: async () => JSON.stringify(payload) };
+    };
+
+    const result = await moolre.initiatePayment({
+      amount: 10,
+      phone: '0244000000',
+      network: 'MTN',
+      reference: 'SUK-1',
+      otpCode: '000000',
+    });
+
+    assert.equal(result.status, 'otp_required');
+    assert.equal(result.transactionId, null, 'no prompt has been sent yet');
+  });
+
   test('a prompt that goes out is reported as requested', async () => {
     stubFetch({ status: 1, code: 'TR099', message: null, data: 'session-3' });
 

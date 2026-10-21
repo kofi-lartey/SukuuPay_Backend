@@ -374,11 +374,29 @@ export const initiatePayment = async ({
   // every submitted code read as "not accepted" — the parent kept getting new
   // codes and the prompt never arrived.
   if (code === 'TP17') {
+    const tp17Data = payload?.data && typeof payload.data === 'object' ? payload.data : null;
+    const sessionId =
+      tp17Data?.sessionid || tp17Data?.sessionId || tp17Data?.session_id || null;
     const promptBody = buildBody({
+      ...(sessionId ? { sessionid: sessionId } : {}),
       ...(isSandbox && skipOtp ? { skipotp: true } : {}),
     });
     payload = await request('/open/transact/payment', { body: promptBody, envelope: true });
     code = payload?.code;
+
+    // Moolre answered the follow-up with "a code was sent to you" again: the
+    // code was not accepted, and the number is still unverified. That is a
+    // retryable answer, not a broken integration, so it is reported as one —
+    // the parent is told their code was wrong rather than shown an error
+    // about the gateway.
+    if (code === 'TP14') {
+      return {
+        status: 'otp_required',
+        transactionId: null,
+        message: payload?.message || null,
+        raw: payload,
+      };
+    }
   }
 
   // `TR099` — the prompt is on its way. `data` is the session id.
