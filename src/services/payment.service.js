@@ -190,11 +190,33 @@ export const initiatePayment = async (token, data) => {
   // Find primary parent for contact info
   const primaryParent = (student.parents || []).find((p) => p.isPrimary) || student.parents?.[0];
 
-  // Resolve which gateway handles this payment. When the parent provides a
-  // MoMo phone number, MTN is preferred; when they don't (card payment),
-  // the hosted checkout rail is used.
-  const method = data.phone || data.phoneNumber ? 'momo' : 'card';
-  const gateway = resolveGateway(school, method);
+  // `method`/`gateway` are resolved from the request when we are minting a
+  // new payment. When an OTP code is being submitted we instead reuse the
+  // in-flight payment that triggered the verification prompt: Moolre verifies
+  // per transaction, so a freshly minted reference would never match the OTP
+  // it sent, and the code would be rejected.
+  let reusedPayment = null;
+  if (data.otpCode) {
+    reusedPayment = await Payment.findOne({
+      studentId: student._id,
+      provider: "moolre",
+      status: "pending",
+      amount: Number(data.amount),
+      momoPhoneNumber: data.phone || data.phoneNumber || primaryParent?.phone,
+      deletedAt: null,
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+  }
+
+  const method = reusedPayment
+    ? reusedPayment.paymentMethod || "momo"
+    : data.phone || data.phoneNumber
+      ? "momo"
+      : "card";
+  const gateway = reusedPayment
+    ? reusedPayment.provider || "moolre"
+    : resolveGateway(school, method);
 
   // Stamp the plan this payment settles, when there is a live one.
   //
@@ -209,37 +231,42 @@ export const initiatePayment = async (token, data) => {
     deletedAt: null,
   }).select("_id");
 
-  // Create payment record
-  const payment = await Payment.create({
-    studentId: student._id,
-    schoolId: student.schoolId,
-    parentId: primaryParent?._id || null,
-    amount,
-    currency: "GHS",
-    status: "pending",
-    paymentMethod: method,
-    provider: gateway,
-    // The portal sends `phone`/`network`; the admin flow sends
-    // `phoneNumber`/`momoNetwork`. The route's schema accepts either, and this
-    // is where the two are read — reading only the admin spelling meant the
-    // parent's chosen network was dropped to `UNKNOWN` and the payer's number
-    // silently fell back to the guardian on file, so the prompt went to the
-    // wrong handset.
-    momoPhoneNumber: data.phone || data.phoneNumber || primaryParent?.phone,
-    // `resolveNetwork` maps the parent-facing spellings (`Telecel`,
-    // `AirtelTigo`) onto the model's enum, so the network that reaches the
-    // gateway is one it can route.
-    momoNetwork: resolveNetwork(data.network || data.momoNetwork),
-    description: data.description || `School fees payment for ${student.studentName}`,
-    feesBreakdown: data.feesBreakdown || [],
-    paymentPlanId: livePlan?._id || null,
-    // The portal polls `GET /pay/:token/verify/:reference`, which resolves a row by
-    // this value. `paymentId` is not usable for it: it is generated in a pre-save
-    // hook, so it does not exist until after the document is written, and the
-    // parent has the response long before any retry could look it up.
-    reference: generatePaymentReference(),
-    createdBy: student.createdBy,
-  });
+  // Reuse the in-flight OTP-pending payment, or mint a new one.
+  let payment;
+  if (reusedPayment) {
+    payment = await Payment.findById(reusedPayment._id);
+  } else {
+    payment = await Payment.create({
+      studentId: student._id,
+      schoolId: student.schoolId,
+      parentId: primaryParent?._id || null,
+      amount,
+      currency: "GHS",
+      status: "pending",
+      paymentMethod: method,
+      provider: gateway,
+      // The portal sends `phone`/`network`; the admin flow sends
+      // `phoneNumber`/`momoNetwork`. The route's schema accepts either, and this
+      // is where the two are read — reading only the admin spelling meant the
+      // parent's chosen network was dropped to `UNKNOWN` and the payer's number
+      // silently fell back to the guardian on file, so the prompt went to the
+      // wrong handset.
+      momoPhoneNumber: data.phone || data.phoneNumber || primaryParent?.phone,
+      // `resolveNetwork` maps the parent-facing spellings (`Telecel`,
+      // `AirtelTigo`) onto the model's enum, so the network that reaches the
+      // gateway is one it can route.
+      momoNetwork: resolveNetwork(data.network || data.momoNetwork),
+      description: data.description || `School fees payment for ${student.studentName}`,
+      feesBreakdown: data.feesBreakdown || [],
+      paymentPlanId: livePlan?._id || null,
+      // The portal polls `GET /pay/:token/verify/:reference`, which resolves a row by
+      // this value. `paymentId` is not usable for it: it is generated in a pre-save
+      // hook, so it does not exist until after the document is written, and the
+      // parent has the response long before any retry could look it up.
+      reference: generatePaymentReference(),
+      createdBy: student.createdBy,
+    });
+  }
 
   if (gateway === "moolre") {
     // A card payment has no USSD prompt to send: the parent completes it on
