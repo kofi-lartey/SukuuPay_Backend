@@ -745,8 +745,23 @@ export const withdrawTimetable = async (
 export const approveTimetable = async (
   schoolId,
   adminUserId,
-  { className, term, academicYear, comment }
+  arg
 ) => {
+  const { className, term, academicYear, comment } = (arg && arg.className) ? arg : {};
+  // Snippet-style approval by document id (final clash check).
+  if (arg && !arg.className) {
+    const timetableId = (arg && (arg.timetableId || arg._id)) || arg;
+    const timetable = await Timetable.findById(timetableId);
+    if (!timetable) throw new ApiError('Timetable not found', 404);
+    for (const [day, periods] of Object.entries(timetable.days || {})) {
+      for (const period of (periods || [])) {
+        await checkTeacherClash(schoolId, timetable.term, timetable.academicYear, day, period.startTime, period.endTime, period.teacherId);
+      }
+    }
+    timetable.status = 'approved';
+    await timetable.save();
+    return timetable.toObject ? timetable.toObject() : timetable;
+  }
   if (!className || !term || !academicYear) {
     throw new ApiError(
       "className, term, and academicYear are required",
@@ -1333,4 +1348,45 @@ export const withdrawRemovalRequest = async (schoolId, userId, { className, term
   });
 
   return timetable.toObject();
+};
+
+export const checkTeacherClash = async (schoolId, term, academicYear, day, startTime, endTime, teacherId) => {
+  if (!teacherId) return;
+  const key = 'days.' + day;
+  const query = { schoolId: schoolId, term: term, academicYear: academicYear, status: { $in: ['approved', 'published'] } };
+  query[key] = {
+    $elemMatch: {
+      teacherId: teacherId,
+      $or: [
+        { startTime: { $lte: startTime }, endTime: { $gt: startTime } },
+        { startTime: { $lt: endTime }, endTime: { $gte: endTime } },
+        { startTime: { $gte: startTime }, endTime: { $lte: endTime } }
+      ]
+    }
+  };
+  const overlapping = await Timetable.findOne(query);
+  if (overlapping) {
+    throw new ApiError('Teacher is already scheduled for ' + overlapping.className + ' at this time.', 409, 'TIMETABLE_CLASH');
+  }
+};
+
+export const submitTimetableForApproval = async (schoolId, userId, payload) => {
+  const { className, term, academicYear, days } = payload || {};
+  for (const [d, periods] of Object.entries(days || {})) {
+    for (const period of (periods || [])) {
+      await checkTeacherClash(schoolId, term, academicYear, d, period.startTime, period.endTime, period.teacherId);
+    }
+  }
+  const timetable = await Timetable.findOneAndUpdate(
+    { schoolId: schoolId, className: className, term: term, academicYear: academicYear },
+    {
+      $set: {
+        days: days,
+        status: 'pending_approval',
+        submittedBy: userId,
+      },
+    },
+    { upsert: true, new: true }
+  );
+  return timetable && timetable.toObject ? timetable.toObject() : timetable;
 };

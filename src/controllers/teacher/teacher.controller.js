@@ -14,7 +14,7 @@ import {
   saveSingleGrade,
   saveBulkGrades,
 } from "../../services/teacher/grades.service.js";
-import { getTeacherDashboard } from "../../services/teacher/dashboard.service.js";
+import { getTeacherDashboard, acceptCurrentPeriod } from "../../services/teacher/dashboard.service.js";
 import { getTeacherSchedule } from "../../services/teacher/schedule.service.js";
 import { resolveErrorMessage } from "../../middleware/errorHandler.js";
 
@@ -184,6 +184,21 @@ export const getAvailableClassesController = async (req, res) => {
       message: "Classes loaded",
       data,
     });
+  } catch (error) {
+    return failure(res, error);
+  }
+};
+
+
+export const acceptCurrentPeriodController = async (req, res) => {
+  try {
+    const data = await acceptCurrentPeriod(
+      req.teacher._id,
+      req.body.timetableId,
+      req.body.day,
+      req.body.periodNumber
+    );
+    return res.status(200).json({ success: true, message: "Period accepted", data });
   } catch (error) {
     return failure(res, error);
   }

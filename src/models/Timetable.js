@@ -27,6 +27,7 @@ const periodSchema = new mongoose.Schema(
     endTime: { type: String, required: true },   // "8:45 am"
     subject: { type: String, required: true, trim: true },
     teacher: { type: String, default: "" },
+    teacherId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     room: { type: String, default: "" },
   },
   { _id: false }
@@ -59,7 +60,7 @@ const timetableSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["draft", "published"],
+      enum: ["draft", "published", "pending_approval", "approved", "rejected"],
       default: "draft",
       index: true,
     },
@@ -151,6 +152,7 @@ const timetableSchema = new mongoose.Schema(
       enum: ["pending", "removed"],
       default: null,
     },
+    adminNotes: { type: String, default: "" },
     deletedAt: { type: Date, default: null, index: true },
   },
   { timestamps: true }

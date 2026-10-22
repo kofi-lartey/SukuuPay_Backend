@@ -1,4 +1,6 @@
 import { Attendance } from "../../models/Attendance.js";
+import ApiError from "../../utils/ApiError.js";
+import { TeacherAttendance } from "../../models/TeacherAttendance.js";
 import { Grade } from "../../models/Grade.js";
 import { ReportCard } from "../../models/ReportCard.js";
 import { loadTeacherScope } from "../../utils/teacherScope.js";
@@ -172,4 +174,49 @@ export const getTeacherDashboard = async (user) => {
     pendingGrades,
     pending,
   };
+};
+
+
+export const acceptCurrentPeriod = async (teacherId, timetableId, day, periodNumber) => {
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+
+  const timetable = await (await import("../../models/Timetable.js")).Timetable.findById(timetableId);
+  if (!timetable || (timetable.status !== "approved" && timetable.status !== "published")) {
+    throw new ApiError("Timetable not found or not approved", 404);
+  }
+
+  const period = (timetable.days?.[day] || []).find((p) => p.period === periodNumber);
+  if (!period) throw new ApiError("Period not found", 404);
+
+  const _m = String(period.startTime).match(/^(\d{1,2}):(\d{2})/);
+  const startHour = _m ? Number(_m[1]) : 0;
+  const startMinute = _m ? Number(_m[2]) : 0;
+  const startTimestamp = new Date(now);
+  startTimestamp.setHours(startHour, startMinute, 0, 0);
+
+  const diffMinutes = Math.round((now - startTimestamp) / 60000);
+  const status = diffMinutes > 10 ? "late" : "present";
+
+  const record = await TeacherAttendance.findOneAndUpdate(
+    { teacherId, date: today, timetableId, periodNumber },
+    {
+      $setOnInsert: {
+        schoolId: timetable.schoolId,
+        teacherId,
+        date: today,
+        timetableId,
+        className: timetable.className,
+        subject: period.subject,
+        periodNumber,
+        status,
+        arrivedAt: now,
+        minutesLate: diffMinutes > 0 ? diffMinutes : 0,
+        markedBy: teacherId,
+      }
+    },
+    { upsert: true, new: true }
+  );
+
+  return record;
 };

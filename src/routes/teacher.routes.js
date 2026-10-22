@@ -17,6 +17,7 @@ import {
   saveBulkGradesController,
   getScheduleController,
   getAvailableClassesController,
+  acceptCurrentPeriodController,
 } from "../controllers/teacher/teacher.controller.js";
 import {
   submitTimetableController,
@@ -148,6 +149,8 @@ router.post(
 
 // ── Schedule ──
 router.get("/schedule", getScheduleController);
+
+router.post("/accept-period", acceptCurrentPeriodController);
 
 // ── Timetables (teacher submission flow) ──
 // A teacher drafts a timetable through `PUT /admin/timetables` (gated to
