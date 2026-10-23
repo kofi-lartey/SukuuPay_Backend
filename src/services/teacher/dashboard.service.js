@@ -1,6 +1,7 @@
 import { Attendance } from "../../models/Attendance.js";
 import ApiError from "../../utils/ApiError.js";
 import { TeacherAttendance } from "../../models/TeacherAttendance.js";
+import { Timetable } from "../../models/Timetable.js";
 import { Grade } from "../../models/Grade.js";
 import { ReportCard } from "../../models/ReportCard.js";
 import { loadTeacherScope } from "../../utils/teacherScope.js";
@@ -177,23 +178,53 @@ export const getTeacherDashboard = async (user) => {
 };
 
 
-export const acceptCurrentPeriod = async (teacherId, timetableId, day, periodNumber) => {
+/**
+ * Marks a teacher as "Present" or "Late" for their current period.
+ *
+ * The teacher accepts their current class period through the dashboard's
+ * CurrentPeriodWidget. The record is keyed by teacher, timetable, date and
+ * period so a teacher can accept multiple periods in one day. Late status is
+ * derived from the wall-clock start time of the period against the moment the
+ * teacher accepted — a teacher who accepts more than 10 minutes after the
+ * period began is marked late, otherwise present.
+ *
+ * `missed` is not written here. A period the teacher never accepts is marked
+ * missed by the scheduled job (`jobs/teacherAttendance.job.js`) once the
+ * period's end time has passed, so the dashboard does not need to guess.
+ */
+export const acceptCurrentPeriod = async (teacherId, schoolId, timetableId, day, periodNumber) => {
   const now = new Date();
-  const today = now.toISOString().slice(0, 10);
+  const today = new Date(now);
+  today.setUTCHours(0, 0, 0, 0);
 
-  const timetable = await (await import("../../models/Timetable.js")).Timetable.findById(timetableId);
-  if (!timetable || (timetable.status !== "approved" && timetable.status !== "published")) {
-    throw new ApiError("Timetable not found or not approved", 404);
+  const timetable = await Timetable.findById(timetableId).lean();
+  if (!timetable) {
+    throw new ApiError("Timetable not found", 404, "NOT_FOUND");
+  }
+  if (
+    timetable.status !== "approved" &&
+    timetable.status !== "published" &&
+    timetable.submissionStatus !== "approved" &&
+    timetable.submissionStatus !== "published"
+  ) {
+    throw new ApiError("Timetable is not approved or published", 403, "TIMETABLE_NOT_LIVE");
   }
 
-  const period = (timetable.days?.[day] || []).find((p) => p.period === periodNumber);
-  if (!period) throw new ApiError("Period not found", 404);
+  const periods = timetable.days?.[day] || [];
+  const period = periods.find((p) => p.period === periodNumber);
+  if (!period) {
+    throw new ApiError("Period not found in timetable", 404, "PERIOD_NOT_FOUND");
+  }
 
-  const _m = String(period.startTime).match(/^(\d{1,2}):(\d{2})/);
-  const startHour = _m ? Number(_m[1]) : 0;
-  const startMinute = _m ? Number(_m[2]) : 0;
-  const startTimestamp = new Date(now);
-  startTimestamp.setHours(startHour, startMinute, 0, 0);
+  const startMatch = String(period.startTime || "").match(/^(\d{1,2}):(\d{2})/);
+  if (!startMatch) {
+    throw new ApiError("Period start time is invalid", 400, "INVALID_START_TIME");
+  }
+  const startHour = Number(startMatch[1]);
+  const startMinute = Number(startMatch[2]);
+
+  const startTimestamp = new Date(today);
+  startTimestamp.setUTCHours(startHour, startMinute, 0, 0);
 
   const diffMinutes = Math.round((now - startTimestamp) / 60000);
   const status = diffMinutes > 10 ? "late" : "present";
@@ -201,7 +232,7 @@ export const acceptCurrentPeriod = async (teacherId, timetableId, day, periodNum
   const record = await TeacherAttendance.findOneAndUpdate(
     { teacherId, date: today, timetableId, periodNumber },
     {
-      $setOnInsert: {
+      $set: {
         schoolId: timetable.schoolId,
         teacherId,
         date: today,
@@ -211,12 +242,14 @@ export const acceptCurrentPeriod = async (teacherId, timetableId, day, periodNum
         periodNumber,
         status,
         arrivedAt: now,
-        minutesLate: diffMinutes > 0 ? diffMinutes : 0,
+        minutesLate: Math.max(0, diffMinutes),
         markedBy: teacherId,
-      }
+        markedAt: now,
+        deletedAt: null,
+      },
     },
     { upsert: true, new: true }
-  );
+  ).lean();
 
   return record;
 };

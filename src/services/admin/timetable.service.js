@@ -652,6 +652,27 @@ export const submitTimetable = async (
     );
   }
 
+  // Conflict validation: no teacher may be double-booked across classes at the
+  // same time. A Class Teacher cannot be assigned to more than one class during
+  // the same period — their teacherId would appear in two live timetables at
+  // overlapping times. Drafts are not checked because they are not yet live;
+  // the clash is only enforced when the timetable is submitted for approval.
+  for (const [day, periods] of Object.entries(timetable.days || {})) {
+    for (const period of (periods || [])) {
+      if (!period.teacherId) continue;
+      await checkTeacherClash(
+        schoolId,
+        term,
+        academicYear,
+        day,
+        period.startTime,
+        period.endTime,
+        period.teacherId,
+        timetable._id
+      );
+    }
+  }
+
   const updated = await Timetable.findOneAndUpdate(
     { schoolId, className, term, academicYear, deletedAt: null },
     {
@@ -755,7 +776,16 @@ export const approveTimetable = async (
     if (!timetable) throw new ApiError('Timetable not found', 404);
     for (const [day, periods] of Object.entries(timetable.days || {})) {
       for (const period of (periods || [])) {
-        await checkTeacherClash(schoolId, timetable.term, timetable.academicYear, day, period.startTime, period.endTime, period.teacherId);
+        await checkTeacherClash(
+          schoolId,
+          timetable.term,
+          timetable.academicYear,
+          day,
+          period.startTime,
+          period.endTime,
+          period.teacherId,
+          timetableId
+        );
       }
     }
     timetable.status = 'approved';
@@ -783,6 +813,26 @@ export const approveTimetable = async (
       403,
       "TIMETABLE_NOT_SUBMITTED"
     );
+  }
+
+  // Conflict validation: no teacher may be double-booked across classes at the
+  // same time. A Class Teacher assigned to more than one class during the same
+  // period is caught here by the same rule — their teacherId appears in two
+  // live timetables at overlapping times.
+  for (const [day, periods] of Object.entries(timetable.days || {})) {
+    for (const period of (periods || [])) {
+      if (!period.teacherId) continue;
+      await checkTeacherClash(
+        schoolId,
+        term,
+        academicYear,
+        day,
+        period.startTime,
+        period.endTime,
+        period.teacherId,
+        timetable._id
+      );
+    }
   }
 
   const updated = await Timetable.findOneAndUpdate(
@@ -1350,43 +1400,106 @@ export const withdrawRemovalRequest = async (schoolId, userId, { className, term
   return timetable.toObject();
 };
 
-export const checkTeacherClash = async (schoolId, term, academicYear, day, startTime, endTime, teacherId) => {
+/**
+ * Check whether a teacher is already scheduled for another class at this time.
+ *
+ * Prevents double-booking a teacher across different classes. Only checks
+ * against timetables that are approved or published — drafts are not yet live
+ * and do not create a clash.
+ *
+ * Time overlap is any of:
+ *   - The new period starts during an existing period.
+ *   - The new period ends during an existing period.
+ *   - The new period completely contains an existing period.
+ *   - The new period is completely contained by an existing period.
+ *
+ * `excludeTimetableId` lets a timetable re-check itself after an edit without
+ * flagging its own periods.
+ */
+export const checkTeacherClash = async (
+  schoolId,
+  term,
+  academicYear,
+  day,
+  startTime,
+  endTime,
+  teacherId,
+  excludeTimetableId = null
+) => {
   if (!teacherId) return;
-  const key = 'days.' + day;
-  const query = { schoolId: schoolId, term: term, academicYear: academicYear, status: { $in: ['approved', 'published'] } };
+
+  const key = "days." + day;
+  const query = {
+    schoolId,
+    term,
+    academicYear,
+    status: { $in: ["approved", "published"] },
+  };
   query[key] = {
     $elemMatch: {
-      teacherId: teacherId,
+      teacherId,
       $or: [
         { startTime: { $lte: startTime }, endTime: { $gt: startTime } },
         { startTime: { $lt: endTime }, endTime: { $gte: endTime } },
-        { startTime: { $gte: startTime }, endTime: { $lte: endTime } }
-      ]
-    }
+        { startTime: { $gte: startTime }, endTime: { $lte: endTime } },
+      ],
+    },
   };
-  const overlapping = await Timetable.findOne(query);
+  if (excludeTimetableId) {
+    query._id = { $ne: excludeTimetableId };
+  }
+
+  const overlapping = await Timetable.findOne(query).lean();
   if (overlapping) {
-    throw new ApiError('Teacher is already scheduled for ' + overlapping.className + ' at this time.', 409, 'TIMETABLE_CLASH');
+    throw new ApiError(
+      `Teacher is already scheduled for ${overlapping.className} at this time.`,
+      409,
+      "TIMETABLE_CLASH"
+    );
   }
 };
 
+/**
+ * Submit a timetable for approval, after running clash detection on every period.
+ *
+ * This is the teacher-facing submission entry point. It validates that the
+ * teacher is not double-booked, then sets the timetable to `pending_approval`.
+ */
 export const submitTimetableForApproval = async (schoolId, userId, payload) => {
   const { className, term, academicYear, days } = payload || {};
+
+  // 1. Validate no clashes for the submitted periods
   for (const [d, periods] of Object.entries(days || {})) {
-    for (const period of (periods || [])) {
-      await checkTeacherClash(schoolId, term, academicYear, d, period.startTime, period.endTime, period.teacherId);
+    for (const period of periods || []) {
+      await checkTeacherClash(
+        schoolId,
+        term,
+        academicYear,
+        d,
+        period.startTime,
+        period.endTime,
+        period.teacherId
+      );
     }
   }
+
+  // 2. Save as pending_approval
   const timetable = await Timetable.findOneAndUpdate(
-    { schoolId: schoolId, className: className, term: term, academicYear: academicYear },
+    {
+      schoolId,
+      className,
+      term,
+      academicYear,
+    },
     {
       $set: {
-        days: days,
-        status: 'pending_approval',
+        days,
+        status: "pending_approval",
         submittedBy: userId,
       },
     },
     { upsert: true, new: true }
   );
+
   return timetable && timetable.toObject ? timetable.toObject() : timetable;
 };

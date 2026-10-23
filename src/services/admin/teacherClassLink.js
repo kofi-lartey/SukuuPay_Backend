@@ -55,8 +55,12 @@ const TEACHING_ROLES = ["teacher", "school_admin"];
  * `subject` is the class-teacher slot; a named `subject` is a subject-teacher
  * slot. The two never collide because they are different rows, so one person can
  * be a class's form teacher *and* its Mathematics teacher.
+ *
+ * `canMarkAttendance` decides whether the subject-teacher slot carries
+ * attendance rights for that subject in that class. The class-teacher slot
+ * (empty subject) always owns attendance and ignores the flag.
  */
-export const moveClassSlot = async (schoolId, className, subject, teacherUserId) => {
+export const moveClassSlot = async (schoolId, className, subject, teacherUserId, { canMarkAttendance = false } = {}) => {
   await User.updateMany(
     {
       schoolId,
@@ -67,7 +71,7 @@ export const moveClassSlot = async (schoolId, className, subject, teacherUserId)
   );
   await User.updateOne(
     { _id: teacherUserId },
-    { $addToSet: { assignedClasses: { className, subject } } }
+    { $addToSet: { assignedClasses: { className, subject, canMarkAttendance } } }
   );
 };
 

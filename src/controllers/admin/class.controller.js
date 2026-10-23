@@ -100,7 +100,11 @@ export const assignSubjectTeacherController = async (req, res) => {
       req.user.schoolId,
       req.user._id,
       req.params.className,
-      req.body
+      {
+        subject: req.body.subject,
+        teacherUserId: req.body.teacherId,
+        canMarkAttendance: req.body.canMarkAttendance,
+      }
     );
     return res.status(200).json({
       success: true,

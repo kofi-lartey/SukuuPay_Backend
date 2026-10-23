@@ -93,6 +93,15 @@ export const userModel = new mongoose.Schema(
       {
         className: { type: String, required: true, trim: true },
         subject: { type: String, default: "", trim: true },
+        /**
+         * Whether this subject-teacher slot carries attendance rights for its
+         * class. Only meaningful when `subject` is non-empty — the class-teacher
+         * slot (empty subject) always owns attendance for its class. A teacher
+         * who is Class Teacher of JHS 2A but Subject Teacher of Mathematics in
+         * JHS 3B holds both slots, and this flag decides whether their JHS 3B
+         * Mathematics periods appear on their "Accept Class" widget.
+         */
+        canMarkAttendance: { type: Boolean, default: false },
       },
     ],
 

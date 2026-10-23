@@ -273,12 +273,15 @@ export const assignClassTeacher = async (schoolId, userId, className, teacherUse
  * Replaces whatever teacher holds that `{ className, subject }` slot and leaves
  * every other subject's teacher untouched — English's teacher is not affected by
  * a change to Mathematics. `moveClassSlot` does the replace-or-add.
+ *
+ * `canMarkAttendance` decides whether this subject teacher may mark attendance
+ * for their subject in this class. The class-teacher slot always owns it.
  */
 export const assignSubjectTeacher = async (
   schoolId,
   userId,
   className,
-  { subject, teacherUserId }
+  { subject, teacherUserId, canMarkAttendance = false }
 ) => {
   await assertClassExists(schoolId, className);
   if (!subject || subject.trim().length < 2) {
@@ -288,7 +291,7 @@ export const assignSubjectTeacher = async (
   const teacher = await loadTeacher(schoolId, teacherUserId);
   const previous = await currentSlotHolder(schoolId, className, subj);
 
-  await moveClassSlot(schoolId, className, subj, teacher._id);
+  await moveClassSlot(schoolId, className, subj, teacher._id, { canMarkAttendance });
 
   await auditLog({
     action: AUDIT_ACTIONS.CLASS_ASSIGN_SUBJECT_TEACHER,
@@ -302,13 +305,14 @@ export const assignSubjectTeacher = async (
       previousTeacherId: previous?._id || null,
       teacherId: teacher._id,
       teacherName: teacher.name,
+      canMarkAttendance,
     },
   });
 
   return {
     className,
     subject: subj,
-    subjectTeacher: { teacherId: teacher._id, name: teacher.name, role: teacher.role },
+    subjectTeacher: { teacherId: teacher._id, name: teacher.name, role: teacher.role, canMarkAttendance },
   };
 };
 
@@ -377,6 +381,7 @@ export const getClassAssignments = async (schoolId, className) => {
         role: teacher.role,
         subject: entry.subject || "",
         isClassTeacher: !entry.subject,
+        canMarkAttendance: !!entry.canMarkAttendance,
       });
     }
   }

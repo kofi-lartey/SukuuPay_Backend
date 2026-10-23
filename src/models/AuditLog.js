@@ -314,6 +314,17 @@ const AUDIT_ACTIONS = [
   "teacher.grade.save",
   "teacher.grade.bulk.save",
 
+  // ── Teacher punctuality ──
+  //
+  // A teacher accepting their current period through the dashboard's
+  // CurrentPeriodWidget, and the scheduled sweep that marks periods the
+  // teacher never accepted as missed. The accept is a person's action — it
+  // names the teacher, and the audit row says so. The sweep is the
+  // scheduler's: there is no actor, so `userId` is null and the row is the
+  // durable record that the sweep ran and what it marked.
+  "teacher.period.accept",
+  "teacher.attendance.sweep",
+
   // ── Parent portal reads ───────────────────────────────────────────────────
   //
   // Unauthenticated reads, keyed by a hashed pay token. A parent opening

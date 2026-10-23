@@ -5,6 +5,7 @@ import mongoose from 'mongoose';
 import job from './utils/cron.js';
 import installmentReminderJob from './jobs/installmentReminder.job.js';
 import healthCheckJob from './jobs/healthCheck.job.js';
+import teacherAttendanceJob from './jobs/teacherAttendance.job.js';
 import routes from './routes/index.js';
 import { healthRoute } from './routes/health.routes.js';
 import { whatsappRoute } from './routes/whatsapp.routes.js';
@@ -22,6 +23,7 @@ const app = express();
 job.start(); // Start the cron job to run the health check every 14 minutes
 installmentReminderJob.start(); // Daily 08:00 Accra sweep of plan installments
 healthCheckJob.start(); // Every 5 min: probes MongoDB, payment gateways and SMS
+teacherAttendanceJob.start(); // Every 5 min: marks missed teacher periods
 app.set('trust proxy', 1);
 
 // ─────────────────────────────────────────────

@@ -97,6 +97,7 @@ export const assignClassTeacherSchema = Joi.object({
 export const assignSubjectTeacherSchema = Joi.object({
   subject: Joi.string().trim().min(2).max(80).required(),
   teacherId: Joi.string().pattern(OBJECT_ID).required(),
+  canMarkAttendance: Joi.boolean().default(false),
 });
 
 export const subjectTeacherParamsSchema = Joi.object({

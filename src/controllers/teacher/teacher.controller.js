@@ -194,6 +194,7 @@ export const acceptCurrentPeriodController = async (req, res) => {
   try {
     const data = await acceptCurrentPeriod(
       req.teacher._id,
+      req.teacher.schoolId,
       req.body.timetableId,
       req.body.day,
       req.body.periodNumber

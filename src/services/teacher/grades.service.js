@@ -358,13 +358,16 @@ const resolveMaxScore = (assessmentType, requested, policy) => {
 };
 
 /**
- * The shared write body: resolve the class, the school, the year and the term,
+ * The shared write scope: resolve the class, the school, the year and the term,
  * and confirm the students are in the class being marked.
  *
- * Two guards that are easy to skip and each defend a different hole:
+ * Three guards:
  *
  *  - **The scope check.** A class name in a payload is untrusted like any other
  *    input; it is checked against `User.assignedClasses` exactly as a GET is.
+ *  - **The subject check.** A subject teacher may only grade subjects they are
+ *    assigned to in that class. A class teacher (empty-subject slot) and
+ *    school admins may grade every subject in the class.
  *  - **The roster check.** The upsert key includes `schoolId`, so a forged
  *    `studentId` would otherwise write a grade row *for another school's
  *    student* into this school's collection. Verifying every id resolves to a
@@ -372,7 +375,10 @@ const resolveMaxScore = (assessmentType, requested, policy) => {
  *    `admin.attendance.service.js:bulkMarkAttendance` already runs before it
  *    writes a register.
  */
-const resolveWriteScope = async (user, { className, term, academicYear }) => {
+const resolveWriteScope = async (
+  user,
+  { className, term, academicYear, subject }
+) => {
   if (!className || !term) {
     throw new ApiError(
       "className and term are required",
@@ -388,6 +394,32 @@ const resolveWriteScope = async (user, { className, term, academicYear }) => {
       403,
       "FORBIDDEN_SCOPE"
     );
+  }
+
+  // Subject-level gate: a subject teacher grades only their assigned subjects;
+  // a class teacher or school admin grades every subject in the class.
+  if (subject) {
+    const ADMIN_ROLES = ["school_admin", "super_admin"];
+    const isAdmin = ADMIN_ROLES.includes(user.role);
+    const entry = classes.find((c) => c.className === className);
+    const isClassTeacher = Array.isArray(user.assignedClasses)
+      ? user.assignedClasses.some(
+          (e) =>
+            String(e.className || "").trim() === className &&
+            String(e.subject || "").trim() === ""
+        )
+      : false;
+    const isAuthorised =
+      isAdmin ||
+      isClassTeacher ||
+      (Boolean(entry) && Array.isArray(entry.subjects) && entry.subjects.includes(subject));
+    if (!isAuthorised) {
+      throw new ApiError(
+        "You are not assigned to teach this subject in this class",
+        403,
+        "FORBIDDEN_SUBJECT"
+      );
+    }
   }
 
   return {
@@ -494,7 +526,12 @@ export const saveSingleGrade = async (user, payload) => {
     );
   }
 
-  const scope = await resolveWriteScope(user, { className, term, academicYear });
+  const scope = await resolveWriteScope(user, {
+    className,
+    term,
+    academicYear,
+    subject,
+  });
 
   const enrolled = await classStudentIds(user.schoolId, className);
   if (!enrolled.has(String(studentId))) {
@@ -611,7 +648,12 @@ export const saveBulkGrades = async (user, payload) => {
     );
   }
 
-  const scope = await resolveWriteScope(user, { className, term, academicYear });
+  const scope = await resolveWriteScope(user, {
+    className,
+    term,
+    academicYear,
+    subject,
+  });
 
   const enrolled = await classStudentIds(user.schoolId, className);
 

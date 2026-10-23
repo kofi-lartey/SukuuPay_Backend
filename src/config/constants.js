@@ -329,6 +329,17 @@ export const AUDIT_ACTIONS = {
   TEACHER_GRADE_SAVE: "teacher.grade.save",
   TEACHER_GRADE_BULK_SAVE: "teacher.grade.bulk.save",
 
+  // ── Teacher punctuality ──
+  //
+  // A teacher accepting their current period through the dashboard's
+  // CurrentPeriodWidget, and the scheduled sweep that marks periods the
+  // teacher never accepted as missed. The accept is a person's action — it
+  // names the teacher, and the audit row says so. The sweep is the
+  // scheduler's: there is no actor, so `userId` is null and the row is the
+  // durable record that the sweep ran and what it marked.
+  TEACHER_PERIOD_ACCEPT: "teacher.period.accept",
+  TEACHER_ATTENDANCE_SWEEP: "teacher.attendance.sweep",
+
   // ── Parent portal reads ──
   // Unauthenticated reads through a pay token, hashed before logging
   // (`utils/tokens.js:hashTokenForLog`). Recorded for the same reason

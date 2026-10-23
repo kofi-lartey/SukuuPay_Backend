@@ -1,4 +1,5 @@
 import { Timetable } from "../../models/Timetable.js";
+import { TeacherAttendance } from "../../models/TeacherAttendance.js";
 import {
   loadTeacherScope,
   assertTeacherScope,
@@ -135,6 +136,7 @@ export const getTeacherSchedule = async (user) => {
 
         flat.push({
           day,
+          timetableId: timetable._id,
           className: timetable.className,
           subject: p.subject,
           subjectColor: colorForSubject(p.subject),
@@ -168,6 +170,21 @@ export const getTeacherSchedule = async (user) => {
   });
   const markedSet = new Set(markedToday);
 
+  // The teacher's own punctuality for today's periods, so the dashboard's
+  // "Accept Class" button does not reappear after a reload. Keyed by
+  // timetable + period, which is the unique key `TeacherAttendance` writes.
+  const acceptedToday = await TeacherAttendance.find({
+    teacherId: user._id,
+    date: startOfAccraToday(),
+    deletedAt: null,
+  }).lean();
+  const acceptedByPeriod = new Map(
+    acceptedToday.map((row) => [
+      `${row.timetableId}|${row.periodNumber}`,
+      row.status,
+    ])
+  );
+
   for (const period of flat) {
     if (period.day !== clock.weekday) continue;
 
@@ -177,6 +194,13 @@ export const getTeacherSchedule = async (user) => {
       // A period the school never gave times cannot be "missed" — there is no
       // moment at which it was due.
       period.status = "pending";
+      continue;
+    }
+
+    const accepted = acceptedByPeriod.get(`${period.timetableId}|${period.period}`);
+    if (accepted) {
+      period.status = accepted;
+      period.accepted = true;
       continue;
     }
 
