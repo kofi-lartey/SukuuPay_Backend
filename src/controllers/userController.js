@@ -133,7 +133,8 @@ const deliverInvitationEmail = async ({
   } catch (error) {
     return { sent: false, reason: error.message };
   }
-};
+}; 
+
 
 export const inviteUser = async (req, res) => {
   let normalizedEmail;
@@ -327,7 +328,7 @@ export const inviteUser = async (req, res) => {
         : `${user.name} was added, but the invitation email could not be sent. Re-send it from this page.`,
       user: user.toJSON(),
       emailSent: delivery.sent,
-      ...(delivery.sent ? {} : { code: 'INVITE_EMAIL_FAILED' }),
+      ...(delivery.sent ? {} : { code: 'INVITE_EMAIL_FAILED', emailFailureReason: delivery.reason }),
     });
   } catch (error) {
     if (error.code === 11000) {
@@ -501,7 +502,7 @@ export const resendUserInvite = async (req, res) => {
         : 'The invitation still could not be sent. Check the address and try again.',
       user: user.toJSON(),
       emailSent: delivery.sent,
-      ...(delivery.sent ? {} : { code: 'INVITE_EMAIL_FAILED' }),
+      ...(delivery.sent ? {} : { code: 'INVITE_EMAIL_FAILED', emailFailureReason: delivery.reason }),
     });
   } catch (error) {
     if (error.name === 'CastError') {
@@ -881,3 +882,6 @@ export const deleteUser = async (req, res) => {
     });
   }
 };
+
+
+
