@@ -69,6 +69,11 @@ export const moveClassSlot = async (schoolId, className, subject, teacherUserId,
     },
     { $pull: { assignedClasses: { className, subject } } }
   );
+  // Ensure the target teacher doesn't keep a stale slot with an old attendance flag.
+  await User.updateOne(
+    { _id: teacherUserId },
+    { $pull: { assignedClasses: { className, subject } } }
+  );
   await User.updateOne(
     { _id: teacherUserId },
     { $addToSet: { assignedClasses: { className, subject, canMarkAttendance } } }

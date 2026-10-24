@@ -230,6 +230,24 @@ export const listTeacherStudents = async (schoolId, teacherUserId, query = {}) =
     return result;
   };
 
+  const loadClassSubjects = async () => {
+    const teachers = await User.find({ schoolId, deletedAt: null }).select("assignedClasses").lean();
+    const map = new Map();
+    for (const t of teachers) {
+      for (const slot of t.assignedClasses || []) {
+        const subject = String(slot.subject || '').trim();
+        if (!subject) continue;
+        const className = String(slot.className || '').trim();
+        if (!className) continue;
+        if (!map.has(className)) map.set(className, new Set());
+        map.get(className).add(subject[0].toUpperCase());
+      }
+    }
+    return map;
+  };
+
+  const classSubjects = await loadClassSubjects();
+
   const tagFilter = query.tag ? String(query.tag) : '';
 
   // In-memory tag filtering path (derived field).
@@ -253,6 +271,7 @@ export const listTeacherStudents = async (schoolId, teacherUserId, query = {}) =
       const info = globalInfoByStudent.get(String(student._id));
       const tag = info?.tag || selectedTag;
       const teacherInitials = info?.initials || [];
+      const subjectInitials = [...(classSubjects.get(String(student.studentClass)) || [])];
       return {
         _id: student._id,
         studentId: student.studentId,
@@ -266,6 +285,7 @@ export const listTeacherStudents = async (schoolId, teacherUserId, query = {}) =
         assignedAt: assigned?.assignedAt || null,
         tag,
         teacherInitials,
+        subjectInitials,
       };
     });
     if (tagFilter === 'unassigned') {
@@ -313,6 +333,7 @@ export const listTeacherStudents = async (schoolId, teacherUserId, query = {}) =
       const info = globalInfoByStudent.get(String(student._id));
       const tag = info?.tag || selectedTag;
       const teacherInitials = info?.initials || [];
+      const subjectInitials = [...(classSubjects.get(String(student.studentClass)) || [])];
       return {
         _id: student._id,
         studentId: student.studentId,
@@ -326,6 +347,7 @@ export const listTeacherStudents = async (schoolId, teacherUserId, query = {}) =
         assignedAt: assigned?.assignedAt || null,
         tag,
         teacherInitials,
+        subjectInitials,
       };
     }),
   };
