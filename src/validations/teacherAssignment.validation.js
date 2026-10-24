@@ -32,6 +32,7 @@ export const listTeacherStudentsQuerySchema = Joi.object({
   search: Joi.string().trim().max(100).allow("").optional(),
   class: classNameValidator.allow("").optional(),
   gender: Joi.string().valid("male", "female").allow("").optional(),
+  tag: Joi.string().valid("CT", "ST", "unassigned", "").allow("").optional(),
   status: Joi.string()
     .valid("active", "suspended", "graduated", "transferred", "archived", "all")
     .default("active"),
@@ -60,6 +61,9 @@ export const assignStudentsSchema = Joi.object({
     .max(500)
     .optional(),
   className: classNameValidator.optional(),
+  role: Joi.string().valid('subject', 'class').optional(),
+  subjects: Joi.array().items(Joi.string().trim().min(1).max(50)).optional(),
+  canMarkAttendance: Joi.boolean().optional(),
 })
   .xor("studentIds", "className")
   .unknown(false);

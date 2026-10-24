@@ -73,8 +73,12 @@ const teacherAssignmentSchema = new mongoose.Schema(
      */
     className: { type: String, trim: true, maxlength: 50, default: "" },
 
-    /** True when a class assignment produced this row rather than an individual pick. */
-    classMediated: { type: Boolean, default: false },
+     /** True when a class assignment produced this row rather than an individual pick. */
+     classMediated: { type: Boolean, default: false },
+
+     /** 'CT' (class teacher) or 'ST' (subject teacher) for this link. */
+     tag: { type: String, trim: true, maxlength: 2, default: "" },
+
 
     /** The admin who made the link. */
     assignedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },

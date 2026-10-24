@@ -101,22 +101,46 @@ export const currentSlotHolder = async (schoolId, className, subject) => {
  * A tombstone is revived rather than bypassed, so re-assigning after an
  * un-assignment is legal and the history is not overwritten.
  */
-export const linkStudents = async ({ schoolId, teacherId, students, classMediated }) => {
+export const linkStudents = async ({ schoolId, teacherId, students, classMediated, allowLocked = false, tag = "" }) => {
   const now = new Date();
   const operations = [];
   let skipped = 0;
 
   for (const student of students) {
-    // Constraint: a student already assigned to any teacher (CT or ST) cannot
-    // be reassigned until the prior assignment is revoked.
-    const anyLive = await TeacherAssignment.findOne({
-      schoolId,
-      studentId: student._id,
-      removedAt: null,
-    }).lean();
-    if (anyLive && String(anyLive.teacherId) !== String(teacherId)) {
-      skipped += 1;
-      continue;
+    // Constraint: a student locked by a Class Teacher (CT) or an individual
+    // pick cannot be assigned to another teacher until that assignment is
+    // revoked. Subject Teacher (ST) assignments are shared, so a student may
+    // have several subject teachers.
+    if (!allowLocked && (!classMediated || tag === 'CT')) {
+      const otherLive = await TeacherAssignment.find({
+        schoolId,
+        studentId: student._id,
+        removedAt: null,
+        teacherId: { $ne: teacherId },
+      }).lean();
+
+      let lockedByOther = false;
+      for (const a of otherLive) {
+        if (!a.classMediated) {
+          // individual pick -> exclusive
+          lockedByOther = true;
+          break;
+        }
+        // class-mediated: CT (empty subject) is exclusive; ST is shareable
+        const t = await User.findById(a.teacherId).select('assignedClasses').lean();
+        const slot = (t?.assignedClasses || []).find(
+          (e) => String(e.className) === String(a.className)
+        );
+        const isCT = !slot || String(slot.subject || '').trim() === '';
+        if (isCT) {
+          lockedByOther = true;
+          break;
+        }
+      }
+      if (lockedByOther) {
+        skipped += 1;
+        continue;
+      }
     }
 
     const existing = await TeacherAssignment.findOne({
@@ -131,12 +155,14 @@ export const linkStudents = async ({ schoolId, teacherId, students, classMediate
           updateOne: {
             filter: { _id: existing._id },
             update: {
-              $set: {
-                removedAt: null,
-                classMediated,
-                assignedAt: now,
-                className: student.studentClass || "",
-              },
+               $set: {
+                 removedAt: null,
+                 classMediated,
+                 tag,
+                 assignedAt: now,
+                 className: student.studentClass || "",
+               },
+
             },
           },
         });
@@ -152,9 +178,11 @@ export const linkStudents = async ({ schoolId, teacherId, students, classMediate
           schoolId,
           teacherId,
           studentId: student._id,
-          className: student.studentClass || "",
-          classMediated,
-          assignedAt: now,
+           className: student.studentClass || "",
+           classMediated,
+           tag,
+           assignedAt: now,
+
           removedAt: null,
         },
       },
@@ -195,16 +223,15 @@ const classRoster = (schoolId, className) =>
  * Exported for the individual pick on the admin console, which adds one student
  * at a time; the class path goes through `syncClassTeacher`.
  */
-export const linkClassRoster = async (schoolId, teacherId, className) => {
+export const linkClassRoster = async (schoolId, teacherId, className, { allowLocked = false, tag = "" } = {}) => {
   const roster = await classRoster(schoolId, className);
   if (!roster.length) {
-    // An empty class is not an error — a class created before its students were
-    // imported is normal.
     return { assigned: 0, roster };
   }
-  await linkStudents({ schoolId, teacherId, students: roster, classMediated: true });
+  await linkStudents({ schoolId, teacherId, students: roster, classMediated: true, allowLocked, tag });
   return { assigned: roster.length, roster };
 };
+
 
 /**
  * Withdraw a teacher's *class-mediated* rows for one class.
@@ -230,7 +257,7 @@ export const syncClassTeacher = async (schoolId, className, teacherUserId) => {
 
   await moveClassSlot(schoolId, className, "", teacherUserId);
 
-  const linked = await linkClassRoster(schoolId, teacherUserId, className);
+  const linked = await linkClassRoster(schoolId, teacherUserId, className, { allowLocked: true, tag: 'CT' });
 
   let unlinked = 0;
   if (previous && String(previous._id) !== String(teacherUserId)) {
@@ -292,7 +319,7 @@ export const detectAssignmentDrift = async (schoolId) => {
   // Every teacher holding class-mediated rows, with their current slots, in one
   // query rather than one per teacher.
   const teachers = await User.find({ _id: { $in: grouped.map((row) => row._id) } })
-    .select("_id name assignedClasses")
+    .select("_id name assignedClasses deletedAt")
     .lean();
 
   const teacherById = new Map(teachers.map((t) => [String(t._id), t]));
@@ -302,7 +329,7 @@ export const detectAssignmentDrift = async (schoolId) => {
     const teacher = teacherById.get(String(row._id));
     // A deleted teacher whose rows are still live: nothing to repair, and saying
     // so would point the admin at an account that no longer exists.
-    if (!teacher) continue;
+    if (!teacher || teacher.deletedAt) continue;
 
     const slots = new Set(
       (teacher.assignedClasses || [])

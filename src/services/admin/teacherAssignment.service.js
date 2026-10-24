@@ -133,17 +133,8 @@ const rosterFilter = (schoolId, { search, class: className, status, gender, tag 
   if (status && status !== "all") filter.status = status;
   else filter.status = "active";
 
-  if (tag === 'CT') {
-    filter.tag = 'CT';
-  } else if (tag === 'ST') {
-    filter.tag = 'ST';
-  } else if (tag === 'unassigned') {
-    filter.assignedToTeacher = { $ne: true };
-    filter.$or = [
-      { teacherId: null },
-      { removedAt: { $ne: null } },
-    ];
-  }
+  // `tag` is derived (see listTeacherStudents); it is not a Student field, so
+  // it is filtered in-memory there rather than against this collection.
 
   if (search) {
     // Escaped, so a search for a character that is special to a regex — or the
@@ -189,6 +180,109 @@ export const listTeacherStudents = async (schoolId, teacherUserId, query = {}) =
   const sort = {};
   sort[sortBy] = sortOrder === "desc" ? -1 : 1;
 
+  const computeTag = (student, assigned) => {
+    if (!assigned) return null;
+    if (assigned.tag) return assigned.tag;
+    const studentClass = assigned.className || student.studentClass;
+    const slot = (teacher.assignedClasses || []).find(
+      (entry) => String(entry.className) === String(studentClass)
+    );
+    if (!slot) return 'CT';
+    const subject = String(slot.subject || '').trim();
+    return subject === '' ? 'CT' : 'ST';
+  };
+
+  const loadGlobalInfo = async (studentIds) => {
+    if (!studentIds.length) return new Map();
+    const allAssignments = await TeacherAssignment.find({
+      schoolId,
+      studentId: { $in: studentIds.map((id) => new mongoose.Types.ObjectId(String(id))) },
+      removedAt: null,
+    }).lean();
+    const teacherIds = [...new Set(allAssignments.map((a) => String(a.teacherId)))];
+    const teachers = teacherIds.length
+      ? await User.find({ _id: { $in: teacherIds.map((id) => new mongoose.Types.ObjectId(id)) } })
+          .select("_id name assignedClasses")
+          .lean()
+      : [];
+    const teacherById = new Map(teachers.map((t) => [String(t._id), t]));
+    const result = new Map();
+    for (const a of allAssignments) {
+      const t = teacherById.get(String(a.teacherId));
+      const slot = (t?.assignedClasses || []).find(
+        (entry) => String(entry.className) === String(a.className)
+      );
+      const isCT = !slot || String(slot.subject || '').trim() === '';
+      const tag = a.tag || (isCT ? 'CT' : 'ST');
+      const initials = (t?.name || '')
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((w) => w[0])
+        .slice(0, 2)
+        .join('')
+        .toUpperCase();
+      const sid = String(a.studentId);
+      const existing = result.get(sid) || { tag: null, initials: [] };
+      if (!existing.tag || (tag === 'CT' && existing.tag === 'ST')) existing.tag = tag;
+      if (initials && !existing.initials.includes(initials)) existing.initials.push(initials);
+      result.set(sid, existing);
+    }
+    return result;
+  };
+
+  const tagFilter = query.tag ? String(query.tag) : '';
+
+  // In-memory tag filtering path (derived field).
+  if (tagFilter) {
+    const assignedIdsPromise = TeacherAssignment.find({ schoolId, teacherId: teacher._id })
+      .live()
+      .select("studentId classMediated assignedAt")
+      .lean();
+    const [allStudents, assignedIds] = await Promise.all([
+      Student.find(filter)
+        .select("_id studentId studentName studentClass gender status parents")
+        .sort(sort)
+        .lean(),
+      assignedIdsPromise,
+    ]);
+    const assignedByStudent = new Map(assignedIds.map((row) => [String(row.studentId), row]));
+    const globalInfoByStudent = await loadGlobalInfo(allStudents.map((s) => s._id));
+    let computed = allStudents.map((student) => {
+      const assigned = assignedByStudent.get(String(student._id));
+      const selectedTag = computeTag(student, assigned);
+      const info = globalInfoByStudent.get(String(student._id));
+      const tag = info?.tag || selectedTag;
+      const teacherInitials = info?.initials || [];
+      return {
+        _id: student._id,
+        studentId: student.studentId,
+        name: student.studentName,
+        studentClass: student.studentClass,
+        gender: student.gender,
+        status: student.status,
+        parentPhone: student.parents?.[0]?.phone || null,
+        assignedToTeacher: Boolean(assigned),
+        classMediated: Boolean(assigned?.classMediated),
+        assignedAt: assigned?.assignedAt || null,
+        tag,
+        teacherInitials,
+      };
+    });
+    if (tagFilter === 'unassigned') {
+      computed = computed.filter((row) => !row.assignedToTeacher);
+    } else if (tagFilter === 'CT' || tagFilter === 'ST') {
+      computed = computed.filter((row) => row.tag === tagFilter);
+    }
+    const total = computed.length;
+    const skip = (page - 1) * perPage;
+    const rows = computed.slice(skip, skip + perPage);
+    return {
+      teacher,
+      pagination: { page, perPage, total, pages: Math.ceil(total / perPage) || 1 },
+      rows,
+    };
+  }
+
   const [rows, total, assignedIds] = await Promise.all([
     Student.find(filter)
       .select("_id studentId studentName studentClass gender status parents")
@@ -208,29 +302,17 @@ export const listTeacherStudents = async (schoolId, teacherUserId, query = {}) =
     assignedIds.map((row) => [String(row.studentId), row])
   );
 
-  // Helper to compute tag for a student based on teacher's assignedClasses
-  const computeTag = (student, assigned) => {
-    if (!assigned) return null; // unassigned
-    const studentClass = assigned.className || student.studentClass;
-    // Find teacher's slot for this class
-    const slot = teacher.assignedClasses.find(
-      (entry) => String(entry.className) === String(studentClass)
-    );
-    if (!slot) {
-      // No explicit slot; fallback to CT if classMediated indicates class assignment,
-      // otherwise ST if a subject assignment (we can't know; default CT).
-      return 'CT';
-    }
-    const subject = String(slot.subject || '').trim();
-    return subject === '' ? 'CT' : 'ST';
-  };
+  const globalInfoByStudent = await loadGlobalInfo(rows.map((s) => s._id));
 
   return {
     teacher,
     pagination: { page, perPage, total, pages: Math.ceil(total / perPage) || 1 },
     rows: rows.map((student) => {
       const assigned = assignedByStudent.get(String(student._id));
-      const tag = computeTag(student, assigned);
+      const selectedTag = computeTag(student, assigned);
+      const info = globalInfoByStudent.get(String(student._id));
+      const tag = info?.tag || selectedTag;
+      const teacherInitials = info?.initials || [];
       return {
         _id: student._id,
         studentId: student.studentId,
@@ -242,7 +324,8 @@ export const listTeacherStudents = async (schoolId, teacherUserId, query = {}) =
         assignedToTeacher: Boolean(assigned),
         classMediated: Boolean(assigned?.classMediated),
         assignedAt: assigned?.assignedAt || null,
-        tag, // new field: 'CT' | 'ST' | null (null means unassigned)
+        tag,
+        teacherInitials,
       };
     }),
   };
@@ -339,6 +422,10 @@ export const assignStudentsByClass = async (schoolId, adminUserId, teacherUserId
 
   const { role = "subject", subjects = [], canMarkAttendance = false } = options;
 
+  if (role === "subject" && (!Array.isArray(subjects) || subjects.filter((s) => String(s).trim()).length === 0)) {
+    throw new ApiError("Select at least one subject for a subject teacher", 400, "VALIDATION_ERROR");
+  }
+
   if (role === "class" || !subjects || subjects.length === 0) {
     const { previous, linked } = await syncClassTeacher(schoolId, name, teacher._id);
     await auditLog({
@@ -371,20 +458,11 @@ export const assignStudentsByClass = async (schoolId, adminUserId, teacherUserId
     await syncClassTeacherSubject(schoolId, name, subj, teacher._id, { canMarkAttendance });
   }
 
-  // Link students to teacher (subject teacher can also be assigned to students)
-  const students = await Student.find({
-    schoolId,
-    studentClass: name,
-    status: "active",
-    deletedAt: null,
-  })
-    .select("_id studentClass")
-    .lean();
-  if (students.length) {
-    await linkClassRoster(schoolId, teacher._id, name);
-  }
+  const roster = await Student.find({ schoolId, studentClass: name, status: "active", deletedAt: null }).select("_id").lean();
+  const studentCount = roster.length;
 
   await auditLog({
+
     action: AUDIT_ACTIONS.CLASS_ASSIGN_TEACHER,
     entity: "User",
     entityId: teacher._id,
@@ -392,7 +470,7 @@ export const assignStudentsByClass = async (schoolId, adminUserId, teacherUserId
     schoolId,
     meta: {
       className,
-      studentCount: students.length,
+      studentCount,
       individual: false,
       role: "subject",
       subjects,
@@ -401,7 +479,7 @@ export const assignStudentsByClass = async (schoolId, adminUserId, teacherUserId
   });
 
   return {
-    assigned: students.length,
+    assigned: 0,
     className,
     teacher: { _id: teacher._id, name: teacher.name, role: teacher.role },
     role: "subject",
