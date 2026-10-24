@@ -104,8 +104,21 @@ export const currentSlotHolder = async (schoolId, className, subject) => {
 export const linkStudents = async ({ schoolId, teacherId, students, classMediated }) => {
   const now = new Date();
   const operations = [];
+  let skipped = 0;
 
   for (const student of students) {
+    // Constraint: a student already assigned to any teacher (CT or ST) cannot
+    // be reassigned until the prior assignment is revoked.
+    const anyLive = await TeacherAssignment.findOne({
+      schoolId,
+      studentId: student._id,
+      removedAt: null,
+    }).lean();
+    if (anyLive && String(anyLive.teacherId) !== String(teacherId)) {
+      skipped += 1;
+      continue;
+    }
+
     const existing = await TeacherAssignment.findOne({
       schoolId,
       teacherId,
@@ -128,9 +141,6 @@ export const linkStudents = async ({ schoolId, teacherId, students, classMediate
           },
         });
       } else {
-        // Already live and already pointing at this teacher: nothing to write,
-        // which is what makes a double-clicked Assign a no-op rather than an
-        // error or a second row.
         continue;
       }
       continue;
@@ -151,11 +161,11 @@ export const linkStudents = async ({ schoolId, teacherId, students, classMediate
     });
   }
 
-  if (!operations.length) return { assigned: 0 };
+  if (!operations.length) return { assigned: 0, skipped };
 
   await TeacherAssignment.bulkWrite(operations, { ordered: false });
 
-  return { assigned: operations.length };
+  return { assigned: operations.length, skipped };
 };
 
 /**
@@ -214,26 +224,6 @@ export const unlinkClassRoster = async (schoolId, teacherId, className) => {
 
 /**
  * Both representations, in step, for one teacher taking one class.
- *
- * The order matters and is not arbitrary:
- *
- *   1. read the previous holder of the class-teacher slot,
- *   2. move the slot — which is what makes the class actually appear on the
- *      teacher's portal,
- *   3. link the roster to the new teacher,
- *   4. withdraw the *previous* holder's class rows, so the roster the console
- *      shows does not still list a teacher who no longer has the class.
- *
- * Step 4 is why the previous holder is read at step 1 rather than after the
- * move: `moveClassSlot` has already cleared them by then.
- *
- * Idempotent, so re-assigning the same teacher to the same class is a no-op on
- * every step.
- *
- * @param {string} schoolId
- * @param {string} className
- * @param {string} teacherUserId the incoming teacher
- * @returns {Promise<{ previous: object|null, linked: number, unlinked: number }>}
  */
 export const syncClassTeacher = async (schoolId, className, teacherUserId) => {
   const previous = await currentSlotHolder(schoolId, className, "");
@@ -248,6 +238,11 @@ export const syncClassTeacher = async (schoolId, className, teacherUserId) => {
   }
 
   return { previous, linked: linked.assigned, unlinked };
+};
+
+export const syncClassTeacherSubject = async (schoolId, className, subject, teacherUserId, { canMarkAttendance = false } = {}) => {
+  await moveClassSlot(schoolId, className, subject, teacherUserId, { canMarkAttendance });
+  return { ok: true };
 };
 
 /**

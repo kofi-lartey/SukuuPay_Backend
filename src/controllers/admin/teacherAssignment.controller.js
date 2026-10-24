@@ -101,13 +101,14 @@ export const assignStudentsController = async (req, res) => {
     // `className` on the body selects the class path: the resolver would
     // otherwise have to guess, and a body that names both a class and a list is
     // refused by validation rather than half-honoured here.
-    const { studentIds, className } = req.body;
+    const { studentIds, className, role, subjects, canMarkAttendance } = req.body;
     const result = className
       ? await assignStudentsByClass(
           req.user.schoolId,
           req.user._id,
           req.params.teacherId,
-          className
+          className,
+          { role, subjects, canMarkAttendance }
         )
       : await assignStudents(req.user.schoolId, req.user._id, req.params.teacherId, studentIds);
 

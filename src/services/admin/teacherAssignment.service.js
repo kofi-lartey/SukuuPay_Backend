@@ -5,7 +5,7 @@ import { User } from "../../models/userModel.js";
 import { log as auditLog } from "../../utils/auditService.js";
 import { AUDIT_ACTIONS } from "../../config/constants.js";
 import ApiError from "../../utils/ApiError.js";
-import { linkStudents, syncClassTeacher } from "./teacherClassLink.js";
+import { linkClassRoster, linkStudents, syncClassTeacher, syncClassTeacherSubject } from "./teacherClassLink.js";
 
 /**
  * Which students a teacher is responsible for, and the writes that change it.
@@ -56,7 +56,7 @@ const loadTeacher = async (schoolId, teacherUserId) => {
     role: { $in: TEACHING_ROLES },
     deletedAt: null,
   })
-    .select("_id name role position")
+    .select("_id name role position assignedClasses")
     .lean();
   if (!teacher) {
     throw new ApiError("Teacher not found in this school", 404, "TEACHER_NOT_FOUND");
@@ -125,13 +125,25 @@ const assertValidClassName = (className) => {
  * teacher looks after, and filtering that by whether a parent owes fees is a
  * question with an easy way to be misread.
  */
-const rosterFilter = (schoolId, { search, class: className, status, gender }) => {
+const rosterFilter = (schoolId, { search, class: className, status, gender, tag }) => {
   const filter = { schoolId, deletedAt: null };
 
   if (className) filter.studentClass = className;
   if (gender) filter.gender = gender;
   if (status && status !== "all") filter.status = status;
   else filter.status = "active";
+
+  if (tag === 'CT') {
+    filter.tag = 'CT';
+  } else if (tag === 'ST') {
+    filter.tag = 'ST';
+  } else if (tag === 'unassigned') {
+    filter.assignedToTeacher = { $ne: true };
+    filter.$or = [
+      { teacherId: null },
+      { removedAt: { $ne: null } },
+    ];
+  }
 
   if (search) {
     // Escaped, so a search for a character that is special to a regex — or the
@@ -196,11 +208,29 @@ export const listTeacherStudents = async (schoolId, teacherUserId, query = {}) =
     assignedIds.map((row) => [String(row.studentId), row])
   );
 
+  // Helper to compute tag for a student based on teacher's assignedClasses
+  const computeTag = (student, assigned) => {
+    if (!assigned) return null; // unassigned
+    const studentClass = assigned.className || student.studentClass;
+    // Find teacher's slot for this class
+    const slot = teacher.assignedClasses.find(
+      (entry) => String(entry.className) === String(studentClass)
+    );
+    if (!slot) {
+      // No explicit slot; fallback to CT if classMediated indicates class assignment,
+      // otherwise ST if a subject assignment (we can't know; default CT).
+      return 'CT';
+    }
+    const subject = String(slot.subject || '').trim();
+    return subject === '' ? 'CT' : 'ST';
+  };
+
   return {
     teacher,
     pagination: { page, perPage, total, pages: Math.ceil(total / perPage) || 1 },
     rows: rows.map((student) => {
       const assigned = assignedByStudent.get(String(student._id));
+      const tag = computeTag(student, assigned);
       return {
         _id: student._id,
         studentId: student.studentId,
@@ -212,6 +242,7 @@ export const listTeacherStudents = async (schoolId, teacherUserId, query = {}) =
         assignedToTeacher: Boolean(assigned),
         classMediated: Boolean(assigned?.classMediated),
         assignedAt: assigned?.assignedAt || null,
+        tag, // new field: 'CT' | 'ST' | null (null means unassigned)
       };
     }),
   };
@@ -299,14 +330,59 @@ export const assignStudents = async (schoolId, adminUserId, teacherUserId, stude
  * step. The per-student path above deliberately does not do this: picking one
  * child does not put a whole class on somebody's timetable.
  */
-export const assignStudentsByClass = async (schoolId, adminUserId, teacherUserId, className) => {
+export const assignStudentsByClass = async (schoolId, adminUserId, teacherUserId, className, options = {}) => {
   const teacher = await loadTeacher(schoolId, teacherUserId);
 
   // Refused here rather than in the link step, so a malformed name never reaches
   // a roster read that would answer "no students" and look like an empty class.
   const name = assertValidClassName(className);
 
-  const { previous, linked } = await syncClassTeacher(schoolId, name, teacher._id);
+  const { role = "subject", subjects = [], canMarkAttendance = false } = options;
+
+  if (role === "class" || !subjects || subjects.length === 0) {
+    const { previous, linked } = await syncClassTeacher(schoolId, name, teacher._id);
+    await auditLog({
+      action: AUDIT_ACTIONS.CLASS_ASSIGN_TEACHER,
+      entity: "User",
+      entityId: teacher._id,
+      userId: adminUserId,
+      schoolId,
+      meta: {
+        className,
+        studentCount: linked,
+        individual: false,
+        previousTeacherId: previous?._id || null,
+        role: "class",
+      },
+    });
+    return {
+      assigned: linked,
+      className,
+      teacher: { _id: teacher._id, name: teacher.name, role: teacher.role },
+      previousTeacherId: previous?._id || null,
+      role: "class",
+    };
+  }
+
+  // Subject teacher path
+  for (const subject of subjects) {
+    const subj = String(subject).trim();
+    if (!subj) continue;
+    await syncClassTeacherSubject(schoolId, name, subj, teacher._id, { canMarkAttendance });
+  }
+
+  // Link students to teacher (subject teacher can also be assigned to students)
+  const students = await Student.find({
+    schoolId,
+    studentClass: name,
+    status: "active",
+    deletedAt: null,
+  })
+    .select("_id studentClass")
+    .lean();
+  if (students.length) {
+    await linkClassRoster(schoolId, teacher._id, name);
+  }
 
   await auditLog({
     action: AUDIT_ACTIONS.CLASS_ASSIGN_TEACHER,
@@ -316,17 +392,21 @@ export const assignStudentsByClass = async (schoolId, adminUserId, teacherUserId
     schoolId,
     meta: {
       className,
-      studentCount: linked,
+      studentCount: students.length,
       individual: false,
-      previousTeacherId: previous?._id || null,
+      role: "subject",
+      subjects,
+      canMarkAttendance,
     },
   });
 
   return {
-    assigned: linked,
+    assigned: students.length,
     className,
     teacher: { _id: teacher._id, name: teacher.name, role: teacher.role },
-    previousTeacherId: previous?._id || null,
+    role: "subject",
+    subjects,
+    canMarkAttendance,
   };
 };
 
