@@ -74,6 +74,15 @@ export const moveClassSlot = async (schoolId, className, subject, teacherUserId,
     { _id: teacherUserId },
     { $pull: { assignedClasses: { className, subject } } }
   );
+  // Attendance exclusivity: only one teacher may mark attendance for a
+  // (class, subject) pair.
+  if (canMarkAttendance) {
+    await User.updateMany(
+      { schoolId, _id: { $ne: teacherUserId }, "assignedClasses.className": className, "assignedClasses.subject": subject },
+      { $set: { "assignedClasses.$[e].canMarkAttendance": false } },
+      { arrayFilters: [{ "e.className": className, "e.subject": subject }] }
+    );
+  }
   await User.updateOne(
     { _id: teacherUserId },
     { $addToSet: { assignedClasses: { className, subject, canMarkAttendance } } }
