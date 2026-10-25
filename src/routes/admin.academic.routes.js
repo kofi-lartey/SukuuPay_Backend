@@ -21,6 +21,7 @@ import {
 } from "../controllers/admin/class.controller.js";
 import {
   compileClassReportsController,
+  setTeacherRemarkController,
   setHeadRemarkController,
   publishClassReportsController,
   unpublishClassReportsController,
@@ -139,6 +140,7 @@ router.get(
   getReportReviewQueueController
 );
 router.post("/reports/compile", requireTeacher, requireSchool, validate(compileReportsSchema), compileClassReportsController);
+router.post("/reports/teacher-remark", requireSchoolAdmin, requireSchool, validate(setHeadRemarkSchema), setTeacherRemarkController);
 router.post("/reports/head-remark", requireSchoolAdmin, requireSchool, validate(setHeadRemarkSchema), setHeadRemarkController);
 router.post("/reports/publish", requireSchoolAdmin, requireSchool, validate(publishReportsSchema), publishClassReportsController);
 router.post("/reports/unpublish", requireSchoolAdmin, requireSchool, validate(publishReportsSchema), unpublishClassReportsController);

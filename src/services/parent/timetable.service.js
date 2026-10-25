@@ -121,12 +121,13 @@ export const getStudentTimetable = async (token, { weekOf, now } = {}) => {
   const timetable = await Timetable.findOne({
     schoolId: student.schoolId,
     className: student.studentClass,
-    academicYear,
     term: currentTerm,
     status: { $in: ["published", "approved"] },
     deletedAt: null,
     deactivatedAt: null,
-  }).lean();
+  })
+    .sort({ academicYear: -1 })
+    .lean();
 
   await auditLog({
     action: "parent.timetable_viewed",

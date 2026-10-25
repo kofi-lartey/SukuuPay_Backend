@@ -152,13 +152,32 @@ export const approveClassGrades = async (schoolId, userId, payload) => {
     },
   });
 
+  // Resolve term/academicYear from the approved grades if not supplied, so
+  // auto-compile always has what it needs.
+  let resolvedTerm = term;
+  let resolvedAcademicYear = academicYear;
+  if ((!resolvedTerm || !resolvedAcademicYear) && className) {
+    const sample = await Grade.findOne({
+      schoolId,
+      className,
+      approvalStatus: "approved",
+      deletedAt: null,
+    })
+      .select("term academicYear")
+      .lean();
+    if (sample) {
+      resolvedTerm = resolvedTerm || sample.term;
+      resolvedAcademicYear = resolvedAcademicYear || sample.academicYear;
+    }
+  }
+
   // Auto-compile and publish report cards from the newly approved grades so
   // parents receive them without a separate publish step.
-  if (className && term && academicYear) {
+  if (className && resolvedTerm && resolvedAcademicYear) {
     try {
       const { compileClassReportsFromGrades, publishClassReports } = await import("./recordsApproval.service.js");
-      await compileClassReportsFromGrades(schoolId, userId, { className, term, academicYear });
-      await publishClassReports(schoolId, userId, { className, term, academicYear });
+      await compileClassReportsFromGrades(schoolId, userId, { className, term: resolvedTerm, academicYear: resolvedAcademicYear });
+      await publishClassReports(schoolId, userId, { className, term: resolvedTerm, academicYear: resolvedAcademicYear });
     } catch {
       // Best-effort: approval still succeeds even if compile/publish fails.
     }

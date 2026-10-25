@@ -1,5 +1,6 @@
 import {
   compileClassReportsFromGrades,
+  setTeacherRemarkForClass,
   setHeadRemarkForClass,
   publishClassReports,
   unpublishClassReports,
@@ -27,6 +28,23 @@ export const compileClassReportsController = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: `Compiled ${result.compiled} report card${result.compiled === 1 ? "" : "s"} for review`,
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+export const setTeacherRemarkController = async (req, res) => {
+  try {
+    const result = await setTeacherRemarkForClass(req.user.schoolId, req.user._id, req.body);
+    return res.status(200).json({
+      success: true,
+      message: `Updated remark on ${result.updated} report card${result.updated === 1 ? "" : "s"}`,
       data: result,
     });
   } catch (error) {

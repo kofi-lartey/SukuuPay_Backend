@@ -265,6 +265,44 @@ export const compileClassReportsFromGrades = async (schoolId, userId, payload) =
  * every card regardless of state, so it can be written during review and again
  * after a correction.
  */
+/**
+ * Set the headmaster's remark on every card in a class and term.
+ *
+ * One call writes the whole class — a remark is a single voice over the whole
+ * set, not a per-student sentence the headmaster types thirty times. Applied to
+ * every card regardless of state, so it can be written during review and again
+ * after a correction.
+ */
+export const setTeacherRemarkForClass = async (schoolId, userId, payload) => {
+  const { className, term, academicYear, text, author } = payload;
+  if (!className || !term || !academicYear || !text) {
+    throw new ApiError(
+      "className, term, academicYear, and text are required",
+      400,
+      "VALIDATION_ERROR"
+    );
+  }
+
+  const result = await ReportCard.updateMany(
+    { schoolId, className, term, academicYear, deletedAt: null },
+    {
+      $set: {
+        teacherRemark: { text: text.trim(), author: (author || "").trim() },
+      },
+    }
+  );
+
+  await auditLog({
+    action: AUDIT_ACTIONS.REPORT_CARD_HEAD_REMARK,
+    entity: "ReportCard",
+    userId,
+    schoolId,
+    meta: { className, term, academicYear, updated: result.modifiedCount, kind: "teacher" },
+  });
+
+  return { updated: result.modifiedCount };
+};
+
 export const setHeadRemarkForClass = async (schoolId, userId, payload) => {
   const { className, term, academicYear, text, author } = payload;
   if (!className || !term || !academicYear || !text) {

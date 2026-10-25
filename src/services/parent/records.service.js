@@ -28,10 +28,11 @@ export const getStudentRecordsForTerm = async (token, { term } = {}) => {
   const record = await ReportCard.findOne({
     studentId: student._id,
     term: requestedTerm,
-    academicYear,
     status: { $in: ["review", "published"] },
     deletedAt: null,
-  }).lean();
+  })
+    .sort({ academicYear: -1 })
+    .lean();
 
   await auditLog({
     action: "parent.records_viewed",
@@ -52,7 +53,7 @@ export const getStudentRecordsForTerm = async (token, { term } = {}) => {
     studentName: student.studentName,
     studentClass: student.studentClass,
     term: requestedTerm,
-    academicYear,
+    academicYear: record.academicYear || academicYear,
     summary: {
       average: record.average,
       position: record.position,
