@@ -123,7 +123,7 @@ export const getStudentTimetable = async (token, { weekOf, now } = {}) => {
     className: student.studentClass,
     academicYear,
     term: currentTerm,
-    status: "published",
+    status: { $in: ["published", "approved"] },
     deletedAt: null,
     deactivatedAt: null,
   }).lean();

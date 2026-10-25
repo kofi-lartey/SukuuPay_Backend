@@ -29,7 +29,7 @@ export const getStudentRecordsForTerm = async (token, { term } = {}) => {
     studentId: student._id,
     term: requestedTerm,
     academicYear,
-    status: "published",
+    status: { $in: ["review", "published"] },
     deletedAt: null,
   }).lean();
 

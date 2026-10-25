@@ -152,6 +152,18 @@ export const approveClassGrades = async (schoolId, userId, payload) => {
     },
   });
 
+  // Auto-compile and publish report cards from the newly approved grades so
+  // parents receive them without a separate publish step.
+  if (className && term && academicYear) {
+    try {
+      const { compileClassReportsFromGrades, publishClassReports } = await import("./recordsApproval.service.js");
+      await compileClassReportsFromGrades(schoolId, userId, { className, term, academicYear });
+      await publishClassReports(schoolId, userId, { className, term, academicYear });
+    } catch {
+      // Best-effort: approval still succeeds even if compile/publish fails.
+    }
+  }
+
   return { approved: result.modifiedCount };
 };
 
