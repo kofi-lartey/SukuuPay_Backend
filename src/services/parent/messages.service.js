@@ -76,7 +76,7 @@ export const listParentConversations = async (token, { page, perPage } = {}) => 
     {
       $match: {
         schoolId: student.schoolId,
-        studentId: { $ne: null },
+        studentId: student._id,
       },
     },
     {
@@ -86,15 +86,7 @@ export const listParentConversations = async (token, { page, perPage } = {}) => 
       $group: {
         _id: "$studentId",
         lastCreatedAt: { $max: "$createdAt" },
-        lastMessage: {
-          $max: {
-            $cond: [
-              { $ne: ["$message", null] },
-              "$message",
-              { $ifNull: ["$audio.url", ""] },
-            ],
-          },
-        },
+        lastMessage: { $first: "$message" },
         lastHasAudio: { $max: "$hasAudio" },
         unreadCount: { $sum: { $cond: [{ $eq: ["$status", "new"] }, 1, 0] } },
       },

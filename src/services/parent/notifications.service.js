@@ -43,7 +43,7 @@ const formatRelative = (date) => {
 
 const GHS = (pesewas) => {
   const cedis = (Number(pesewas) || 0) / 100;
-  return `GHC ${cedis.toFixed(2)}`;
+  return `GH₵ ${cedis.toFixed(2)}`;
 };
 
 /**
@@ -103,7 +103,15 @@ export const buildNotificationRows = (student, payments, messages, plans) => {
  * the bell is the number of rows on the page — computed twice from two
  * different queries, the badge and the list would eventually disagree, and a
  * badge that says "3" over an empty list is worse than no badge.
+ *
+ * Each query is capped: a parent with ten years of settled payments does not
+ * need all of them loaded to draw a bell. The cap is generous (200 rows per
+ * source) because the notification feed is the parent's record of what the
+ * school has done for their child, and a hard cut that drops the first item
+ * on page load is worse than a slightly heavier request.
  */
+const NOTIFICATION_SOURCE_LIMIT = 200;
+
 const collectParentNotifications = async (token) => {
   const { student } = await resolvePortalStudent(token);
 
@@ -115,12 +123,14 @@ const collectParentNotifications = async (token) => {
       completedAt: { $ne: null },
     })
       .sort({ completedAt: -1 })
+      .limit(NOTIFICATION_SOURCE_LIMIT)
       .lean(),
     ParentMessage.find({
       schoolId: student.schoolId,
       studentId: student._id,
     })
       .sort({ createdAt: -1 })
+      .limit(NOTIFICATION_SOURCE_LIMIT)
       .lean(),
     PaymentPlan.find({
       schoolId: student.schoolId,
@@ -128,6 +138,7 @@ const collectParentNotifications = async (token) => {
       planStatus: "pending_acceptance",
     })
       .sort({ createdAt: -1 })
+      .limit(NOTIFICATION_SOURCE_LIMIT)
       .lean(),
   ]);
 
