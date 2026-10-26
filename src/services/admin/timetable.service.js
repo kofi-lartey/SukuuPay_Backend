@@ -117,7 +117,16 @@ export const upsertTimetable = async (
 
   const normalised = normalizeDays(days);
 
-  const isPublished = status === "published";
+  // An admin creating a timetable is the approving authority — the grid is
+  // approved and published in one step, so parents see it immediately. A
+  // teacher's draft stays invisible until they submit and an admin approves.
+  const isAdminCreated = existing === null && isAdmin;
+  const nextStatus =
+    isAdminCreated && status === "draft"
+      ? "approved"
+      : status;
+
+  const isPublished = nextStatus === "published";
 
   const timetable = await Timetable.findOneAndUpdate(
     { schoolId, className, term, academicYear },
@@ -128,7 +137,7 @@ export const upsertTimetable = async (
         term,
         academicYear,
         days: normalised,
-        status,
+        status: nextStatus,
         submissionStatus: nextSubmissionStatus,
         ...(teacherName !== undefined ? { teacherName } : {}),
         // A teacher's draft is owned by them: stamp `submittedBy` so
@@ -154,7 +163,7 @@ export const upsertTimetable = async (
       className,
       term,
       academicYear,
-      status,
+      status: nextStatus,
       submissionStatus: nextSubmissionStatus,
       periods: VALID_DAYS.reduce((sum, day) => sum + normalised[day].length, 0),
     },
@@ -759,9 +768,9 @@ export const withdrawTimetable = async (
 /**
  * `POST /admin/timetables/:className/approve`
  *
- * The administrator signs off a submitted timetable. After approval, the
- * administrator may publish it (parents then see it); the teacher can no longer
- * edit it.
+ * The administrator signs off a submitted timetable. Approval is the publish
+ * boundary — the timetable becomes visible to parents immediately, without a
+ * separate publish step. The teacher can no longer edit it.
  */
 export const approveTimetable = async (
   schoolId,
@@ -789,6 +798,9 @@ export const approveTimetable = async (
       }
     }
     timetable.status = 'approved';
+    timetable.submissionStatus = 'approved';
+    timetable.approvedAt = new Date();
+    timetable.approvedBy = adminUserId;
     await timetable.save();
     return timetable.toObject ? timetable.toObject() : timetable;
   }
@@ -839,6 +851,7 @@ export const approveTimetable = async (
     { schoolId, className, term, academicYear, deletedAt: null },
     {
       $set: {
+        status: "approved",
         submissionStatus: "approved",
         approvedAt: new Date(),
         approvedBy: adminUserId,
@@ -1059,9 +1072,9 @@ const requireTimetable = async (schoolId, { className, term, academicYear }) => 
 export const deactivateTimetable = async (schoolId, userId, { className, term, academicYear }) => {
   const timetable = await requireTimetable(schoolId, { className, term, academicYear });
 
-  if (timetable.status !== "published") {
+  if (!["published", "approved"].includes(timetable.status)) {
     throw new ApiError(
-      `Only a published timetable can be deactivated (current: ${timetable.status})`,
+      `Only a published or approved timetable can be deactivated (current: ${timetable.status})`,
       403,
       "TIMETABLE_NOT_PUBLISHED"
     );
