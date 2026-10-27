@@ -75,8 +75,8 @@ export const listParentConversations = async (token, { page, perPage } = {}) => 
   const threads = await ParentMessage.aggregate([
     {
       $match: {
-        schoolId: student.schoolId,
-        studentId: student._id,
+        schoolId: new mongoose.Types.ObjectId(student.schoolId),
+        studentId: new mongoose.Types.ObjectId(student._id),
       },
     },
     {
@@ -87,7 +87,7 @@ export const listParentConversations = async (token, { page, perPage } = {}) => 
         _id: "$studentId",
         lastCreatedAt: { $max: "$createdAt" },
         lastMessage: { $first: "$message" },
-        lastHasAudio: { $max: "$hasAudio" },
+        lastHasAudio: { $first: "$hasAudio" },
         unreadCount: { $sum: { $cond: [{ $eq: ["$status", "new"] }, 1, 0] } },
       },
     },
@@ -96,9 +96,27 @@ export const listParentConversations = async (token, { page, perPage } = {}) => 
     { $limit: perPageN },
   ]);
 
-  // The aggregation above groups by studentId but we only fetched one student's
-  // token, so normalise to that student regardless of any grouping quirk.
-  const last = threads[0];
+  // Only use a thread if it belongs to the current student (defensive guard
+  // against any cross-tenant leakage).
+  const last = threads.find((t) => String(t._id) === String(student._id)) || threads[0];
+  if (last && String(last._id) !== String(student._id)) {
+    const conversations = [];
+    await auditLog({
+      action: AUDIT_ACTIONS.PARENT_CONVERSATIONS_VIEWED,
+      entity: "ParentMessage",
+      entityId: student._id,
+      userId: null,
+      schoolId: student.schoolId,
+      details: { studentRef: student.studentId, tokenHash: hashTokenForLog(token) },
+    });
+    return {
+      conversations,
+      meta: {
+        total: 0,
+        unreadCount: 0,
+      },
+    };
+  }
 
   const conversations =
     last && last._id
@@ -107,11 +125,11 @@ export const listParentConversations = async (token, { page, perPage } = {}) => 
             threadId: student.studentId,
             subject:
               last.lastMessage && String(last.lastMessage).length > 120
-                ? `${String(last.lastMessage).slice(0, 120)}…`
+                ? `${String(last.lastMessage).slice(0, 120)}â€¦`
                 : last.lastMessage || "Voice note about your fees",
             recipient: recipientLabel(school, student),
             initials: recipientInitials(school, student),
-            lastMessage: last.hasAudio
+            lastMessage: last.lastHasAudio
               ? "[voice note]"
               : last.lastMessage || "",
             relativeTime: formatRelative(last.lastCreatedAt),
@@ -159,11 +177,27 @@ export const getParentConversation = async (token, threadId) => {
   }
 
   const rows = await ParentMessage.find({
-    schoolId: student.schoolId,
-    studentId: student._id,
+    schoolId: new mongoose.Types.ObjectId(student.schoolId),
+    studentId: new mongoose.Types.ObjectId(student._id),
   })
     .sort({ createdAt: 1 })
     .lean();
+
+  // Extra safety: only return if all rows belong to this student
+  if (rows.length > 0) {
+    const isAllForThisStudent = rows.every(
+      (r) =>
+        String(r.studentId) === String(student._id) &&
+        String(r.schoolId) === String(student.schoolId)
+    );
+    if (!isAllForThisStudent) {
+      throw new ApiError(
+        "That conversation does not exist on this link",
+        404,
+        "NOT_FOUND"
+      );
+    }
+  }
 
   if (!rows.length) {
     throw new ApiError(
@@ -309,7 +343,7 @@ export const createParentMessage = async (token, { subject, body, threadId }, fi
       ? {
           url: audioMeta.url,
           publicId: audioMeta.publicId,
-          mimeType: file.mimetype,
+          mimeType: file?.mimetype,
           bytes: audioMeta.bytes,
           durationSeconds: audioMeta.duration ?? null,
         }
@@ -363,8 +397,8 @@ export const markParentConversationRead = async (token, threadId) => {
 
   const result = await ParentMessage.updateMany(
     {
-      schoolId: student.schoolId,
-      studentId: student._id,
+      schoolId: new mongoose.Types.ObjectId(student.schoolId),
+      studentId: new mongoose.Types.ObjectId(student._id),
       status: "new",
     },
     { $set: { status: "read", readAt: new Date() } }
