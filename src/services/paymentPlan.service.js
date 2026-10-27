@@ -546,6 +546,42 @@ export const acceptPaymentPlan = async (planId, data) => {
   return { planStatus: plan.planStatus, acceptedAt: plan.acceptedAt };
 };
 
+export const adminAcceptPaymentPlan = async (planId, user) => {
+  const schoolId = resolveSchoolId(user);
+  const plan = await loadPlan(planId, schoolId);
+
+  if (plan.planStatus !== "pending_acceptance") {
+    throw new ApiError(
+      `This plan is ${plan.planStatus} and can no longer be accepted`,
+      400,
+      "PLAN_NOT_ACCEPTABLE"
+    );
+  }
+
+  plan.planStatus = "active";
+  plan.acceptedAt = new Date();
+  plan.acceptedVia = "admin_manual";
+  await plan.save();
+
+  const [student, school] = await Promise.all([
+    Student.findById(plan.studentId),
+    fetchSchool(plan.schoolId),
+  ]);
+  if (student) {
+    await notifyPlanActivated(school, student, plan);
+  }
+
+  await auditService.log({
+    action: "plan.accept",
+    entity: "PaymentPlan",
+    entityId: plan._id,
+    userId: user._id,
+    details: { acceptedVia: plan.acceptedVia, schoolId: plan.schoolId },
+  });
+
+  return { planStatus: plan.planStatus, acceptedAt: plan.acceptedAt };
+};
+
 // ──────────────────── 6. Installment actions ────────────────────
 export const updateInstallment = async (planId, installmentNumber, data, user) => {
   const schoolId = resolveSchoolId(user);

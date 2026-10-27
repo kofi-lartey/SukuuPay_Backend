@@ -5,6 +5,7 @@ import { schoolRoute } from './school.routes.js';
 import { studentRoute } from './student.routes.js';
 import { paymentRoute } from './payment.routes.js';
 import { paymentPlanRoute } from './paymentPlan.routes.js';
+import { manualPaymentRoute } from './manualPayment.routes.js';
 import { emailMessagingRoute } from './emailMessaging.routes.js';
 import { analyticsRoute } from './analytics.routes.js';
 import { reportsRoute } from './reports.routes.js';
@@ -133,6 +134,7 @@ router.use('/admin', adminTimetableRoute);
 // `/timetables`) collide with none of the platform console's.
 router.use('/admin', adminAcademicRoute);
 
+router.use('/', manualPaymentRoute);
 router.use('/admin', adminRoute);
 // The unauthenticated ad slider.
 router.use('/', publicAdRoute);
@@ -157,6 +159,5 @@ router.use('/', smsRoute);
 // the credit to send them with. Both answer `/sms-*`, and keeping them in separate
 // routers means the purchase flow can be read without the sending flow's history.
 router.use('/', smsRequestRoute);
-router.use('/', webhookRoute);
 
 export default router;

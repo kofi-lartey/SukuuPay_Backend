@@ -5,6 +5,7 @@ import {
   updatePaymentPlanController,
   cancelPaymentPlanController,
   acceptPaymentPlanController,
+  adminAcceptPaymentPlanController,
   updateInstallmentController,
   prepayPlanController,
   getSchoolComplianceController,
@@ -42,7 +43,14 @@ paymentPlanRoute.post(
   acceptPaymentPlanController
 );
 
-// POST /payment-plans/:planId/prepay - Parent pays an installment up front
+// POST /payment-plans/:planId/admin-accept
+paymentPlanRoute.post(
+  "/payment-plans/:planId/admin-accept",
+  authenticate,
+  requireSchoolAdmin,
+  validate(planIdParamSchema, "params"),
+  adminAcceptPaymentPlanController
+);
 paymentPlanRoute.post(
   "/payment-plans/:planId/prepay",
   validate(planIdParamSchema, "params"),

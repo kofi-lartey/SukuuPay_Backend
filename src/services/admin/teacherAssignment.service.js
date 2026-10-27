@@ -290,6 +290,8 @@ export const listTeacherStudents = async (schoolId, teacherUserId, query = {}) =
     });
     if (tagFilter === 'unassigned') {
       computed = computed.filter((row) => !row.assignedToTeacher);
+    } else if (tagFilter === 'assigned') {
+      computed = computed.filter((row) => row.assignedToTeacher);
     } else if (tagFilter === 'CT' || tagFilter === 'ST') {
       computed = computed.filter((row) => row.tag === tagFilter);
     }

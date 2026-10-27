@@ -1,9 +1,11 @@
 import mongoose from "mongoose";
-import { Payment } from "../models/paymentModel.js";
+import { ManualPayment } from "../models/ManualPayment.js";
 import { Student } from "../models/studentModel.js";
+import { Payment } from "../models/paymentModel.js";
+import { PaymentPlan } from "../models/paymentPlanModel.js";
+import ApiError from "../utils/ApiError.js";
 import { School } from "../models/schoolModel.js";
 import { Counter } from "../models/counterModel.js";
-import { ApiError } from "./student.service.js";
 import * as auditService from "../utils/auditService.js";
 import { notifyPaymentSettled } from "./paymentNotification.service.js";
 
@@ -240,4 +242,123 @@ export const resendManualPaymentReceipt = async (paymentId, user) => {
   return result;
 };
 
-export default { recordManualPayment, resendManualPaymentReceipt };
+
+// ── Manual reference-code payment flow (temporary fallback) ──
+
+const generateReferenceCode = async (studentName) => {
+  const initials = (studentName || "")
+    .trim()
+    .split(/\s+/)
+    .map((part) => part[0])
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("")
+    .toUpperCase() || "ST";
+
+  let isUnique = false;
+  let code = "";
+
+  while (!isUnique) {
+    const numbers = Math.floor(100 + Math.random() * 900).toString();
+    code = `${initials}${numbers}`;
+    const existing = await ManualPayment.findOne({ referenceCode: code, status: "pending" });
+    if (!existing) isUnique = true;
+  }
+
+  return code;
+};
+
+export const createManualPaymentIntent = async (token, amountExpected) => {
+  const student = await Student.findOne({
+    uniquePayLinkToken: String(token || "").toUpperCase(),
+    deletedAt: null,
+  });
+  if (!student) throw new ApiError("Student not found", 404);
+
+  const referenceCode = await generateReferenceCode(student.studentName);
+
+  const manualPayment = await ManualPayment.create({
+    schoolId: student.schoolId,
+    studentId: student._id,
+    referenceCode,
+    expectedAmount: amountExpected,
+  });
+
+  const activePlan = await PaymentPlan.findOne({ studentId: student._id, planStatus: "active" });
+
+  await Payment.create({
+    schoolId: student.schoolId,
+    studentId: student._id,
+    amount: amountExpected,
+    currency: "GHS",
+    status: "pending",
+    paymentMethod: "momo",
+    provider: "manual",
+    reference: referenceCode,
+    description: `Manual MoMo payment for ${student.studentName}`,
+    createdBy: student.createdBy || null,
+    paymentPlanId: activePlan?._id || null,
+  });
+
+  return manualPayment;
+};
+
+export const confirmManualPayment = async (referenceCode, amountReceived, accountantId) => {
+  const manualPayment = await ManualPayment.findOne({
+    referenceCode: String(referenceCode).toUpperCase(),
+    status: "pending",
+  });
+
+  if (!manualPayment) {
+    throw new ApiError("Invalid or expired reference code", 404);
+  }
+
+  let payment = await Payment.findOne({ reference: manualPayment.referenceCode, status: "pending" });
+  if (payment) {
+    payment.amount = amountReceived;
+    payment.amountCharged = amountReceived;
+    payment.amountCredited = amountReceived;
+    payment.status = "completed";
+    payment.completedAt = new Date();
+    await payment.save();
+  } else {
+    payment = await Payment.create({
+      schoolId: manualPayment.schoolId,
+      studentId: manualPayment.studentId,
+      amount: amountReceived,
+      amountCharged: amountReceived,
+      amountCredited: amountReceived,
+      currency: "GHS",
+      gateway: "manual",
+      provider: "manual",
+      status: "completed",
+      completedAt: new Date(),
+      paymentMethod: "cash",
+      reference: manualPayment.referenceCode,
+      receiptNumber: `RCP-MAN-${Date.now()}`,
+      createdBy: accountantId,
+    });
+  }
+
+  const student = await Student.findById(manualPayment.studentId);
+  student.totalPaid = (student.totalPaid || 0) + amountReceived;
+  student.balance = Math.max(0, (student.totalOwed || 0) - student.totalPaid);
+  await student.save();
+
+  const activePlan = await PaymentPlan.findOne({
+    studentId: student._id,
+    planStatus: "active",
+  });
+  if (activePlan) {
+    const { applyCompletedPaymentToPlan } = await import("./paymentPlan.service.js");
+    await applyCompletedPaymentToPlan(payment);
+  }
+
+  manualPayment.status = "completed";
+  manualPayment.completedAt = new Date();
+  manualPayment.completedBy = accountantId;
+  manualPayment.amountReceived = amountReceived;
+  await manualPayment.save();
+
+  return payment;
+};

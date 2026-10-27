@@ -32,7 +32,7 @@ export const listTeacherStudentsQuerySchema = Joi.object({
   search: Joi.string().trim().max(100).allow("").optional(),
   class: classNameValidator.allow("").optional(),
   gender: Joi.string().valid("male", "female").allow("").optional(),
-  tag: Joi.string().valid("CT", "ST", "unassigned", "").allow("").optional(),
+   tag: Joi.string().valid("CT", "ST", "unassigned", "assigned", "").allow("").optional(),
   status: Joi.string()
     .valid("active", "suspended", "graduated", "transferred", "archived", "all")
     .default("active"),
