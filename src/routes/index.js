@@ -16,7 +16,9 @@ import { uploadRoute } from './upload.routes.js';
 import { notificationRoute } from './notification.routes.js';
 import { parentMessageRoute } from './parentMessage.routes.js';
 import { parentRoute } from './parent.routes.js';
+import lmsStudentRoute from './lmsStudent.routes.js';
 import { teacherRoute } from './teacher.routes.js';
+import lmsRoute from './lms.routes.js';
 import { settingsRoute } from './settings.routes.js';
 import { adminRoute } from './admin.routes.js';
 import { adminAttendanceRoute } from './admin.attendance.routes.js';
@@ -79,6 +81,7 @@ router.use('/', parentMessageRoute);
 // shares a token with, and separate from it: `payment.routes.js` owns money and
 // `parent.routes.js` owns the register and the report card.
 router.use('/pay', parentRoute);
+router.use('/pay', lmsStudentRoute);
 
 // The teacher portal — a sibling of the parent portal rather than of the admin
 // console. It answers `/api/teacher/*` and carries its own gate
@@ -90,6 +93,7 @@ router.use('/pay', parentRoute);
 // are scoped to the signed-in caller and resolve their own scope from the token
 // — neither takes an id in the query. That is the family they belong to.
 router.use('/teacher', teacherRoute);
+router.use('/teacher/lms', lmsRoute);
 
 router.use('/settings', settingsRoute);
 
