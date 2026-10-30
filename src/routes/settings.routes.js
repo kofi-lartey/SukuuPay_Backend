@@ -22,7 +22,7 @@ import { rateLimit } from "../middleware/rateLimit.js";
 
 export const settingsRoute = Router();
 
-const requireSchoolAdmin = authorize("super_admin", "school_admin");
+const requireSchoolAdmin = authorize("super_admin", "school_admin", "accountant");
 const settingsRateLimit = rateLimit({
   windowMs: 60 * 1000,
   max: 30,

@@ -59,7 +59,7 @@ import { recordManualPaymentSchema } from "../validations/manualPayment.validati
 
 export const paymentRoute = Router();
 
-const requireSchoolAdmin = authorize("super_admin", "school_admin");
+const requireSchoolAdmin = authorize("super_admin", "school_admin", "accountant");
 
 // ──────────────────── Public endpoints (parent-facing, no auth) ────────────────────
 //

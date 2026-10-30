@@ -28,7 +28,7 @@ import {
 
 export const reportsRoute = Router();
 
-const requireSchoolAdmin = authorize("super_admin", "school_admin");
+const requireSchoolAdmin = authorize("super_admin", "school_admin", "accountant");
 
 // Reports back a report view/export, and exports run the same aggregation
 // before rendering it to a file, so the budget is tighter than analytics.

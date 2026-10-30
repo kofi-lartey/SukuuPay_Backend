@@ -181,7 +181,7 @@ const assertAudience = (value) => {
 };
 
 export const previewAudienceSchema = Joi.object({
-  schoolId: objectId.optional(),
+  schoolId: Joi.string().optional(),
   audience: audience.required().messages({ 'any.required': `${AUDIENCE} is required` }),
 }).custom((value, helpers) => {
   const problem = assertAudience(value);
@@ -223,7 +223,7 @@ export const sendSmsSchema = Joi.object({
   // "Final Warning" does not also have to say it is a final warning.
   category: Joi.string().valid(...SMS_CATEGORIES).optional(),
 
-  schoolId: objectId.optional(),
+  schoolId: Joi.string().optional(),
 
   // A test goes to a number the school controls, is not billed, and is excluded
   // from delivery statistics. It cannot be batched, and it cannot be scheduled.
@@ -265,7 +265,7 @@ export const sendSmsSchema = Joi.object({
 // ──────────────────── Bulk send ────────────────────
 
 export const bulkSendSchema = Joi.object({
-  schoolId: objectId.optional(),
+  schoolId: Joi.string().optional(),
   audience: audience.required().messages({ 'any.required': `${AUDIENCE} is required` }),
   body: messageBody.optional(),
   templateId: objectId.optional(),
@@ -313,7 +313,7 @@ export const cancelSmsJobSchema = Joi.object({
 });
 
 export const listJobsQuerySchema = Joi.object({
-  schoolId: objectId.optional(),
+  schoolId: Joi.string().optional(),
   status: Joi.string()
     .valid(...SMS_JOB_STATUSES, 'all')
     .default('all'),
@@ -332,7 +332,7 @@ export const listJobsQuerySchema = Joi.object({
 // ──────────────────── History ────────────────────
 
 export const listMessagesQuerySchema = Joi.object({
-  schoolId: objectId.optional(),
+  schoolId: Joi.string().optional(),
   status: Joi.string()
     .valid(...SMS_DELIVERY_STATUSES, 'all')
     .default('all'),
@@ -372,7 +372,7 @@ const templateBody = Joi.object({
   category: Joi.string().valid(...SMS_CATEGORIES).default('custom'),
   body: messageBody.required(),
 
-  schoolId: objectId.optional(),
+  schoolId: Joi.string().optional(),
 
   // Only meaningful on the four seeded presets, where it tells the UI which
   // token rows to mark. Accepted on any template and stored, because a school
@@ -406,7 +406,7 @@ export const updateTemplateSchema = Joi.object({
 }).min(1).messages({ 'object.min': 'Provide at least one field to update' });
 
 export const listTemplatesQuerySchema = Joi.object({
-  schoolId: objectId.optional(),
+  schoolId: Joi.string().optional(),
   category: Joi.string().valid(...SMS_CATEGORIES, 'all').default('all'),
   // A school's own templates only, excluding the four platform presets. This is
   // what the composer's "Saved" section asks for.
@@ -415,7 +415,7 @@ export const listTemplatesQuerySchema = Joi.object({
 });
 
 export const previewTemplateSchema = Joi.object({
-  schoolId: objectId.optional(),
+  schoolId: Joi.string().optional(),
   body: messageBody.optional(),
   templateId: objectId.optional(),
   // Supplies the values a preview needs without needing a real student, so the
@@ -435,7 +435,7 @@ export const creditsParamSchema = Joi.object({
 });
 
 export const topUpCreditsSchema = Joi.object({
-  schoolId: objectId.optional(),
+  schoolId: Joi.string().optional(),
   units: Joi.number().integer().min(1).max(LIMITS.MAX_SMS_CREDIT_TOP_UP_UNITS).required(),
   amountPes: Joi.number().integer().min(0).optional(),
   provider: Joi.string().trim().max(40).optional(),
