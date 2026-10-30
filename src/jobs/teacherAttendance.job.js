@@ -76,6 +76,8 @@ export const runTeacherAttendanceSweep = async () => {
         // Only sweep periods that have already ended.
         if (nowMinutes <= endMinutes) continue;
 
+        if (!period.teacherId) continue;
+
         const existing = await TeacherAttendance.findOne({
           teacherId: period.teacherId,
           date: today,
@@ -85,21 +87,26 @@ export const runTeacherAttendanceSweep = async () => {
 
         if (existing) continue;
 
-        await TeacherAttendance.create({
-          schoolId: timetable.schoolId,
-          teacherId: period.teacherId,
-          date: today,
-          timetableId: timetable._id,
-          className: timetable.className,
-          subject: period.subject,
-          periodNumber: period.period,
-          status: "missed",
-          arrivedAt: null,
-          minutesLate: 0,
-          markedBy: null,
-          markedAt: new Date(),
-        });
-        marked += 1;
+        try {
+          await TeacherAttendance.create({
+            schoolId: timetable.schoolId,
+            teacherId: period.teacherId,
+            date: today,
+            timetableId: timetable._id,
+            className: timetable.className,
+            subject: period.subject,
+            periodNumber: period.period,
+            status: "missed",
+            arrivedAt: null,
+            minutesLate: 0,
+            markedBy: null,
+            markedAt: new Date(),
+          });
+          marked += 1;
+        } catch (err) {
+          console.error("[TEACHER-ATTENDANCE-JOB] Failed to create missed record:", err.message);
+          continue;
+        }
       }
     }
   }

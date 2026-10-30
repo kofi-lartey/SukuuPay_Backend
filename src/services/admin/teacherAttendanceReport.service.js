@@ -3,7 +3,7 @@ import { Student } from "../../models/studentModel.js";
 
 export const getTeacherAttendanceReport = async (schoolId, { className } = {}) => {
   if (!className) {
-    return { className: null, students: [], kpis: {}, registerLog: [] };
+    return { className: null, students: [], kpis: {}, registerLog: [], trend: [] };
   }
 
   const students = await Student.find({ schoolId, studentClass: className, deletedAt: null, status: "active" })
@@ -54,10 +54,14 @@ export const getTeacherAttendanceReport = async (schoolId, { className } = {}) =
   const byDate = new Map();
   for (const r of rows) {
     const dateKey = new Date(r.date).toISOString().slice(0, 10);
-    if (!byDate.has(dateKey)) byDate.set(dateKey, { date: dateKey, markedAt: r.markedAt, count: 0 });
-    byDate.get(dateKey).count += 1;
-    if (r.markedAt && (!byDate.get(dateKey).markedAt || r.markedAt < byDate.get(dateKey).markedAt)) {
-      byDate.get(dateKey).markedAt = r.markedAt;
+    if (!byDate.has(dateKey)) byDate.set(dateKey, { date: dateKey, markedAt: r.markedAt, count: 0, present: 0, late: 0, total: 0 });
+    const entry = byDate.get(dateKey);
+    entry.count += 1;
+    entry.total += 1;
+    if (r.status === "present") entry.present += 1;
+    if (r.status === "late") entry.late += 1;
+    if (r.markedAt && (!entry.markedAt || r.markedAt < entry.markedAt)) {
+      entry.markedAt = r.markedAt;
     }
   }
   const registerLog = [...byDate.values()]
@@ -76,6 +80,28 @@ export const getTeacherAttendanceReport = async (schoolId, { className } = {}) =
 
   const chronic = studentList.filter((s) => s.rate < 75 && s.total > 0).length;
 
+  // Monthly trend - last 6 months
+  const trendMap = new Map();
+  for (const r of rows) {
+    const d = new Date(r.date);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    if (!trendMap.has(key)) trendMap.set(key, { month: key, present: 0, late: 0, total: 0 });
+    const t = trendMap.get(key);
+    t.total += 1;
+    if (r.status === "present") t.present += 1;
+    if (r.status === "late") t.late += 1;
+  }
+  const trend = [...trendMap.values()]
+    .sort((a, b) => a.month.localeCompare(b.month))
+    .slice(-6)
+    .map((m) => ({
+      month: m.month,
+      rate: m.total > 0 ? Math.round(((m.present + m.late) / m.total) * 1000) / 10 : 0,
+      present: m.present,
+      late: m.late,
+      absent: m.total - m.present - m.late,
+    }));
+
   return {
     className,
     kpis: {
@@ -86,5 +112,6 @@ export const getTeacherAttendanceReport = async (schoolId, { className } = {}) =
     },
     students: studentList,
     registerLog,
+    trend,
   };
 };
