@@ -541,6 +541,25 @@ export const resetPassword = async (req, res) => {
  * POST /auth/verify-email/:token
  * The token is the OTP delivered by email.
  */
+export const changePassword = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select('+password');
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    const { newPassword } = req.body;
+    user.password = newPassword;
+    user.passwordChangedAt = new Date();
+    user.tokenVersion += 1;
+    user.refreshToken = null;
+    user.refreshTokenExpires = null;
+    await user.save();
+    return res.status(200).json({ success: true, message: 'Password changed successfully' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export const verifyEmail = async (req, res) => {
   try {
     const { token } = req.params;
