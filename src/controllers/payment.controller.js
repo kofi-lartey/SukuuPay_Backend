@@ -346,7 +346,11 @@ export const notifySchoolController = async (req, res) => {
     // "the school will be in touch" when no alert had left the building and nothing
     // had been recorded anywhere a human would look.
     let message;
-    if (result.adminsNotified > 0) {
+    if (result.notificationError) {
+      message = result.hasAudio
+        ? `Your voice note has been saved, but the school was not alerted (${result.notificationError}). Please call the school so they know to look.`
+        : `Your message has been saved, but the school was not alerted (${result.notificationError}). Please call the school so they know to look.`;
+    } else if (result.adminsNotified > 0) {
       message = result.hasAudio
         ? "Your voice note has been sent to the school."
         : "Your message has been sent to the school.";

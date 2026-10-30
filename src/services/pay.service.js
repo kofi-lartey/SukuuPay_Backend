@@ -1123,11 +1123,10 @@ const notifyAdmins = async (recipients, { type, title, message, meta, link }) =>
     const result = await Notification.insertMany(rows, { ordered: false });
     return { written: result.length };
   } catch (error) {
-    // Best-effort. The plan is already recorded, so the school can still find it
-    // in the dashboard; a notification write failing must not turn a parent's
-    // successful request into an error they will retry and duplicate.
-    console.error('[PAY-PORTAL] Notification write failed:', error.message);
-    return { written: 0 };
+    // The ParentMessage row is already written, so the message is recorded.
+    // Re-throw so the caller can decide how honestly to report the failure
+    // instead of telling the parent "the school was notified" when it wasn't.
+    throw error;
   }
 };
 
@@ -1479,6 +1478,7 @@ export const notifySchool = async (token, data) => {
     : `${parentName} (${maskContact(parentPhone)}) asked about ${student.studentName} (${student.studentClass}): ${text}`;
 
   let adminsNotified = 0;
+  let notificationError = null;
   try {
     const result = await notifyAdmins(recipients, {
       // Named rather than written out, because this is the value the
@@ -1507,6 +1507,7 @@ export const notifySchool = async (token, data) => {
     });
     adminsNotified = result.written;
   } catch (error) {
+    notificationError = error.message;
     console.error(
       `[PAY-PORTAL] Notification write failed for ${parentMessage.messageId}:`,
       error.message
@@ -1555,6 +1556,7 @@ export const notifySchool = async (token, data) => {
     delivered,
     notificationLogged: adminsNotified > 0,
     adminsNotified,
+    notificationError,
     // Handed back so the confirmation screen can offer the school as a phone call
     // when no alert could be sent. A parent told "the school will be in touch" with
     // no way to make that happen is the exact failure this feature had.

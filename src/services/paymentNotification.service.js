@@ -308,14 +308,10 @@ const notifySchoolStaff = async ({ payment, student, school, receipt }) => {
     const result = await Notification.insertMany(rows, { ordered: false });
     return { written: result.length };
   } catch (error) {
-    // Best-effort. The money has already moved and the payment is on the
-    // school's Payments screen either way; a failed notification write must
-    // not turn a parent's successful payment into an error.
-    console.error(
-      `[PAY-NOTIFY] Notification write failed for ${payment.paymentId}:`,
-      error.message
-    );
-    return { written: 0 };
+    // The payment is already recorded on the school's Payments screen.
+    // Re-throw so the caller can record the failure honestly instead of
+    // telling the school the in-app alert was written when it wasn't.
+    throw error;
   }
 };
 
@@ -373,7 +369,16 @@ export const notifyPaymentSettled = async (payment) => {
   ]);
 
   const parent = await sendParentReceipt({ payment, student, school });
-  const schoolResult = await notifySchoolStaff({ payment, student, school, receipt: parent });
+  let schoolResult = { written: 0, notificationError: null };
+  try {
+    schoolResult = await notifySchoolStaff({ payment, student, school, receipt: parent });
+  } catch (error) {
+    schoolResult.notificationError = error.message;
+    console.error(
+      `[PAY-NOTIFY] In-app alert write failed for ${payment.paymentId}:`,
+      error.message
+    );
+  }
 
   // Record what was actually delivered, on the payment itself, so a school
   // asking "did the family get the receipt?" has an answer that is not a
