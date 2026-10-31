@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   signup,
   login,
+  studentLogin,
   logout,
   refresh,
   forgotPassword,
@@ -35,6 +36,7 @@ const emailLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 5 });
 
 authRoute.post('/auth/signup', loginLimiter, validate(signupSchema), signup);
 authRoute.post('/auth/login', loginLimiter, validate(loginSchema), login);
+authRoute.post('/auth/student/login', loginLimiter, studentLogin);
 
 /**
  * Google Sign-In.

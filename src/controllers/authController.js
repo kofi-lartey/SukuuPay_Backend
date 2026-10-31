@@ -1,4 +1,5 @@
 import { User } from '../models/userModel.js';
+import { Student } from '../models/studentModel.js';
 import { sendEmail } from '../services/emailService.js';
 import {
   verificationEmail,
@@ -9,8 +10,11 @@ import {
   CLIENT_URL,
   EMAIL_OTP_EXPIRE_MINUTES,
   PASSWORD_RESET_EXPIRE_MINUTES,
+  SECRET,
+  JWT_EXPIRE,
 } from '../config/env.js';
-import { School } from '../models/schoolModel.js';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 import { SchoolJoinRequest } from '../models/SchoolJoinRequest.js';
 import { resolveAccountLinkState } from '../utils/accountLink.js';
 import { ROLES, SCHOOL_JOIN_ROLES } from '../config/constants.js';
@@ -560,6 +564,65 @@ export const changePassword = async (req, res) => {
   }
 };
 
+/**
+ * POST /auth/student/login
+ * Student self-service login using studentId + password.
+ */
+export const studentLogin = async (req, res) => {
+  try {
+    const { studentId, password } = req.body || {};
+    if (!studentId || !password) {
+      return res.status(400).json({ success: false, message: 'Student ID and password are required' });
+    }
+
+    const student = await Student.findOne({
+      studentId: String(studentId).trim().toUpperCase(),
+      deletedAt: null,
+    });
+
+    if (!student || student.status !== 'active') {
+      return res.status(401).json({ success: false, message: 'Invalid student ID or password' });
+    }
+
+    const defaultPassword = '1234567890';
+    let ok = false;
+    if (student.password) {
+      ok = await bcrypt.compare(String(password), student.password);
+    } else {
+      ok = String(password) === defaultPassword;
+      if (ok) {
+        student.password = await bcrypt.hash(defaultPassword, 10);
+        await student.save();
+      }
+    }
+
+    if (!ok) {
+      return res.status(401).json({ success: false, message: 'Invalid student ID or password' });
+    }
+
+    const accessToken = jwt.sign(
+      {
+        sub: student._id.toString(),
+        role: 'student',
+        schoolId: student.schoolId ? student.schoolId.toString() : null,
+        type: 'access',
+      },
+      SECRET,
+      { expiresIn: JWT_EXPIRE }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: 'Signed in successfully',
+      user: { ...student.toJSON(), role: 'student', studentId: student.studentId },
+      tokens: { accessToken, refreshToken: null },
+      onboarding: { linked: true, completed: true, nextRoute: '/student' },
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export const verifyEmail = async (req, res) => {
   try {
     const { token } = req.params;
@@ -613,10 +676,19 @@ export const verifyEmail = async (req, res) => {
  * reports it.
  */
 export const me = async (req, res) => {
+  const userJson = typeof req.user.toJSON === 'function' ? req.user.toJSON() : req.user;
+  if (req.user.role === 'student') {
+    return res.status(200).json({
+      success: true,
+      message: 'Current user retrieved',
+      user: { ...userJson, role: 'student', studentId: req.user.studentId || req.user._id },
+      onboarding: { linked: true, completed: true, nextRoute: '/student' },
+    });
+  }
   return res.status(200).json({
     success: true,
     message: 'Current user retrieved',
-    user: req.user.toJSON(),
+    user: userJson,
     onboarding: await onboardingBlock(req.user),
   });
 };

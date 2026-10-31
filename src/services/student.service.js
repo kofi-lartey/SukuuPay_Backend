@@ -17,8 +17,12 @@ import { createStudentSchema } from "../validations/student.validation.js";
 import * as auditService from "../utils/auditService.js";
 import { PaymentPlan } from "../models/paymentPlanModel.js";
 import { Payment } from "../models/paymentModel.js";
-import { AuditLog } from "../models/AuditLog.js";
-import { Counter } from "../models/counterModel.js";
+import { Attendance } from "../models/Attendance.js";
+import { Grade } from "../models/Grade.js";
+import { TeacherAssignment } from "../models/TeacherAssignment.js";
+import { Timetable } from "../models/Timetable.js";
+import * as parentMessageService from "./parentMessage.service.js";
+import { buildSubjectResults } from "../utils/subjectResults.js";
 
 // Local ApiError mirrors the pattern used in school.service.js so error
 // handling stays consistent with the existing code style.
@@ -881,6 +885,251 @@ export const getStudentProfile = async (id, user, { includeDeleted = false } = {
     classHistory: student.classHistory || [],
     auditTrail: history,
   };
+};
+
+// ──────────────────── Student self-service overview ────────────────────
+export const getStudentSelfOverview = async (user) => {
+  if (!user?.studentId) {
+    throw new ApiError("Student account is not linked to a student record", 403, "STUDENT_NOT_LINKED");
+  }
+
+  const student = await loadStudent(user.studentId, user);
+  const school = await School.findById(student.schoolId).select("academic name").lean();
+
+  const term = school?.academic?.currentTerm || "Term 2";
+  const academicYear = student.academicYear || school?.academic?.currentYear || null;
+  const termLabel = academicYear ? `${term}, ${academicYear}` : term;
+
+  // Attendance
+  const attendanceRows = await Attendance.find({
+    schoolId: student.schoolId,
+    studentId: student._id,
+    deletedAt: null,
+  })
+    .sort({ date: -1 })
+    .limit(30)
+    .lean();
+
+  const total = attendanceRows.length;
+  const present = attendanceRows.filter((r) => r.status === "present" || r.status === "late").length;
+  const absent = attendanceRows.filter((r) => r.status === "absent").length;
+  const late = attendanceRows.filter((r) => r.status === "late").length;
+  const attendanceRate = total ? Math.round((present / total) * 100) : 0;
+
+  // Grades (approved only)
+  const gradeRows = await Grade.find({
+    schoolId: student.schoolId,
+    studentId: student._id,
+    approvalStatus: "approved",
+    deletedAt: null,
+  }).lean();
+
+  const subjectResults = buildSubjectResults(gradeRows, {
+    grading: school?.academic?.grading,
+  });
+
+  const grades = subjectResults.map((r) => ({
+    subject: r.subject,
+    classScore: r.classScore,
+    examScore: r.examScore,
+    total: r.totalScore,
+    grade: r.grade,
+    complete: r.complete,
+    term,
+  }));
+
+  // Assigned teachers
+  const assignments = await TeacherAssignment.find({
+    schoolId: student.schoolId,
+    studentId: student._id,
+  })
+    .live()
+    .populate("teacherId", "name avatar assignedClasses")
+    .lean();
+
+  const teachers = assignments.map((a) => {
+    const t = a.teacherId || {};
+    const subjects = (t.assignedClasses || [])
+      .filter((c) => c.className === (a.className || student.studentClass))
+      .map((c) => c.subject)
+      .filter(Boolean);
+    return {
+      id: t._id,
+      name: t.name,
+      avatar: t.avatar || null,
+      tag: a.tag || "",
+      className: a.className || student.studentClass,
+      subjects,
+    };
+  });
+
+  const parents = (student.parents || []).map((p) => ({
+    id: p._id,
+    name: p.parentName,
+    relationship: p.relationship,
+    phone: p.phone,
+    email: p.email,
+    isPrimary: p.isPrimary,
+    isAlive: p.isAlive,
+  }));
+
+  return {
+    profile: {
+      id: student._id,
+      name: student.studentName,
+      studentId: student.studentId,
+      studentClass: student.studentClass,
+      academicYear,
+      term: termLabel,
+      image: student.studentImage || null,
+      gender: student.gender,
+      dateOfBirth: student.dateOfBirth,
+      status: student.status,
+    },
+    parents,
+    emergencyContacts: student.emergencyContacts || [],
+    classAssignment: {
+      className: student.studentClass,
+      academicYear,
+      term: termLabel,
+    },
+    grades,
+    attendance: {
+      rate: attendanceRate,
+      present,
+      absent,
+      late,
+      total,
+      records: attendanceRows.map((r) => ({
+        date: r.date,
+        status: r.status,
+        note: r.note || "",
+      })),
+    },
+    teachers,
+    balance: Number(((student.balance || 0) / 100).toFixed(2)),
+    pendingTasks: [],
+  };
+};
+
+export const getStudentGrades = async (user, query = {}) => {
+  if (!user?.studentId) {
+    throw new ApiError("Student account is not linked to a student record", 403, "STUDENT_NOT_LINKED");
+  }
+  const student = await loadStudent(user.studentId, user);
+  const school = await School.findById(student.schoolId).select("academic").lean();
+  const term = query.term || school?.academic?.currentTerm || "Term 1";
+  const academicYear = query.academicYear || null;
+
+  const filter = {
+    schoolId: student.schoolId,
+    studentId: student._id,
+    approvalStatus: "approved",
+    deletedAt: null,
+  };
+  if (term) filter.term = term;
+  if (academicYear) filter.academicYear = academicYear;
+
+  const rows = await Grade.find(filter).lean();
+
+  const results = buildSubjectResults(rows, { grading: school?.academic?.grading });
+  return results.map((r) => ({ ...r, term: r.term || term || school?.academic?.currentTerm || "Term 1", academicYear: r.academicYear || academicYear || student.academicYear || school?.academic?.currentYear }));
+};
+
+export const getStudentAttendance = async (user, query = {}) => {
+  if (!user?.studentId) {
+    throw new ApiError("Student account is not linked to a student record", 403, "STUDENT_NOT_LINKED");
+  }
+  const student = await loadStudent(user.studentId, user);
+  const page = Math.max(1, Number(query.page) || 1);
+  const perPage = Math.min(Math.max(1, Number(query.perPage) || 30), 100);
+
+  const filter = { schoolId: student.schoolId, studentId: student._id, deletedAt: null };
+  const [rows, total] = await Promise.all([
+    Attendance.find(filter).sort({ date: -1 }).skip((page - 1) * perPage).limit(perPage).lean(),
+    Attendance.countDocuments(filter),
+  ]);
+
+  const all = await Attendance.find(filter).lean();
+  const present = all.filter((r) => r.status === "present" || r.status === "late").length;
+  const absent = all.filter((r) => r.status === "absent").length;
+  const late = all.filter((r) => r.status === "late").length;
+  const rate = all.length ? Math.round((present / all.length) * 100) : 0;
+
+  return {
+    rate,
+    present,
+    absent,
+    late,
+    total: all.length,
+    records: rows.map((r) => ({ date: r.date, status: r.status, note: r.note || "" })),
+    meta: { page, perPage, total: all.length, totalPages: Math.ceil(all.length / perPage) },
+  };
+};
+export const getStudentTimetable = async (user) => {
+  if (!user?.studentId) {
+    throw new ApiError("Student account is not linked to a student record", 403, "STUDENT_NOT_LINKED");
+  }
+  const student = await loadStudent(user.studentId, user);
+  const school = await School.findById(student.schoolId).select("academic").lean();
+  const term = school?.academic?.currentTerm || "Term 1";
+  const academicYear = student.academicYear || school?.academic?.currentYear || null;
+
+  const classBase = String(student.studentClass || '').replace(/\s+[A-Za-z]$/, '').trim();
+  const candidates = [student.studentClass, classBase].filter(Boolean);
+  let timetable = null;
+  for (const cn of candidates) {
+    timetable = await Timetable.findOne({
+      schoolId: student.schoolId,
+      className: cn,
+      term,
+      status: { $in: ["published", "approved"] },
+      deletedAt: null,
+    }).sort({ academicYear: -1 }).lean();
+    if (timetable && timetable.days && Object.values(timetable.days).some((v) => Array.isArray(v) && v.length)) break;
+  }
+  if (!timetable || !timetable.days || !Object.values(timetable.days).some((v) => Array.isArray(v) && v.length)) {
+    timetable = await Timetable.findOne({
+      schoolId: student.schoolId,
+      term,
+      status: { $in: ["published", "approved"] },
+      deletedAt: null,
+    }).sort({ academicYear: -1 }).lean();
+  }
+
+  return {
+    className: student.studentClass,
+    term,
+    academicYear: timetable?.academicYear || academicYear,
+    days: timetable?.days || { Monday: [], Tuesday: [], Wednesday: [], Thursday: [], Friday: [] },
+  };
+};
+
+export const getStudentFees = async (user, query = {}) => {
+  if (!user?.studentId) {
+    throw new ApiError("Student account is not linked to a student record", 403, "STUDENT_NOT_LINKED");
+  }
+  const student = await loadStudent(user.studentId, user);
+  const page = Math.max(1, Number(query.page) || 1);
+  const perPage = Math.min(Math.max(1, Number(query.perPage) || 20), 100);
+  const [payments, total] = await Promise.all([
+    Payment.find({ studentId: student._id }).sort({ createdAt: -1 }).skip((page - 1) * perPage).limit(perPage).lean(),
+    Payment.countDocuments({ studentId: student._id }),
+  ]);
+  return {
+    balance: Number(((student.balance || 0) / 100).toFixed(2)),
+    totalOwed: Number(((student.totalOwed || 0) / 100).toFixed(2)),
+    totalPaid: Number(((student.totalPaid || 0) / 100).toFixed(2)),
+    payments,
+    meta: { page, perPage, total, totalPages: Math.ceil(total / perPage) },
+  };
+};
+
+export const getStudentMessages = async (user, query = {}) => {
+  if (!user?.studentId) {
+    throw new ApiError("Student account is not linked to a student record", 403, "STUDENT_NOT_LINKED");
+  }
+  return parentMessageService.listStudentMessages(user.studentId, query, user);
 };
 
 // ──────────────────── Get by id ────────────────────

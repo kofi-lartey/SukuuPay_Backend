@@ -1,4 +1,5 @@
 import { User } from '../models/userModel.js';
+import { Student } from '../models/studentModel.js';
 import { verifyToken } from '../utils/tokens.js';
 
 const extractToken = (req) => {
@@ -16,6 +17,26 @@ export const authenticate = async (req, res, next) => {
     }
 
     const payload = verifyToken(token, 'access');
+
+    if (payload.role === 'student') {
+      const student = await Student.findById(payload.sub);
+      if (!student || student.deletedAt) {
+        return res.status(401).json({ success: false, message: 'Account no longer exists' });
+      }
+      if (student.status !== 'active') {
+        return res.status(401).json({ success: false, message: `Account is ${student.status}` });
+      }
+      req.user = {
+        _id: student._id,
+        role: 'student',
+        schoolId: student.schoolId,
+        studentId: student._id,
+        status: student.status,
+      };
+      req.auth = payload;
+      return next();
+    }
+
     const user = await User.findById(payload.sub);
 
     if (!user || user.deletedAt) {

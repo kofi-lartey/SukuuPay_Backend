@@ -5,6 +5,13 @@ import {
   listStudentsController,
   getStudentStatsController,
   getStudentProfileController,
+  getStudentSelfOverviewController,
+  getStudentSelfFeesController,
+  getStudentSelfMessagesController,
+  getStudentSelfTimetableController,
+  getStudentSelfAttendanceController,
+  getStudentSelfGradesController,
+  getStudentSelfTeachersController,
   getStudentController,
   updateStudentController,
   deleteStudentController,
@@ -159,6 +166,56 @@ studentRoute.get(
   authenticate,
   validate(listStudentsQuerySchema, "query"),
   exportStudentsController
+);
+
+// ── Student self-service overview ──
+studentRoute.get(
+  "/student/overview",
+  authenticate,
+  authorize("student"),
+  getStudentSelfOverviewController
+);
+
+studentRoute.get(
+  "/student/attendance",
+  authenticate,
+  authorize("student"),
+  getStudentSelfAttendanceController
+);
+
+studentRoute.get(
+  "/student/grades",
+  authenticate,
+  authorize("student"),
+  getStudentSelfGradesController
+);
+
+studentRoute.get(
+  "/student/teachers",
+  authenticate,
+  authorize("student"),
+  getStudentSelfTeachersController
+);
+
+studentRoute.get(
+  "/student/fees",
+  authenticate,
+  authorize("student"),
+  getStudentSelfFeesController
+);
+
+studentRoute.get(
+  "/student/messages",
+  authenticate,
+  authorize("student"),
+  getStudentSelfMessagesController
+);
+
+studentRoute.get(
+  "/student/timetable",
+  authenticate,
+  authorize("student"),
+  getStudentSelfTimetableController
 );
 
 // ── Single student ──

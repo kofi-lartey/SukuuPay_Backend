@@ -136,6 +136,11 @@ const studentModel = new mongoose.Schema(
       type: String,
       default: null,
     },
+    password: {
+      type: String,
+      select: false,
+      default: null,
+    },
     gender: {
       type: String,
       enum: ["male", "female"],
@@ -460,7 +465,7 @@ studentModel.set("toJSON", {
   virtuals: true,
   transform: (_doc, ret) => {
     delete ret.__v;
-    // Never leak the raw pay link token; the public payLink is sufficient.
+    delete ret.password;
     delete ret.uniquePayLinkToken;
     return ret;
   },

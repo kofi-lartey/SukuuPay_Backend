@@ -4,6 +4,12 @@ import {
   listStudents,
   getStudentStats,
   getStudentProfile,
+  getStudentSelfOverview,
+  getStudentTimetable,
+  getStudentFees,
+  getStudentMessages,
+  getStudentGrades,
+  getStudentAttendance,
   getStudentById,
   updateStudent,
   deleteStudent,
@@ -160,6 +166,70 @@ export const getStudentProfileController = async (req, res) => {
       includeDeleted: req.query.includeDeleted === "true",
     });
     return res.status(200).json({ success: true, data });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+// ─────────────────────────────────────────────
+// STUDENT SELF-SERVICE OVERVIEW
+// ─────────────────────────────────────────────
+export const getStudentSelfOverviewController = async (req, res) => {
+  try {
+    const data = await getStudentSelfOverview(req.user);
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+export const getStudentSelfAttendanceController = async (req, res) => {
+  try {
+    const data = await getStudentAttendance(req.user, req.query);
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+export const getStudentSelfGradesController = async (req, res) => {
+  try {
+    const data = await getStudentGrades(req.user, req.query);
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+export const getStudentSelfTimetableController = async (req, res) => {
+  try {
+    const data = await getStudentTimetable(req.user);
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+export const getStudentSelfFeesController = async (req, res) => {
+  try {
+    const data = await getStudentFees(req.user, req.query);
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+export const getStudentSelfMessagesController = async (req, res) => {
+  try {
+    const data = await getStudentMessages(req.user, req.query);
+    return res.status(200).json({ success: true, data: data.data, meta: data.meta });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+export const getStudentSelfTeachersController = async (req, res) => {
+  try {
+    const data = await getStudentSelfOverview(req.user);
+    return res.status(200).json({ success: true, data: data.teachers });
   } catch (error) {
     return fail(res, error);
   }

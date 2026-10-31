@@ -56,13 +56,13 @@ describe('super_admin is not an assignable role', () => {
     }
   });
 
-  test('the model enum still contains all five roles', async () => {
+  test('the model enum still contains all six roles', async () => {
     // The narrowing lives in the validator, not the model. The model keeps
     // `super_admin` because the owner *is* stored with it — removing it from the
     // enum would make the provisioner unable to write the account it exists to
     // create.
     const { User } = await import('../src/models/userModel.js');
-    assert.equal(User.schema.path('role').enumValues.length, 5);
+    assert.equal(User.schema.path('role').enumValues.length, 6);
     assert.ok(User.schema.path('role').enumValues.includes('super_admin'));
   });
 

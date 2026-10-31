@@ -209,7 +209,7 @@ describe('landingRouteFor — the destination a linked account is given', () => 
     const { landingRouteFor } = await load();
     const { readFile } = await import('node:fs/promises');
     const constants = await readFile(new URL('../../frontend/src/utils/constants.js', import.meta.url), 'utf8');
-    const teacherPortal = constants.match(/dashboard:\s*'([^']+)'/)?.[1];
+    const teacherPortal = constants.match(/TEACHER_ROUTES\s*=\s*\{[\s\S]*?dashboard:\s*'([^']+)'/)?.[1];
 
     assert.ok(teacherPortal, 'TEACHER_ROUTES.dashboard not found in the client constants');
     assert.equal(
