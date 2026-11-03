@@ -15,6 +15,7 @@ const studyPlanSchema = new mongoose.Schema({
   teacherId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
   title: { type: String, required: true },
   description: { type: String },
+  coverImage: { type: String, default: "" },
   term: { type: String, required: true },
   academicYear: { type: String, required: true },
   status: { type: String, enum: ["draft", "published"], default: "draft" },

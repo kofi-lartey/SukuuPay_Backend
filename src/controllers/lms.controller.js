@@ -22,8 +22,12 @@ export const createStudyPlan = async (req, res) => {
       return res.status(403).json({ success: false, message: "Not assigned to this class" });
     }
   }
-  const item = await StudyPlan.create({ ...req.body, schoolId: schoolId(req), teacherId: teacherId(req) });
-  res.status(201).json({ success: true, data: item });
+  try {
+    const item = await StudyPlan.create({ ...req.body, schoolId: schoolId(req), teacherId: teacherId(req) });
+    res.status(201).json({ success: true, data: item });
+  } catch (e) {
+    res.status(422).json({ success: false, message: e.message });
+  }
 };
 
 export const updateStudyPlan = async (req, res) => {
@@ -145,7 +149,31 @@ export const importLms = async (req, res) => {
   for (const it of items) {
     try {
       if (kind === "studyplans") {
-        await StudyPlan.create({ ...it, schoolId: schoolId(req), teacherId: teacherId(req) });
+        const lessons = Array.isArray(it.lessons) ? it.lessons.map((l) => {
+          const out = { ...l };
+          if (l?.assessmentTitle) {
+            // resolve by title (best-effort) within the same school/class
+            // done after; keep title for now
+          }
+          return out;
+        }) : [];
+        // resolve assessment titles
+        if (lessons.length) {
+          const titles = lessons.map((l) => l.assessmentTitle).filter(Boolean);
+          if (titles.length) {
+            const assessments = await Assessment.find({ schoolId: schoolId(req), title: { $in: titles } });
+            const map = new Map(assessments.map((a) => [a.title, a._id]));
+            for (const l of lessons) {
+              if (l.assessmentTitle && map.has(l.assessmentTitle)) {
+                l.assessmentId = map.get(l.assessmentTitle);
+              }
+              delete l.assessmentTitle;
+            }
+          } else {
+            for (const l of lessons) delete l.assessmentTitle;
+          }
+        }
+        await StudyPlan.create({ ...it, lessons, schoolId: schoolId(req), teacherId: teacherId(req) });
       } else if (kind === "assessments") {
         await Assessment.create({ ...it, schoolId: schoolId(req), teacherId: teacherId(req) });
       } else if (kind === "lessons") {
