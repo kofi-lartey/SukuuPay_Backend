@@ -6,6 +6,9 @@ import {
   getStudentStatsController,
   getStudentProfileController,
   getStudentSelfOverviewController,
+  getStudentSelfLmsController,
+  startStudentSelfLmsAssessmentController,
+  submitStudentSelfLmsAssessmentController,
   getStudentSelfFeesController,
   getStudentSelfMessagesController,
   getStudentSelfTimetableController,
@@ -174,6 +177,27 @@ studentRoute.get(
   authenticate,
   authorize("student"),
   getStudentSelfOverviewController
+);
+
+studentRoute.get(
+  "/student/lms",
+  authenticate,
+  authorize("student"),
+  getStudentSelfLmsController
+);
+
+studentRoute.post(
+  "/student/lms/assessments/:assessmentId/start",
+  authenticate,
+  authorize("student"),
+  startStudentSelfLmsAssessmentController
+);
+
+studentRoute.post(
+  "/student/lms/assessments/:assessmentId/submit",
+  authenticate,
+  authorize("student"),
+  submitStudentSelfLmsAssessmentController
 );
 
 studentRoute.get(

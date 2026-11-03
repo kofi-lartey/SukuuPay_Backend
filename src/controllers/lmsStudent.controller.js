@@ -27,11 +27,52 @@ export const getStudentLms = async (req, res) => {
   }
 };
 
+export const startAssessment = async (req, res) => {
+  try {
+    const student = await requireStudentByToken(req.params.token);
+    const assessment = await Assessment.findById(req.params.assessmentId);
+    if (!assessment) return res.status(404).json({ success: false, message: "Not found" });
+    if (assessment.status !== "published") return res.status(400).json({ success: false, message: "Not available" });
+    if (assessment.className !== student.studentClass) return res.status(403).json({ success: false, message: "Not assigned" });
+    if (assessment.dueDate && new Date() > new Date(assessment.dueDate)) {
+      return res.status(400).json({ success: false, message: "Assessment expired" });
+    }
+
+    let sub = await Submission.findOne({ assessmentId: assessment._id, studentId: student._id });
+    if (sub && (sub.status === "submitted" || sub.status === "graded")) {
+      return res.json({ success: true, data: { submission: sub, expiresAt: sub.expiresAt, locked: true } });
+    }
+    if (!sub) {
+      sub = new Submission({ schoolId: student.schoolId, assessmentId: assessment._id, studentId: student._id, status: "in_progress" });
+    }
+    if (!sub.startedAt) {
+      sub.startedAt = new Date();
+      if (assessment.durationMinutes && assessment.durationMinutes > 0) {
+        sub.expiresAt = new Date(sub.startedAt.getTime() + assessment.durationMinutes * 60 * 1000);
+      } else {
+        sub.expiresAt = assessment.dueDate ? new Date(assessment.dueDate) : null;
+      }
+    }
+    if (assessment.dueDate && sub.expiresAt && sub.expiresAt > new Date(assessment.dueDate)) {
+      sub.expiresAt = new Date(assessment.dueDate);
+    }
+    await sub.save();
+    res.json({ success: true, data: { submission: sub, expiresAt: sub.expiresAt, locked: false } });
+  } catch (e) {
+    res.status(404).json({ success: false, message: "Invalid link" });
+  }
+};
+
 export const submitAssessment = async (req, res) => {
   try {
     const student = await requireStudentByToken(req.params.token);
     const assessment = await Assessment.findById(req.params.assessmentId);
     if (!assessment) return res.status(404).json({ success: false, message: "Not found" });
+
+    const existing = await Submission.findOne({ assessmentId: assessment._id, studentId: student._id });
+    if (existing?.expiresAt && new Date() > new Date(new Date(existing.expiresAt).getTime() + 30000)) {
+      return res.status(400).json({ success: false, message: "Time expired" });
+    }
 
     const qMap = new Map(assessment.questions.map((q) => [String(q._id), q]));
     const answers = (req.body.answers || []).map((a) => {
@@ -44,7 +85,7 @@ export const submitAssessment = async (req, res) => {
       }
       return {
         questionId: a.questionId,
-        studentAnswer: a.studentAnswer,
+        studentAnswer: a.studentAnswer ?? "",
         isCorrect,
         scoreAwarded,
         teacherFeedback: "",
@@ -58,9 +99,14 @@ export const submitAssessment = async (req, res) => {
     if (!sub) sub = new Submission({ schoolId: student.schoolId, assessmentId: assessment._id, studentId: student._id });
     sub.answers = answers;
     sub.totalScore = totalScore;
-    sub.status = hasEssay ? "submitted" : "graded";
-    sub.submittedAt = new Date();
-    if (!hasEssay) sub.gradedAt = new Date();
+    const final = req.body.final !== false;
+    if (final) {
+      sub.status = hasEssay ? "submitted" : "graded";
+      sub.submittedAt = new Date();
+      if (!hasEssay) sub.gradedAt = new Date();
+    } else if (sub.status !== "submitted" && sub.status !== "graded") {
+      sub.status = "in_progress";
+    }
     await sub.save();
     res.json({ success: true, data: sub });
   } catch (e) {

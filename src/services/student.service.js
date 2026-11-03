@@ -15,7 +15,7 @@ import {
 import { parseImportFile } from "../utils/csvParser.js";
 import { createStudentSchema } from "../validations/student.validation.js";
 import * as auditService from "../utils/auditService.js";
-import { PaymentPlan } from "../models/paymentPlanModel.js";
+import { StudyPlan, Assessment, Submission } from "../models/LMS.js";
 import { Payment } from "../models/paymentModel.js";
 import { Attendance } from "../models/Attendance.js";
 import { Grade } from "../models/Grade.js";
@@ -973,6 +973,21 @@ export const getStudentSelfOverview = async (user) => {
     isAlive: p.isAlive,
   }));
 
+  const [studyPlans, assessments] = await Promise.all([
+    StudyPlan.find({ schoolId: student.schoolId, className: student.studentClass, status: "published" }).sort({ createdAt: -1 }).lean(),
+    Assessment.find({ schoolId: student.schoolId, className: student.studentClass, status: "published" }).sort({ createdAt: -1 }).lean(),
+  ]);
+  const submissions = await Submission.find({ studentId: student._id }).lean();
+  const subMap = new Map(submissions.map((s) => [String(s.assessmentId), s]));
+  const pendingTasks = assessments
+    .filter((a) => !subMap.has(String(a._id)))
+    .map((a) => ({
+      id: a._id,
+      title: a.title,
+      due: a.dueDate ? new Date(a.dueDate).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "",
+      type: "LMS",
+    }));
+
   return {
     profile: {
       id: student._id,
@@ -1008,8 +1023,116 @@ export const getStudentSelfOverview = async (user) => {
     },
     teachers,
     balance: Number(((student.balance || 0) / 100).toFixed(2)),
-    pendingTasks: [],
+    pendingTasks,
+    lms: {
+      studyPlans: studyPlans.length,
+      assessments: assessments.length,
+      pending: pendingTasks.length,
+    },
   };
+};
+
+export const getStudentSelfLms = async (user) => {
+  if (!user?.studentId) {
+    throw new ApiError("Student account is not linked to a student record", 403, "STUDENT_NOT_LINKED");
+  }
+  const student = await loadStudent(user.studentId, user);
+  const [studyPlans, assessments] = await Promise.all([
+    StudyPlan.find({ schoolId: student.schoolId, className: student.studentClass, status: "published" }).sort({ createdAt: -1 }).lean(),
+    Assessment.find({ schoolId: student.schoolId, className: student.studentClass, status: "published" }).sort({ createdAt: -1 }).lean(),
+  ]);
+  const submissions = await Submission.find({ studentId: student._id }).lean();
+  const subMap = new Map(submissions.map((s) => [String(s.assessmentId), s]));
+  const assessmentsWithSub = assessments.map((a) => {
+    const o = { ...a };
+    o.submission = subMap.get(String(a._id)) || null;
+    return o;
+  });
+  return {
+    student: { _id: student._id, name: student.studentName, class: student.studentClass },
+    studyPlans,
+    assessments: assessmentsWithSub,
+  };
+};
+
+export const startStudentSelfLmsAssessment = async (user, assessmentId) => {
+  if (!user?.studentId) throw new ApiError("Student account is not linked to a student record", 403, "STUDENT_NOT_LINKED");
+  const student = await loadStudent(user.studentId, user);
+  const assessment = await Assessment.findById(assessmentId);
+  if (!assessment) throw new ApiError("Not found", 404, "NOT_FOUND");
+  if (assessment.status !== "published") throw new ApiError("Not available", 400, "NOT_AVAILABLE");
+  if (assessment.className !== student.studentClass) throw new ApiError("Not assigned", 403, "NOT_ASSIGNED");
+  if (assessment.dueDate && new Date() > new Date(assessment.dueDate)) throw new ApiError("Assessment expired", 400, "EXPIRED");
+
+  let sub = await Submission.findOne({ assessmentId: assessment._id, studentId: student._id });
+  if (sub && (sub.status === "submitted" || sub.status === "graded")) {
+    return { submission: sub, expiresAt: sub.expiresAt, locked: true };
+  }
+  if (!sub) {
+    sub = new Submission({ schoolId: student.schoolId, assessmentId: assessment._id, studentId: student._id, status: "in_progress" });
+  }
+  if (!sub.startedAt) {
+    sub.startedAt = new Date();
+    if (assessment.durationMinutes && assessment.durationMinutes > 0) {
+      sub.expiresAt = new Date(sub.startedAt.getTime() + assessment.durationMinutes * 60 * 1000);
+    } else {
+      sub.expiresAt = assessment.dueDate ? new Date(assessment.dueDate) : null;
+    }
+  }
+  if (assessment.dueDate && sub.expiresAt && sub.expiresAt > new Date(assessment.dueDate)) {
+    sub.expiresAt = new Date(assessment.dueDate);
+  }
+  await sub.save();
+  return { submission: sub, expiresAt: sub.expiresAt, locked: false };
+};
+
+export const submitStudentSelfLmsAssessment = async (user, assessmentId, answers, final = true) => {
+  if (!user?.studentId) {
+    throw new ApiError("Student account is not linked to a student record", 403, "STUDENT_NOT_LINKED");
+  }
+  const student = await loadStudent(user.studentId, user);
+  const assessment = await Assessment.findById(assessmentId);
+  if (!assessment) throw new ApiError("Not found", 404, "NOT_FOUND");
+
+  const existing = await Submission.findOne({ assessmentId: assessment._id, studentId: student._id });
+  if (existing?.expiresAt && new Date() > new Date(new Date(existing.expiresAt).getTime() + 30000)) {
+    throw new ApiError("Time expired", 400, "TIME_EXPIRED");
+  }
+
+  const qMap = new Map(assessment.questions.map((q) => [String(q._id), q]));
+  const normalized = (answers || []).map((a) => {
+    const q = qMap.get(String(a.questionId));
+    let isCorrect = null;
+    let scoreAwarded = 0;
+    if (q && q.type === "multiple_choice") {
+      isCorrect = String(a.studentAnswer) === String(q.correctAnswer);
+      scoreAwarded = isCorrect ? (q.points || 1) : 0;
+    }
+    return {
+      questionId: a.questionId,
+      studentAnswer: a.studentAnswer ?? "",
+      isCorrect,
+      scoreAwarded,
+      teacherFeedback: "",
+    };
+  });
+
+  const hasEssay = assessment.questions.some((q) => q.type === "essay");
+  const totalScore = normalized.reduce((s, a) => s + (a.scoreAwarded || 0), 0);
+
+  let sub = await Submission.findOne({ assessmentId: assessment._id, studentId: student._id });
+  if (!sub) sub = new Submission({ schoolId: student.schoolId, assessmentId: assessment._id, studentId: student._id });
+  sub.answers = normalized;
+  sub.totalScore = totalScore;
+  if (final) {
+    sub.status = hasEssay ? "submitted" : "graded";
+    sub.submittedAt = new Date();
+    if (!hasEssay) sub.gradedAt = new Date();
+  } else if (sub.status !== "submitted" && sub.status !== "graded") {
+    sub.status = "in_progress";
+  }
+  await sub.save();
+  return sub;
 };
 
 export const getStudentGrades = async (user, query = {}) => {

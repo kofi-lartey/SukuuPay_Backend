@@ -4,6 +4,7 @@ const lessonSchema = new mongoose.Schema({
   title: { type: String, required: true },
   content: { type: String, required: true },
   resourceLinks: [{ title: String, url: String }],
+  assessmentId: { type: mongoose.Schema.Types.ObjectId, ref: "Assessment", default: null },
   order: { type: Number, default: 1 },
 });
 
@@ -36,13 +37,15 @@ const assessmentSchema = new mongoose.Schema({
   title: { type: String, required: true },
   instructions: { type: String },
   dueDate: { type: Date, required: true },
+  durationMinutes: { type: Number, default: 0 },
   status: { type: String, enum: ["draft", "published", "closed"], default: "draft" },
+  attachedToLesson: { type: Boolean, default: false },
   questions: [questionSchema],
 }, { timestamps: true });
 
 const answerSchema = new mongoose.Schema({
   questionId: { type: mongoose.Schema.Types.ObjectId, required: true },
-  studentAnswer: { type: String, required: true },
+  studentAnswer: { type: String, default: "" },
   isCorrect: { type: Boolean, default: null },
   scoreAwarded: { type: Number, default: 0 },
   teacherFeedback: { type: String, default: "" },
@@ -53,6 +56,8 @@ const submissionSchema = new mongoose.Schema({
   assessmentId: { type: mongoose.Schema.Types.ObjectId, ref: "Assessment", required: true, index: true },
   studentId: { type: mongoose.Schema.Types.ObjectId, ref: "Student", required: true, index: true },
   status: { type: String, enum: ["in_progress", "submitted", "graded"], default: "in_progress" },
+  startedAt: { type: Date },
+  expiresAt: { type: Date },
   answers: [answerSchema],
   totalScore: { type: Number, default: 0 },
   submittedAt: { type: Date },

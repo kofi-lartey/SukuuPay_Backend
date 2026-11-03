@@ -105,6 +105,13 @@ export const getSubmission = async (req, res) => {
   res.json({ success: true, data: sub });
 };
 
+export const resetSubmission = async (req, res) => {
+  const sub = await Submission.findById(req.params.submissionId);
+  if (!sub) return res.status(404).json({ success: false, message: "Not found" });
+  await Submission.deleteOne({ _id: sub._id });
+  res.json({ success: true, data: { deleted: true } });
+};
+
 // Append at end
 export const exportLms = async (req, res) => {
   const kind = req.query.kind;

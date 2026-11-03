@@ -6,7 +6,7 @@ import { resolveTeacherActor } from "../utils/teacherScope.js";
 import {
   listStudyPlans, createStudyPlan, updateStudyPlan, deleteStudyPlan,
   listAssessments, createAssessment, updateAssessment, deleteAssessment,
-  listSubmissions, getSubmission, gradeSubmission,
+  listSubmissions, getSubmission, gradeSubmission, resetSubmission,
   exportLms, importLms,
 } from "../controllers/lms.controller.js";
 
@@ -31,5 +31,6 @@ router.delete("/assessments/:id", deleteAssessment);
 router.get("/assessments/:id/submissions", listSubmissions);
 router.get("/submissions/:submissionId", getSubmission);
 router.post("/submissions/:submissionId/grade", gradeSubmission);
+router.post("/submissions/:submissionId/reset", resetSubmission);
 
 export default router;

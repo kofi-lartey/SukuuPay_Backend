@@ -5,6 +5,9 @@ import {
   getStudentStats,
   getStudentProfile,
   getStudentSelfOverview,
+  getStudentSelfLms,
+  startStudentSelfLmsAssessment,
+  submitStudentSelfLmsAssessment,
   getStudentTimetable,
   getStudentFees,
   getStudentMessages,
@@ -174,9 +177,9 @@ export const getStudentProfileController = async (req, res) => {
 // ─────────────────────────────────────────────
 // STUDENT SELF-SERVICE OVERVIEW
 // ─────────────────────────────────────────────
-export const getStudentSelfOverviewController = async (req, res) => {
+export const submitStudentSelfLmsAssessmentController = async (req, res) => {
   try {
-    const data = await getStudentSelfOverview(req.user);
+    const data = await submitStudentSelfLmsAssessment(req.user, req.params.assessmentId, req.body.answers, req.body.final !== false);
     return res.status(200).json({ success: true, data });
   } catch (error) {
     return fail(res, error);
@@ -226,6 +229,33 @@ export const getStudentSelfMessagesController = async (req, res) => {
     return fail(res, error);
   }
 };
+export const getStudentSelfOverviewController = async (req, res) => {
+  try {
+    const data = await getStudentSelfOverview(req.user);
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+export const getStudentSelfLmsController = async (req, res) => {
+  try {
+    const data = await getStudentSelfLms(req.user);
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+export const startStudentSelfLmsAssessmentController = async (req, res) => {
+  try {
+    const data = await startStudentSelfLmsAssessment(req.user, req.params.assessmentId);
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
 export const getStudentSelfTeachersController = async (req, res) => {
   try {
     const data = await getStudentSelfOverview(req.user);

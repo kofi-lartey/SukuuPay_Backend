@@ -1,5 +1,6 @@
 import { User } from '../models/userModel.js';
 import { Student } from '../models/studentModel.js';
+import { School } from '../models/schoolModel.js';
 import { sendEmail } from '../services/emailService.js';
 import {
   verificationEmail,
