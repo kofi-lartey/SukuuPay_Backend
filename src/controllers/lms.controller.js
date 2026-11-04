@@ -200,6 +200,8 @@ export const gradeSubmission = async (req, res) => {
   if (typeof totalScore === "number") sub.totalScore = totalScore;
   if (feedback !== undefined) sub.teacherFeedback = feedback;
   if (Array.isArray(answers)) {
+    const assessment = await Assessment.findById(sub.assessmentId);
+    const essayIds = new Set((assessment?.questions || []).filter((q) => q.type === "essay").map((q) => String(q._id)));
     // merge per-answer grading
     const map = new Map(sub.answers.map((a) => [String(a.questionId), a]));
     for (const a of answers) {
@@ -207,9 +209,13 @@ export const gradeSubmission = async (req, res) => {
       if (existing) {
         if (typeof a.scoreAwarded === "number") existing.scoreAwarded = a.scoreAwarded;
         if (a.teacherFeedback !== undefined) existing.teacherFeedback = a.teacherFeedback;
+        if (essayIds.has(String(a.questionId))) existing.graded = true;
       }
     }
     sub.totalScore = sub.answers.reduce((sum, a) => sum + (a.scoreAwarded || 0), 0);
+    // auto-release if all essays graded
+    const allEssaysGraded = sub.answers.every((a) => !essayIds.has(String(a.questionId)) || a.graded);
+    if (allEssaysGraded) sub.resultsReleased = true;
   }
   sub.status = "graded";
   sub.gradedAt = new Date();

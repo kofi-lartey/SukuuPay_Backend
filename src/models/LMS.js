@@ -25,9 +25,12 @@ const studyPlanSchema = new mongoose.Schema({
 const questionSchema = new mongoose.Schema({
   type: { type: String, enum: ["multiple_choice", "essay"], required: true },
   questionText: { type: String, required: true },
-  options: [{ type: String }],
+  options: [String],
   correctAnswer: { type: String },
   points: { type: Number, default: 1 },
+  keywords: [String],
+  syllabusRef: String,
+  rubricStandard: String,
 });
 
 const assessmentSchema = new mongoose.Schema({
@@ -50,6 +53,7 @@ const answerSchema = new mongoose.Schema({
   isCorrect: { type: Boolean, default: null },
   scoreAwarded: { type: Number, default: 0 },
   teacherFeedback: { type: String, default: "" },
+  graded: { type: Boolean, default: false },
 });
 
 const submissionSchema = new mongoose.Schema({
@@ -63,6 +67,7 @@ const submissionSchema = new mongoose.Schema({
   totalScore: { type: Number, default: 0 },
   submittedAt: { type: Date },
   gradedAt: { type: Date },
+  resultsReleased: { type: Boolean, default: false },
   teacherFeedback: { type: String, default: "" },
 }, { timestamps: true });
 

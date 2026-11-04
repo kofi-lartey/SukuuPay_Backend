@@ -40,7 +40,18 @@ export const startAssessment = async (req, res) => {
 
     let sub = await Submission.findOne({ assessmentId: assessment._id, studentId: student._id });
     if (sub && (sub.status === "submitted" || sub.status === "graded")) {
-      return res.json({ success: true, data: { submission: sub, expiresAt: sub.expiresAt, locked: true } });
+      const totalPts = (assessment.questions || []).reduce((s, q) => s + (q.points || 0), 0);
+      const score = sub.totalScore || 0;
+      const passed = totalPts > 0 && score >= 0.5 * totalPts;
+      if (!passed) {
+        sub.status = "in_progress";
+        sub.answers = [];
+        sub.totalScore = 0;
+        sub.startedAt = null;
+        sub.expiresAt = null;
+      } else {
+        return res.json({ success: true, data: { submission: sub, expiresAt: sub.expiresAt, locked: true } });
+      }
     }
     if (!sub) {
       sub = new Submission({ schoolId: student.schoolId, assessmentId: assessment._id, studentId: student._id, status: "in_progress" });
@@ -103,7 +114,10 @@ export const submitAssessment = async (req, res) => {
     if (final) {
       sub.status = hasEssay ? "submitted" : "graded";
       sub.submittedAt = new Date();
-      if (!hasEssay) sub.gradedAt = new Date();
+      if (!hasEssay) {
+        sub.gradedAt = new Date();
+        sub.resultsReleased = true;
+      }
     } else if (sub.status !== "submitted" && sub.status !== "graded") {
       sub.status = "in_progress";
     }

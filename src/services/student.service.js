@@ -1066,7 +1066,20 @@ export const startStudentSelfLmsAssessment = async (user, assessmentId) => {
 
   let sub = await Submission.findOne({ assessmentId: assessment._id, studentId: student._id });
   if (sub && (sub.status === "submitted" || sub.status === "graded")) {
-    return { submission: sub, expiresAt: sub.expiresAt, locked: true };
+    const totalPts = (assessment.questions || []).reduce((s, q) => s + (q.points || 0), 0);
+    const score = sub.totalScore || 0;
+    const passed = totalPts > 0 && score >= 0.5 * totalPts;
+    if (!passed) {
+      // allow retake: reset submission
+      sub.status = "in_progress";
+      sub.answers = [];
+      sub.totalScore = 0;
+      sub.startedAt = null;
+      sub.expiresAt = null;
+      // fall through to restart
+    } else {
+      return { submission: sub, expiresAt: sub.expiresAt, locked: true };
+    }
   }
   if (!sub) {
     sub = new Submission({ schoolId: student.schoolId, assessmentId: assessment._id, studentId: student._id, status: "in_progress" });
@@ -1127,7 +1140,10 @@ export const submitStudentSelfLmsAssessment = async (user, assessmentId, answers
   if (final) {
     sub.status = hasEssay ? "submitted" : "graded";
     sub.submittedAt = new Date();
-    if (!hasEssay) sub.gradedAt = new Date();
+    if (!hasEssay) {
+      sub.gradedAt = new Date();
+      sub.resultsReleased = true;
+    }
   } else if (sub.status !== "submitted" && sub.status !== "graded") {
     sub.status = "in_progress";
   }
