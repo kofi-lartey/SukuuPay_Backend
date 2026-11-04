@@ -129,7 +129,7 @@ export const submitAssessment = async (req, res) => {
 };export const getStudentMeetings = async (req, res) => {
   try {
     const student = await requireStudentByToken(req.params.token);
-    const items = await Meeting.find({ schoolId: student.schoolId, className: student.studentClass, status: "live" }).sort({ createdAt: -1 });
+    const items = await Meeting.find({ schoolId: student.schoolId, className: student.studentClass, status: { $in: ['live', 'scheduled'] } }).sort({ createdAt: -1 });
     res.json({ success: true, data: items });
   } catch (e) {
     res.status(404).json({ success: false, message: "Invalid link" });

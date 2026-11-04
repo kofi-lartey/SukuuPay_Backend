@@ -260,12 +260,15 @@ export const getGradebook = async (req, res) => {
 export const createMeeting = async (req, res) => {
   try {
     const sc = schoolId(req);
-    const { className, title } = req.body;
+    const { className, title, startAt, endAt } = req.body;
     if (!className || !title) return res.status(400).json({ success: false, message: "className and title required" });
     const classes = await resolveTeacherClasses(req.user, sc);
     if (!classes.some((c) => c.className === className)) return res.status(403).json({ success: false, message: "Not assigned to this class" });
     const roomName = `SukuuPay-${sc}-${Date.now()}`;
-    const m = await Meeting.create({ schoolId: sc, className, teacherId: teacherId(req), title, roomName, status: "live" });
+    const now = new Date();
+    const s = startAt ? new Date(startAt) : now;
+    const status = s > now ? "scheduled" : "live";
+    const m = await Meeting.create({ schoolId: sc, className, teacherId: teacherId(req), title, roomName, startAt: s, endAt: endAt ? new Date(endAt) : null, status });
     res.status(201).json({ success: true, data: m });
   } catch (e) {
     res.status(400).json({ success: false, message: e.message });
@@ -288,7 +291,7 @@ export const listStudentMeetings = async (req, res) => {
   try {
     const student = await Student.findById(req.user.studentId);
     if (!student) throw new Error("Student not found");
-    const items = await Meeting.find({ schoolId: student.schoolId, className: student.studentClass, status: "live" }).sort({ createdAt: -1 });
+    const items = await Meeting.find({ schoolId: student.schoolId, className: student.studentClass, status: { $in: ["live", "scheduled"] } }).sort({ createdAt: -1 });
     res.json({ success: true, data: items });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });

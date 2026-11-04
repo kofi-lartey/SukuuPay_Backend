@@ -77,6 +77,8 @@ const meetingSchema = new mongoose.Schema({
   teacherId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
   title: { type: String, required: true },
   roomName: { type: String, required: true, unique: true },
+  startAt: { type: Date },
+  endAt: { type: Date },
   status: { type: String, enum: ["scheduled", "live", "ended"], default: "live" },
   createdAt: { type: Date, default: Date.now },
 }, { timestamps: true });
