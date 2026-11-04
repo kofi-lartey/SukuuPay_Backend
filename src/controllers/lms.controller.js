@@ -294,3 +294,14 @@ export const listStudentMeetings = async (req, res) => {
     res.status(500).json({ success: false, message: e.message });
   }
 };
+export const deleteMeeting = async (req, res) => {
+  try {
+    const m = await Meeting.findById(req.params.id);
+    if (!m) return res.status(404).json({ success: false, message: "Not found" });
+    if (String(m.teacherId) !== String(teacherId(req)) && !isAdmin(req)) return res.status(403).json({ success: false, message: "Forbidden" });
+    await Meeting.deleteOne({ _id: m._id });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ success: false, message: e.message });
+  }
+};
