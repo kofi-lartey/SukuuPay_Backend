@@ -248,8 +248,9 @@ export const acceptCurrentPeriod = async (teacherId, schoolId, timetableId, day,
         deletedAt: null,
       },
     },
-    { upsert: true, new: true }
+    { upsert: true, returnDocument: 'after' }
   ).lean();
 
   return record;
 };
+

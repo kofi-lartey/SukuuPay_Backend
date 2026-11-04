@@ -33,7 +33,7 @@ export const createStudyPlan = async (req, res) => {
 export const updateStudyPlan = async (req, res) => {
   const filter = { _id: req.params.id, schoolId: schoolId(req) };
   if (!isAdmin(req)) filter.teacherId = teacherId(req);
-  const item = await StudyPlan.findOneAndUpdate(filter, req.body, { new: true });
+  const item = await StudyPlan.findOneAndUpdate(filter, req.body, { returnDocument: 'after' });
   if (!item) return res.status(404).json({ success: false, message: "Not found" });
   res.json({ success: true, data: item });
 };
@@ -83,7 +83,7 @@ export const updateAssessment = async (req, res) => {
     if (!payload.dueDate) payload.dueDate = new Date(Date.now() + 7 * 86400000);
     if (!payload.title) payload.title = "Untitled Assessment";
   }
-  const item = await Assessment.findOneAndUpdate(filter, payload, { new: true });
+  const item = await Assessment.findOneAndUpdate(filter, payload, { returnDocument: 'after' });
   if (!item) return res.status(404).json({ success: false, message: "Not found" });
   res.json({ success: true, data: item });
 };

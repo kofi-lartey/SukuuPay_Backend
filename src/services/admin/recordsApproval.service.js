@@ -229,7 +229,7 @@ export const compileClassReportsFromGrades = async (schoolId, userId, payload) =
           statusChangedBy: userId,
         },
       },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
     results.push({ studentId: draft.student.studentId, recordId: record._id });
   }
@@ -521,3 +521,4 @@ const attachReportCardPdfs = async (schoolId, { className, term, academicYear })
     }
   }
 };
+

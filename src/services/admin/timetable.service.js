@@ -150,7 +150,7 @@ export const upsertTimetable = async (
         ...(isPublished ? { publishedAt: new Date(), publishedBy: userId } : {}),
       },
     },
-    { upsert: true, new: true }
+    { upsert: true, returnDocument: 'after' }
   );
 
   await auditLog({
@@ -692,7 +692,7 @@ export const submitTimetable = async (
         ...(teacherName !== undefined ? { teacherName } : {}),
       },
     },
-    { new: true }
+    { returnDocument: 'after' }
   ).lean();
 
   await auditLog({
@@ -750,7 +750,7 @@ export const withdrawTimetable = async (
         submittedBy: null,
       },
     },
-    { new: true }
+    { returnDocument: 'after' }
   ).lean();
 
   await auditLog({
@@ -858,7 +858,7 @@ export const approveTimetable = async (
         approvalComment: String(comment || "").trim(),
       },
     },
-    { new: true }
+    { returnDocument: 'after' }
   ).lean();
 
   await auditLog({
@@ -923,7 +923,7 @@ export const rejectTimetable = async (
         rejectionReason,
       },
     },
-    { new: true }
+    { returnDocument: 'after' }
   ).lean();
 
   await auditLog({
@@ -1341,7 +1341,7 @@ export const requestTimetableRemoval = async (
         removalReason,
       },
     },
-    { new: true }
+    { returnDocument: 'after' }
   ).lean();
 
   await auditLog({
@@ -1511,8 +1511,9 @@ export const submitTimetableForApproval = async (schoolId, userId, payload) => {
         submittedBy: userId,
       },
     },
-    { upsert: true, new: true }
+    { upsert: true, returnDocument: 'after' }
   );
 
   return timetable && timetable.toObject ? timetable.toObject() : timetable;
 };
+

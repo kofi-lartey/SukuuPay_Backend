@@ -595,7 +595,7 @@ export const saveSingleGrade = async (user, payload) => {
         recordedAt: new Date(),
       },
     },
-    { upsert: true, new: true }
+    { upsert: true, returnDocument: 'after' }
   ).lean();
 
   await auditLog({
@@ -798,3 +798,4 @@ export const saveBulkGrades = async (user, payload) => {
     errors,
   };
 };
+

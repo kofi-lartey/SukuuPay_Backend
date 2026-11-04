@@ -6,7 +6,7 @@ export const markTeacherAttendance = async (schoolId, userId, { teacherId, class
   const row = await TeacherAttendance.findOneAndUpdate(
     { schoolId, teacherId, className, date: d },
     { $set: { schoolId, teacherId, className, date: d, status, markedBy: userId, markedAt: new Date(), deletedAt: null } },
-    { upsert: true, new: true }
+    { upsert: true, returnDocument: 'after' }
   ).lean();
   return row;
 };

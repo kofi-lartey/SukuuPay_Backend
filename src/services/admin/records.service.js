@@ -195,7 +195,7 @@ export const compileClassReportCards = async (schoolId, userId, payload) => {
           status: "draft",
         },
       },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
     results.push({ studentId: draft.student.studentId, recordId: record._id });
   }
@@ -262,3 +262,4 @@ export const publishClassReportCards = async (schoolId, userId, payload) => {
 
   return { className, term, academicYear, published: result.modifiedCount };
 };
+

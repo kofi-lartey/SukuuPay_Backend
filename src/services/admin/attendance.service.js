@@ -168,7 +168,7 @@ export const autoMarkPresent = async (schoolId, userId, payload) => {
         locationVerified: true,
       },
     },
-    { upsert: true, new: true }
+    { upsert: true, returnDocument: 'after' }
   );
 
   await auditLog({
@@ -182,3 +182,4 @@ export const autoMarkPresent = async (schoolId, userId, payload) => {
 
   return result.toObject();
 };
+
