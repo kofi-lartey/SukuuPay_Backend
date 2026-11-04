@@ -37,7 +37,7 @@ export const SUPER_ADMIN_PASSWORD = process.env.SUPER_ADMIN_PASSWORD || null;
 export const SUPER_ADMIN_NAME = (process.env.SUPER_ADMIN_NAME || 'Platform Operations').trim();
 
 // ─────────────── JWT / Auth ───────────────
-export const JWT_EXPIRE = process.env.JWT_EXPIRE || '15m';
+export const JWT_EXPIRE = process.env.JWT_EXPIRE || '4h';
 export const REFRESH_TOKEN_EXPIRE = process.env.REFRESH_TOKEN_EXPIRE || '7d';
 export const EMAIL_OTP_EXPIRE_MINUTES = Number(process.env.EMAIL_OTP_EXPIRE_MINUTES || 15);
 export const PASSWORD_RESET_EXPIRE_MINUTES = Number(

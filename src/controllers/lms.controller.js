@@ -219,6 +219,7 @@ export const gradeSubmission = async (req, res) => {
   }
   sub.status = "graded";
   sub.gradedAt = new Date();
+  sub.resultsReleased = true;
   await sub.save();
   res.json({ success: true, data: sub });
 };

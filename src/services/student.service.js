@@ -1045,7 +1045,9 @@ export const getStudentSelfLms = async (user) => {
   const subMap = new Map(submissions.map((s) => [String(s.assessmentId), s]));
   const assessmentsWithSub = assessments.map((a) => {
     const o = { ...a };
-    o.submission = subMap.get(String(a._id)) || null;
+    const sub = subMap.get(String(a._id)) || null;
+    if (sub && sub.resultsReleased === undefined) sub.resultsReleased = sub.status === "graded";
+    o.submission = sub;
     return o;
   });
   return {

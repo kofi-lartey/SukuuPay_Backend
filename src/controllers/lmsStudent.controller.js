@@ -18,7 +18,9 @@ export const getStudentLms = async (req, res) => {
     const subMap = Object.fromEntries(submissions.map((s) => [String(s.assessmentId), s]));
     const assessmentsWithSub = assessments.map((a) => {
       const o = a.toObject();
-      o.submission = subMap[String(a._id)] || null;
+      const sub = subMap[String(a._id)] || null;
+      if (sub && sub.resultsReleased === undefined) sub.resultsReleased = sub.status === "graded";
+      o.submission = sub;
       return o;
     });
     res.json({ success: true, data: { student: { _id: student._id, name: student.studentName, class: student.studentClass }, studyPlans, assessments: assessmentsWithSub } });
