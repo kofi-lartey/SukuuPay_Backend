@@ -1,4 +1,4 @@
-import { StudyPlan, Assessment, Submission } from "../models/LMS.js";
+import { StudyPlan, Assessment, Submission, Meeting } from "../models/LMS.js";
 import { Student } from "../models/studentModel.js";
 import { resolveTeacherClasses } from "../utils/teacherScope.js";
 
@@ -221,4 +221,76 @@ export const gradeSubmission = async (req, res) => {
   sub.gradedAt = new Date();
   await sub.save();
   res.json({ success: true, data: sub });
+};
+// -- Gradebook --
+export const getGradebook = async (req, res) => {
+  try {
+    const sc = schoolId(req);
+    const classes = await resolveTeacherClasses(req.user, sc);
+    const filtered = req.query.className ? classes.filter((c) => c.className === req.query.className) : classes;
+    const result = [];
+    for (const cls of filtered) {
+      const students = await Student.find({ schoolId: sc, studentClass: cls.className, deletedAt: null }).select("studentName studentId").sort({ studentName: 1 });
+      const assessments = await Assessment.find({ schoolId: sc, className: cls.className, status: "published" }).sort({ createdAt: 1 });
+      const ids = assessments.map((a) => a._id);
+      const submissions = await Submission.find({ assessmentId: { $in: ids }, studentId: { $in: students.map((s) => s._id) } });
+      const subMap = new Map(submissions.map((s) => [String(s.studentId) + "|" + String(s.assessmentId), s]));
+      const rows = students.map((st) => {
+        const grades = {};
+        let totalScore = 0;
+        let totalPoints = 0;
+        for (const a of assessments) {
+          const sub = subMap.get(String(st._id) + "|" + String(a._id));
+          const pts = (a.questions || []).reduce((s, q) => s + (q.points || 0), 0);
+          const score = sub ? (sub.totalScore || 0) : null;
+          grades[String(a._id)] = { score, total: pts, status: sub?.status || "not_taken", resultsReleased: !!sub?.resultsReleased };
+          if (sub && sub.resultsReleased) { totalScore += score || 0; totalPoints += pts; }
+        }
+        const cumulative = totalPoints > 0 ? Math.round((totalScore / totalPoints) * 100) : null;
+        return { studentId: st._id, studentName: st.studentName, grades, totalScore, totalPoints, cumulative };
+      });
+      result.push({ className: cls.className, assessments: assessments.map((a) => ({ _id: a._id, title: a.title, totalPoints: (a.questions || []).reduce((s, q) => s + (q.points || 0), 0) })), rows });
+    }
+    res.json({ success: true, data: result });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+};
+// -- Meetings --
+export const createMeeting = async (req, res) => {
+  try {
+    const sc = schoolId(req);
+    const { className, title } = req.body;
+    if (!className || !title) return res.status(400).json({ success: false, message: "className and title required" });
+    const classes = await resolveTeacherClasses(req.user, sc);
+    if (!classes.some((c) => c.className === className)) return res.status(403).json({ success: false, message: "Not assigned to this class" });
+    const roomName = `SukuuPay-${sc}-${Date.now()}`;
+    const m = await Meeting.create({ schoolId: sc, className, teacherId: teacherId(req), title, roomName, status: "live" });
+    res.status(201).json({ success: true, data: m });
+  } catch (e) {
+    res.status(400).json({ success: false, message: e.message });
+  }
+};
+
+export const listTeacherMeetings = async (req, res) => {
+  try {
+    const sc = schoolId(req);
+    const classes = await resolveTeacherClasses(req.user, sc);
+    const classNames = classes.map((c) => c.className);
+    const items = await Meeting.find({ schoolId: sc, className: { $in: classNames } }).sort({ createdAt: -1 }).limit(50);
+    res.json({ success: true, data: items });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+};
+
+export const listStudentMeetings = async (req, res) => {
+  try {
+    const student = await Student.findById(req.user.studentId);
+    if (!student) throw new Error("Student not found");
+    const items = await Meeting.find({ schoolId: student.schoolId, className: student.studentClass, status: "live" }).sort({ createdAt: -1 });
+    res.json({ success: true, data: items });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
 };

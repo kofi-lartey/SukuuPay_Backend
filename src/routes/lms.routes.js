@@ -7,7 +7,8 @@ import {
   listStudyPlans, createStudyPlan, updateStudyPlan, deleteStudyPlan,
   listAssessments, createAssessment, updateAssessment, deleteAssessment,
   listSubmissions, getSubmission, gradeSubmission, resetSubmission,
-  exportLms, importLms,
+  exportLms, importLms, getGradebook,
+  createMeeting, listTeacherMeetings,
 } from "../controllers/lms.controller.js";
 
 const router = express.Router();
@@ -22,7 +23,9 @@ router.post("/studyplans", createStudyPlan);
 router.put("/studyplans/:id", updateStudyPlan);
 router.delete("/studyplans/:id", deleteStudyPlan);
 
-router.get("/export", exportLms);
+router.get("/gradebook", getGradebook);
+router.post("/meetings", createMeeting);
+router.get("/meetings", listTeacherMeetings);
 router.post("/import", importLms);
 router.get("/assessments", listAssessments);
 router.post("/assessments", createAssessment);

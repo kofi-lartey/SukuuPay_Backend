@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { listStudentMeetings } from "../controllers/lms.controller.js";
 import {
   createStudentController,
   bulkCreateStudentsController,
@@ -198,6 +199,12 @@ studentRoute.post(
   authenticate,
   authorize("student"),
   submitStudentSelfLmsAssessmentController
+);
+studentRoute.get(
+  "/student/lms/meetings",
+  authenticate,
+  authorize("student"),
+  listStudentMeetings
 );
 
 studentRoute.get(

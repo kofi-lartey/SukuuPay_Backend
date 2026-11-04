@@ -71,7 +71,18 @@ const submissionSchema = new mongoose.Schema({
   teacherFeedback: { type: String, default: "" },
 }, { timestamps: true });
 
+const meetingSchema = new mongoose.Schema({
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: "School", required: true, index: true },
+  className: { type: String, required: true, index: true },
+  teacherId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+  title: { type: String, required: true },
+  roomName: { type: String, required: true, unique: true },
+  status: { type: String, enum: ["scheduled", "live", "ended"], default: "live" },
+  createdAt: { type: Date, default: Date.now },
+}, { timestamps: true });
+
 export const StudyPlan = mongoose.model("StudyPlan", studyPlanSchema);
+export const Meeting = mongoose.model("Meeting", meetingSchema);
 export const Assessment = mongoose.model("Assessment", assessmentSchema);
 export const Submission = mongoose.model("Submission", submissionSchema);
 export default { StudyPlan, Assessment, Submission };

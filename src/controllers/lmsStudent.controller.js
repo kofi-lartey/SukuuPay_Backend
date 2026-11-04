@@ -1,5 +1,5 @@
 import { Student } from "../models/studentModel.js";
-import { StudyPlan, Assessment, Submission } from "../models/LMS.js";
+import { StudyPlan, Assessment, Submission, Meeting } from "../models/LMS.js";
 
 const requireStudentByToken = async (token) => {
   const student = await Student.findOne({ uniquePayLinkToken: String(token || "").toUpperCase(), deletedAt: null });
@@ -123,6 +123,14 @@ export const submitAssessment = async (req, res) => {
     }
     await sub.save();
     res.json({ success: true, data: sub });
+  } catch (e) {
+    res.status(404).json({ success: false, message: "Invalid link" });
+  }
+};export const getStudentMeetings = async (req, res) => {
+  try {
+    const student = await requireStudentByToken(req.params.token);
+    const items = await Meeting.find({ schoolId: student.schoolId, className: student.studentClass, status: "live" }).sort({ createdAt: -1 });
+    res.json({ success: true, data: items });
   } catch (e) {
     res.status(404).json({ success: false, message: "Invalid link" });
   }
