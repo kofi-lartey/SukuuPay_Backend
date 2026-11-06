@@ -417,6 +417,24 @@ export const extractPublicId = (url) => {
   return matches ? matches[1] : null;
 };
 
+// ─────────────────────────────────────────────
+// TEACHER-STUDENT MESSAGE ATTACHMENTS
+// In-memory storage so the service can upload to Cloudinary after validation.
+// Accepts audio or arbitrary files.
+// ─────────────────────────────────────────────
+const teacherMessageStorage = multer.memoryStorage();
+const teacherMessageFileFilter = (req, file, cb) => cb(null, true);
+export const uploadTeacherMessage = multer({
+  storage: teacherMessageStorage,
+  fileFilter: teacherMessageFileFilter,
+  limits: { fileSize: 10 * 1024 * 1024, files: 5 },
+}).fields([
+  { name: "audio", maxCount: 1 },
+  { name: "file", maxCount: 1 },
+  { name: "files", maxCount: 5 },
+  { name: "attachment", maxCount: 1 },
+]);
+export const uploadTeacherMessageRoute = asClientErrors(uploadTeacherMessage);
 export default {
   uploadLogo,
   uploadStamp,

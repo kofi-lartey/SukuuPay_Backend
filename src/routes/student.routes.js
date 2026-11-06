@@ -47,9 +47,18 @@ import {
   bulkSetStatusController,
   bulkRegeneratePayLinksController,
 } from "../controllers/student.controller.js";
+import {
+  getStudentTeachersController,
+  getStudentTeacherMessagesController,
+  sendStudentTeacherMessageController,
+  markTeacherStudentMessageReadController as markStudentTeacherMessageReadController,
+  editTeacherStudentMessageController as editStudentTeacherMessageController,
+  deleteTeacherStudentMessageController as deleteStudentTeacherMessageController,
+} from "../controllers/teacherStudentMessage.controller.js";
+import { uploadBulk } from "../middleware/upload.js";
+import { uploadTeacherMessageRoute } from "../middleware/upload.js";
 import { authenticate, authorize } from "../middleware/authenticate.js";
 import { validate } from "../middleware/validate.js";
-import { uploadBulk } from "../middleware/upload.js";
 import {
   createStudentSchema,
   updateStudentSchema,
@@ -236,10 +245,46 @@ studentRoute.get(
 );
 
 studentRoute.get(
-  "/student/messages",
+  "/student/teachers",
   authenticate,
   authorize("student"),
-  getStudentSelfMessagesController
+  getStudentTeachersController
+);
+
+studentRoute.get(
+  "/student/teachers/:teacherId/messages",
+  authenticate,
+  authorize("student"),
+  getStudentTeacherMessagesController
+);
+
+studentRoute.post(
+  "/student/teachers/:teacherId/messages",
+  authenticate,
+  authorize("student"),
+  uploadTeacherMessageRoute,
+  sendStudentTeacherMessageController
+);
+
+studentRoute.put(
+  "/student/messages/:messageId/read",
+  authenticate,
+  authorize("student"),
+  markStudentTeacherMessageReadController
+);
+
+studentRoute.put(
+  "/student/messages/:messageId",
+  authenticate,
+  authorize("student"),
+  editStudentTeacherMessageController
+);
+
+studentRoute.delete(
+  "/student/messages/:messageId",
+  authenticate,
+  authorize("student"),
+  deleteStudentTeacherMessageController
 );
 
 studentRoute.get(

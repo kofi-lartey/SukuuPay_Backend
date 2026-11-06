@@ -3,6 +3,15 @@ import { authenticate } from "../middleware/authenticate.js";
 import { requireSchool } from "../middleware/requireSchool.js";
 import { validate } from "../middleware/validate.js";
 import { requireTeacher } from "../middleware/roles.js";
+import {
+  getTeacherStudentsController,
+  getTeacherStudentMessagesController,
+  sendTeacherStudentMessageController,
+  markTeacherStudentMessageReadController,
+  editTeacherStudentMessageController,
+  deleteTeacherStudentMessageController,
+} from "../controllers/teacherStudentMessage.controller.js";
+import { uploadTeacherMessageRoute } from "../middleware/upload.js";
 import { resolveTeacherActor } from "../utils/teacherScope.js";
 import {
   getDashboardController,
@@ -195,6 +204,18 @@ router.post(
   validate(timetableTermSchema, "body"),
   withdrawRemovalController
 );
+
+// ── Assigned students & messaging ──
+router.get("/students", getTeacherStudentsController);
+router.get("/students/:studentId/messages", getTeacherStudentMessagesController);
+router.post(
+  "/students/:studentId/messages",
+  uploadTeacherMessageRoute,
+  sendTeacherStudentMessageController
+);
+router.put("/messages/:messageId/read", markTeacherStudentMessageReadController);
+router.put("/messages/:messageId", editTeacherStudentMessageController);
+router.delete("/messages/:messageId", deleteTeacherStudentMessageController);
 
 export const teacherRoute = router;
 export default router;
