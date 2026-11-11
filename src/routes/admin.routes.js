@@ -131,6 +131,10 @@ import {
   getPaymentStatsController,
   exportPaymentsCsvController,
 } from '../controllers/admin/payments.controller.js';
+import {
+  approveSubscriptionPaymentController,
+  listPendingSubscriptionPaymentsController,
+} from '../controllers/subscriptionPayment.controller.js';
 
 // ── Platform console: messaging ────────────────────────────────────────────
 import {
@@ -726,6 +730,22 @@ adminRoute.post(
   refundPaymentAsPlatformController
 );
 adminRoute.get('/payments/:paymentId', validate(paymentIdParamSchema, 'params'), getAdminPaymentDetailController);
+
+// ── Manual subscription payments ───────────────────────────────────────────
+// An administrator reviews pending subscription payments (schools that selected
+// a paid tier but await manual-payment approval) and approves them, which
+// activates the school's subscription.
+
+adminRoute.get(
+  '/manual-payments/subscription/pending',
+  listPendingSubscriptionPaymentsController
+);
+
+adminRoute.put(
+  '/manual-payments/subscription/:id/approve',
+  validate(schoolIdParamSchema, 'params'),
+  approveSubscriptionPaymentController
+);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SMS

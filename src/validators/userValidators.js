@@ -93,7 +93,7 @@ export const updateUserSchema = Joi.object({
    * re-creating a school.
    */
   onboardingCompleted: Joi.boolean().optional(),
-  onboardingHighestStep: Joi.number().integer().min(0).max(3).optional(),
+  onboardingHighestStep: Joi.number().integer().min(0).max(5).optional(),
 }).min(1);
 
 

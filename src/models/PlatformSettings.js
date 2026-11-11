@@ -66,7 +66,7 @@ const platformSettingsSchema = new mongoose.Schema(
       /** Whether a new account can be created without an invitation. */
       selfSignupEnabled: { type: Boolean, default: true },
       /** How long a new school stays on trial. */
-      trialDays: { type: Number, default: 30, min: 0, max: 365 },
+      trialDays: { type: Number, default: 7, min: 0, max: 365 },
     },
 
     /**
@@ -282,7 +282,7 @@ export const DEFAULT_PLATFORM_SETTINGS = {
   defaultMarkupPercent: 5,
   defaultPlatformFeePercent: 0.5,
   defaultMonthlyFee: 15000,
-  features: { adsEnabled: true, selfSignupEnabled: true, trialDays: 30 },
+  features: { adsEnabled: true, selfSignupEnabled: true, trialDays: 7 },
   disbursement: { frequency: "weekly", dayOfWeek: 1, autoApprove: false },
   sms: { provider: "arke", ratePesewas: 25, poolLowThreshold: 0 },
   idCards: {

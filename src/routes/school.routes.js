@@ -15,6 +15,7 @@ import {
 } from "../controllers/school.controller.js";
 import { authenticate, authorize } from "../middleware/authenticate.js";
 import { requireSchool } from "../middleware/requireSchool.js";
+import { trialExpiryMiddleware } from "../middleware/trialExpiry.js";
 import { validate } from "../middleware/validate.js";
 import { uploadLogo, uploadStamp } from "../middleware/upload.js";
 import {
@@ -28,8 +29,18 @@ import {
   joinSchoolSchema,
   decideJoinRequestSchema,
 } from "../validations/school.validation.js";
+import {
+  initiateSubscriptionPaymentController,
+} from "../controllers/subscriptionPayment.controller.js";
 
 export const schoolRoute = Router();
+
+/**
+ * Trial expiry check runs for every school-scoped request on this router.
+ * It is placed after `authenticate` so `req.user` is populated, and it
+ * no-ops when `req.user.schoolId` is null (accounts without a school yet).
+ */
+schoolRoute.use(authenticate, trialExpiryMiddleware);
 
 /**
  * Self-service routes, declared before the `:schoolId` patterns so the intent is
@@ -41,6 +52,18 @@ export const schoolRoute = Router();
  * have one.
  */
 schoolRoute.post("/schools/me", authenticate, validate(provisionMySchoolSchema), createMySchoolController);
+
+/**
+ * `POST /schools/me/subscription/payment` — initiate a manual subscription
+ * payment. The school is on trial or expired, selects a paid tier, and the
+ * endpoint creates a pending `ManualPayment` and suspends the subscription
+ * until an administrator approves it.
+ */
+schoolRoute.post(
+  "/schools/me/subscription/payment",
+  authenticate,
+  initiateSubscriptionPaymentController
+);
 
 schoolRoute.post("/schools/join", authenticate, validate(joinSchoolSchema), joinSchoolController);
 

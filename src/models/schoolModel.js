@@ -196,6 +196,11 @@ const schoolModel = new mongoose.Schema(
         default: 0,
         min: 0,
       },
+      paymentStatus: {
+        type: String,
+        enum: ["none", "pending", "completed"],
+        default: "none",
+      },
     },
 
     /**
