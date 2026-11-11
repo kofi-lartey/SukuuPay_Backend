@@ -179,7 +179,6 @@ describe('role grants on invitation', () => {
       'accountant',
       'school_admin',
       'teacher',
-      'viewer',
     ]);
   });
 });

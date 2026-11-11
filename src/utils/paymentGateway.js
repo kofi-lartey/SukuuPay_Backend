@@ -1,9 +1,9 @@
 // ─────────────────────────────────────────────
 // Payment gateway selection
 // ─────────────────────────────────────────────
-// Moolre is the primary **active** payment gateway: a Ghanaian EPSP licensed
-// by the Bank of Ghana that reaches MTN MoMo, Telecel Cash and AT Money
-// through one integration, and carries SMS on the same wallet.
+// Moolre is the primary **active** payment gateway: a Ghanaian EPSP that reaches
+// MTN MoMo, Telecel Cash and AT Money through one integration, and carries SMS
+// on the same wallet.
 //
 // MTN Collections is the secondary rail, fully wired but off by default.
 //

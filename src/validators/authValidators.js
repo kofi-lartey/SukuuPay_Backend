@@ -21,7 +21,7 @@ const email = Joi.string().email().lowercase().trim().required();
  * constrains the same list in `SIGNUP_ROLES`, but that is convenience — this is
  * the control, and it must not trust the request.
  */
-export const SELF_SIGNUP_ROLES = ["school_admin", "accountant", "teacher", "viewer"];
+export const SELF_SIGNUP_ROLES = ["school_admin", "accountant", "teacher"];
 
 export const signupSchema = Joi.object({
   name: Joi.string().trim().min(2).max(100).required(),

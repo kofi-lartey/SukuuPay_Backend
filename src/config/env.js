@@ -358,9 +358,8 @@ export const MTN_WEBHOOK_SECRET = process.env.MTN_WEBHOOK_SECRET;
 
 // Primary gateway preference: 'moolre' | 'mtn'
 //
-// Moolre is the primary: a Ghanaian EPSP licensed by the Bank of Ghana that
-// reaches MTN MoMo, Telecel Cash and AT Money through one integration, and
-// carries SMS on the same wallet.
+// Moolre is the primary: a Ghanaian EPSP that reaches MTN MoMo, Telecel Cash
+// and AT Money through one integration, and carries SMS on the same wallet.
 export const PRIMARY_PAYMENT_GATEWAY = process.env.PRIMARY_PAYMENT_GATEWAY || 'moolre';
 
 // ── Moolre ──

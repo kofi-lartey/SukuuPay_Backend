@@ -3,9 +3,8 @@
 // ─────────────────────────────────────────────
 // The one integration that reaches MTN MoMo, Telecel Cash and AT Money.
 //
-// Moolre is a Ghanaian EPSP licensed by the Bank of Ghana, which matters for a
-// school-fee product: the merchant agreement, the settlement bank and the
-// dispute path are all local.
+// Moolre is a Ghanaian EPSP that matters for a school-fee product: the merchant
+// agreement, the settlement bank and the dispute path are all local.
 //
 // ## Credentials
 //

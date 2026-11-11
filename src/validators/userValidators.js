@@ -29,7 +29,7 @@ import Joi from 'joi';
  * signup schema (`SELF_SIGNUP_ROLES`) already excluded it, and the owner exists
  * from the first boot.
  */
-export const ASSIGNABLE_ROLES = ['school_admin', 'accountant', 'teacher', 'viewer'];
+export const ASSIGNABLE_ROLES = ['school_admin', 'accountant', 'teacher'];
 
 /**
  * Roles a School Admin may hand out when inviting.
@@ -46,7 +46,7 @@ export const ASSIGNABLE_ROLES = ['school_admin', 'accountant', 'teacher', 'viewe
  * login, which is strictly worse: it destroys per-user attribution in exactly
  * the audit log this module exists to populate.
  */
-export const INVITABLE_BY_SCHOOL_ADMIN = ['school_admin', 'accountant', 'teacher', 'viewer'];
+export const INVITABLE_BY_SCHOOL_ADMIN = ['school_admin', 'accountant', 'teacher'];
 
 const baseUserFields = {
   name: Joi.string().trim().min(2).max(100).required(),

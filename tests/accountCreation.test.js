@@ -23,13 +23,12 @@ describe('self-signup roles', () => {
     assert.equal(SELF_SIGNUP_ROLES.includes('super_admin'), false);
   });
 
-  test('exposes the four legitimate roles', async () => {
+  test('exposes the three legitimate roles', async () => {
     const { SELF_SIGNUP_ROLES } = await import('../src/validators/authValidators.js');
     assert.deepEqual([...SELF_SIGNUP_ROLES].sort(), [
       'accountant',
       'school_admin',
       'teacher',
-      'viewer',
     ]);
   });
 

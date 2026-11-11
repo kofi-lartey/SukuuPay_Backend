@@ -51,7 +51,7 @@ export const userModel = new mongoose.Schema(
     // ─────────────── Role & Scope ───────────────
     role: {
       type: String,
-      enum: ["super_admin", "school_admin", "accountant", "teacher", "viewer", "student"],
+      enum: ["super_admin", "school_admin", "accountant", "teacher", "student"],
       required: true,
       default: "school_admin",
     },

@@ -99,7 +99,7 @@ export const landingRouteFor = (role) =>
  *
  *   - **`wizard`** — a `school_admin`, and the platform owner. They provision a
  *     school and walk the five steps to configure it.
- *   - **`join`** — `accountant`, `teacher` and `viewer`. They have nothing to
+  *   - **`join`** — `accountant` and `teacher`. They have nothing to
  *     configure: the school already exists. They are asked for one thing, the
  *     school code, and then wait. `completed` is therefore true the moment they
  *     are linked, and `onboardingCompleted` on the user stays false forever —

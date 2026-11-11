@@ -5,7 +5,7 @@
 //
 // The behaviour this exists to protect:
 //
-//   1. An `accountant`, `teacher` or `viewer` signing up has nothing to
+//   1. An `accountant` or `teacher` signing up has nothing to
 //      configure — the school already exists. They used to be walked into the
 //      five-step setup wizard (Step 1 is where the join panel lived, behind the
 //      same stepper, stepper bar and step-2-to-5 buttons) and every one of those
@@ -29,13 +29,13 @@ import { SCHOOL_JOIN_ROLES, ROLES, USER_ROLES } from '../src/config/constants.js
 
 // ── Which roles join by code ────────────────────────────────────────────────
 describe('SCHOOL_JOIN_ROLES', () => {
-  test('is exactly the three roles that cannot register a school', () => {
+  test('is exactly the two roles that cannot register a school', () => {
     // The split is exhaustive and deliberate: every other self-signup role
     // (`school_admin`) provisions, and `super_admin` is platform staff who
     // belong to no school at all. A role added to the model later is *not*
     // silently swept into the join flow — it lands in the wizard branch, which
     // is the safe side to be wrong on.
-    assert.deepEqual([...SCHOOL_JOIN_ROLES].sort(), ['accountant', 'teacher', 'viewer']);
+    assert.deepEqual([...SCHOOL_JOIN_ROLES].sort(), ['accountant', 'teacher']);
   });
 
   test('does not include the roles that own a school', () => {
