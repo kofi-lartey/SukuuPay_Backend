@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import { Student, deriveNameParts } from "../models/studentModel.js";
 import { School } from "../models/schoolModel.js";
+import { PaymentPlan } from "../models/paymentPlanModel.js";
 import {
   generateStudentId,
   reserveStudentIds,
