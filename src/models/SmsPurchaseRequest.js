@@ -41,6 +41,7 @@ import mongoose from "mongoose";
  */
 const SMS_REQUEST_STATUSES = [
   "awaiting_payment",
+  "awaiting_verification",
   "awaiting_approval",
   "approved",
   "rejected",
@@ -100,9 +101,11 @@ const smsPurchaseRequestSchema = new mongoose.Schema(
      * meaningful to any given party.
      */
     payment: {
-      /** e.g. `SMS-PAY-20260918-7KQ2M1`. Unique, and partial so a null reference is not a value. */
+      /** Short payment/reference code shown to the payer for manual verification (e.g. `A7K2`). Unique when set. */
       reference: { type: String, default: null, trim: true },
-      provider: { type: String, enum: ["mtn"], default: "mtn" },
+      /** `mtn` = MoMo prompt flow, `manual` = user pays externally and submits a reference for admin verification. */
+      method: { type: String, enum: ["mtn", "manual"], default: "mtn" },
+      provider: { type: String, enum: ["mtn", "manual"], default: "mtn" },
       status: {
         type: String,
         enum: ["pending", "processing", "completed", "failed", "refunded"],
@@ -112,12 +115,22 @@ const smsPurchaseRequestSchema = new mongoose.Schema(
       financialTransactionId: { type: String, default: null, trim: true },
       /** The MTN `external_id` we sent, echoed back on the webhook. */
       externalId: { type: String, default: null, trim: true },
-      /** The number prompted. Kept for a support dispute about a prompt. */
+      /** The number prompted (MoMo flow). */
       phoneNumber: { type: String, default: null, trim: true },
       promptedAt: { type: Date, default: null },
       completedAt: { type: Date, default: null },
       /** Set when the gateway or the network refused. Shown to the school. */
       failureReason: { type: String, default: null, maxlength: 300 },
+      /** External transaction/reference provided by the school as manual payment proof. */
+      submittedReference: { type: String, default: null, trim: true, maxlength: 200 },
+      submittedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+      submittedAt: { type: Date, default: null },
+      payerName: { type: String, default: null, trim: true, maxlength: 120 },
+      proofNote: { type: String, default: null, trim: true, maxlength: 500 },
+      /** Reference confirmed by an admin during manual verification. */
+      verifiedReference: { type: String, default: null, trim: true, maxlength: 200 },
+      verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+      verifiedAt: { type: Date, default: null },
     },
 
     /**

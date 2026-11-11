@@ -34,14 +34,22 @@ export const quoteSmsRequestSchema = Joi.object({
 /**
  * `POST /api/sms-requests`
  *
- * The phone is required because the MoMo prompt goes to it. It is *not* taken from the
- * user's profile: the person approving a purchase is often not the person holding the
- * MoMo wallet, and hard-coding the account's number would silently prompt the wrong
- * person and then leave a paid request with nobody who can say they approved it.
+ * Supports both current MoMo prompt flow (`paymentMethod: "mtn"`, requires phoneNumber)
+ * and manual payment verification flow (`paymentMethod: "manual"`).
  */
 export const createSmsRequestSchema = Joi.object({
   units: Joi.number().integer().min(1).max(200000).required(),
-  phoneNumber: ghanaMsisdn.required(),
+  paymentMethod: Joi.string().valid("mtn", "manual").default("mtn"),
+  phoneNumber: Joi.when("paymentMethod", {
+    is: "manual",
+    then: ghanaMsisdn.allow("", null).optional(),
+    otherwise: ghanaMsisdn.required(),
+  }),
+  paymentReference: Joi.when("paymentMethod", {
+    is: "manual",
+    then: Joi.string().trim().uppercase().pattern(/^[A-Z0-9]{4}$/).optional(),
+    otherwise: Joi.forbidden(),
+  }),
 });
 
 export const listSmsRequestsSchema = Joi.object({
@@ -83,6 +91,17 @@ export const poolTopUpSchema = Joi.object({
   provider: Joi.string().valid("arke", "moolre").default("arke"),
   reference: Joi.string().trim().max(200).allow("").optional(),
   note: Joi.string().trim().max(300).allow("").optional(),
+});
+
+/** `POST /api/sms-requests/:requestId/submit-payment` — manual payment proof. */
+export const submitSmsPaymentProofSchema = Joi.object({
+  submittedReference: Joi.string().trim().min(3).max(200).required().messages({
+    "any.required": "Enter the payment reference/transaction ID from your payment.",
+    "string.empty": "Enter the payment reference/transaction ID from your payment.",
+    "string.min": "Enter the payment reference/transaction ID from your payment.",
+  }),
+  payerName: Joi.string().trim().max(120).allow("", null).optional(),
+  proofNote: Joi.string().trim().max(500).allow("", null).optional(),
 });
 
 /**

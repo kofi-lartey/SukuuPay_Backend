@@ -1,4 +1,4 @@
-import mongoose from "mongoose";
+﻿import mongoose from "mongoose";
 import { SmsPurchaseRequest } from "../models/SmsPurchaseRequest.js";
 import { PlatformSmsPoolEntry } from "../models/PlatformSmsPoolEntry.js";
 import { SmsCreditTopUp } from "../models/smsCreditTopUpModel.js";
@@ -15,7 +15,7 @@ import { NOTIFICATION_TYPES, AUDIT_ACTIONS } from "../config/constants.js";
  *
  * The school asks, the price is shown before it agrees, it pays by MoMo prompt, and an
  * admin releases the units from the platform's Arkesel pool. Money arriving is **not**
- * approval — that is the whole point of the feature, so nothing here credits a balance
+ * approval â€” that is the whole point of the feature, so nothing here credits a balance
  * off the back of a webhook.
  */
 
@@ -24,7 +24,7 @@ import { NOTIFICATION_TYPES, AUDIT_ACTIONS } from "../config/constants.js";
  *
  * `topup` and `reversal` add, `allocation` subtracts. One aggregation rather than two
  * queries, and the same `$sum`-with-`$cond` shape `admin/sms.service.js` already uses
- * for `totalHeldBySchools` — so the two figures are computed the same way and cannot
+ * for `totalHeldBySchools` â€” so the two figures are computed the same way and cannot
  * drift apart in their definitions.
  *
  * @returns {Promise<{ totalToppedUp: number, totalAllocated: number, availableUnits: number }>}
@@ -66,7 +66,7 @@ const currentUnitPricePes = async () => {
  * Prices a request without writing anything.
  *
  * Free and unauthenticated-in-effect (it still sits behind the school's session) so a
- * bursar can see the cost *before* committing — which is the requirement, and the
+ * bursar can see the cost *before* committing â€” which is the requirement, and the
  * reason this is not simply the create endpoint with `dryRun`.
  *
  * `poolAvailable` is part of the answer on purpose: a school should learn the platform
@@ -81,8 +81,8 @@ export const quoteSmsRequest = async ({ units }) => {
     unitPricePes,
     totalPes: units * unitPricePes,
     poolAvailable: pool.availableUnits,
-    // `false` for three different reasons — too many units, more than the pool, or a
-    // zero rate — so the school is told *which* rather than being met with silence.
+    // `false` for three different reasons â€” too many units, more than the pool, or a
+    // zero rate â€” so the school is told *which* rather than being met with silence.
     canRequest:
       units > 0 && units <= pool.availableUnits && unitPricePes > 0,
     reason:
@@ -118,7 +118,7 @@ export const listRequestsForSchool = async ({ schoolId, status, page, perPage })
  * **Scoped to `schoolId` in the query, not trusted from the parameter.** A
  * `SMS-REQ-` reference is guessable in shape and short enough to brute-force, so a
  * read that did not filter by school would expose another school's purchase history
- * and payment reference to any bursar who cared to try — the exact leak that
+ * and payment reference to any bursar who cared to try â€” the exact leak that
  * `findSchoolRecipients`' masked notification copy exists to prevent, on a record that
  * carries more than the phone number.
  */
@@ -135,37 +135,21 @@ export const getSmsRequestForSchool = async (requestId, schoolId) => {
 };
 
 /**
- * Creates the request and prompts for payment.
+ * Creates the request. Supports MoMo prompt flow (existing) and manual payment flow.
  *
- * Two things are done here that are easy to get wrong and are commented at their site:
- * the price is re-read server-side rather than trusted from the quote, and the pool is
- * checked *before* the prompt is issued.
- *
- * @param {{ units: number, phoneNumber: string }} data
- * @param {{ _id, schoolId }} user
+ * - MoMo (`paymentMethod: "mtn"`): creates request, sends MTN prompt, stays `awaiting_payment` until webhook.
+ * - Manual (`paymentMethod: "manual"`): creates request with generated payment reference and returns instructions;
+ *   no prompt is sent. School submits external payment reference later for admin verification.
  */
 export const createSmsRequest = async (data, user) => {
   const { units, phoneNumber } = data;
+  const paymentMethod = data?.paymentMethod === "manual" ? "manual" : "mtn";
 
-  // Never trust the quote. The bursar may have had this tab open across a rate change,
-  // and the amount charged has to be the amount they agreed to — which is fixed by
-  // re-reading the rate at the moment of creation and freezing it on the row.
   const unitPricePes = await currentUnitPricePes();
-
   if (unitPricePes <= 0) {
-    throw new ApiError(
-      "SMS credit is not currently on sale",
-      503,
-      "SMS_PRICING_UNAVAILABLE"
-    );
+    throw new ApiError("SMS credit is not currently on sale", 503, "SMS_PRICING_UNAVAILABLE");
   }
 
-  // Refuse *before* the payment prompt, not after.
-  //
-  // Checking this after `requestToPay` would mean taking a school's money for units the
-  // platform does not have, and then refunding it — which costs the bursar a support
-  // call and the platform an MTN reversal. The pool is the platform's own stock, so
-  // being short is knowable before anyone is charged.
   const pool = await getPoolTotals();
   if (units > pool.availableUnits) {
     throw new ApiError(
@@ -176,10 +160,24 @@ export const createSmsRequest = async (data, user) => {
   }
 
   const totalPes = units * unitPricePes;
-  const reference = `SMS-PAY-${new Date().toISOString().slice(0, 10).replace(
-    /-/g,
-    ""
-  )}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+  const genRef = () => {
+    const letters = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+    const digits = "23456789";
+    const pick = (s) => s[Math.floor(Math.random() * s.length)];
+    const chars = [pick(letters), pick(digits), pick(letters + digits), pick(letters + digits)];
+    for (let i = chars.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [chars[i], chars[j]] = [chars[j], chars[i]];
+    }
+    return chars.join("");
+  };
+  const requestedRef = paymentMethod === "manual" ? String(data?.paymentReference || "").trim().toUpperCase() : "";
+  let reference = requestedRef && /^[A-Z0-9]{4}$/.test(requestedRef) ? requestedRef : genRef();
+  for (let i = 0; i < 8; i++) {
+    const exists = await SmsPurchaseRequest.exists({ "payment.reference": reference });
+    if (!exists) break;
+    reference = genRef();
+  }
 
   const request = await SmsPurchaseRequest.create({
     schoolId: user.schoolId,
@@ -190,31 +188,30 @@ export const createSmsRequest = async (data, user) => {
     status: "awaiting_payment",
     payment: {
       reference,
-      provider: "mtn",
+      method: paymentMethod,
+      provider: paymentMethod === "manual" ? "manual" : "mtn",
       status: "pending",
-      phoneNumber,
+      phoneNumber: paymentMethod === "manual" ? null : phoneNumber,
     },
   });
 
-  // ── The prompt ──
-  //
-  // Wrapped, and handled honestly.
-  //
-  // `requestToPay` calls `assertConfigured('collection')`, which **throws** when the
-  // collection credentials are absent. Without this catch the request row would be left
-  // at `awaiting_payment` with a `pending` payment and the bursar would see a generic
-  // 500 for something that is a configuration state, not a fault — with no way to tell
-  // the difference between "we are down" and "nothing here is set up".
-  //
-  // MTN returns *accepted* rather than *settled*: the money has not moved, and the
-  // prompt is on the payer's phone. That is what `awaiting_payment` means.
+  if (paymentMethod === "manual") {
+    await auditService.log({
+      action: AUDIT_ACTIONS.SMS_CREDIT_REQUEST,
+      entity: "SmsPurchaseRequest",
+      entityId: request._id,
+      userId: user._id,
+      schoolId: user.schoolId,
+      details: { ref: request.requestId, units, unitPricePes, totalPes, method: "manual" },
+    });
+    return { request, reference, prompted: false, manual: true };
+  }
+
   let prompted = false;
   try {
     const result = await requestToPay({
       amount: totalPes,
       phone: phoneNumber,
-      // `reference` as MTN's `external_id`, so a retried prompt for the same request is
-      // recognisable as the same transaction to MTN and to us, rather than a second one.
       externalId: reference,
       referenceId: reference,
       payerMessage: `SukuuPay: ${units} SMS credits`,
@@ -231,10 +228,6 @@ export const createSmsRequest = async (data, user) => {
     request.payment.status = "failed";
     request.payment.failureReason = String(error?.message || "prompt failed").slice(0, 300);
     await request.save();
-
-    // The request is left in place, not deleted. It is the record that the school
-    // tried, and it is what the console needs in order to accept a desk payment if the
-    // prompt cannot be issued.
     throw new ApiError(
       "We could not send the payment prompt. Please contact support to complete this purchase.",
       503,
@@ -248,20 +241,75 @@ export const createSmsRequest = async (data, user) => {
     entityId: request._id,
     userId: user._id,
     schoolId: user.schoolId,
-    details: {
-      ref: request.requestId,
-      units,
-      unitPricePes,
-      totalPes,
-      prompted,
-    },
+    details: { ref: request.requestId, units, unitPricePes, totalPes, prompted, method: "mtn" },
   });
 
-  return { request, reference, prompted };
+  return { request, reference, prompted, manual: false };
 };
 
 /**
- * Moves `awaiting_payment` → `awaiting_approval`.
+ * Manual flow: school submits external payment reference/proof for admin verification.
+ */
+export const submitManualPaymentProof = async (requestId, data, user) => {
+  const request = await SmsPurchaseRequest.findOne({
+    requestId,
+    schoolId: new mongoose.Types.ObjectId(user.schoolId),
+  });
+  if (!request) throw new ApiError("Request not found", 404, "SMS_REQUEST_NOT_FOUND");
+
+  if ((request.payment?.method || "mtn") !== "manual") {
+    throw new ApiError("This request does not use manual payment verification.", 409, "SMS_REQUEST_NOT_MANUAL");
+  }
+  if (request.status === "approved") return { request, alreadySubmitted: false };
+  if (!["awaiting_payment", "awaiting_verification"].includes(request.status)) {
+    throw new ApiError(
+      `A request that is ${request.status.replace(/_/g, " ")} cannot accept payment proof`,
+      409,
+      "SMS_REQUEST_NOT_SUBMITTABLE"
+    );
+  }
+
+  request.payment.submittedReference = String(data.submittedReference || "").trim().slice(0, 200);
+  request.payment.payerName = data.payerName ? String(data.payerName).trim().slice(0, 120) : null;
+  request.payment.proofNote = data.proofNote ? String(data.proofNote).trim().slice(0, 500) : null;
+  request.payment.submittedBy = user._id;
+  request.payment.submittedAt = new Date();
+  request.status = "awaiting_verification";
+  await request.save();
+
+  const admins = await mongoose.model("User").find({ role: "super_admin", status: "active", deletedAt: null }).select("_id").lean();
+  if (admins.length) {
+    await Notification.insertMany(
+      admins.map((admin) => ({
+        userId: admin._id,
+        schoolId: request.schoolId,
+        type: NOTIFICATION_TYPES.SMS_REQUEST,
+        title: `SMS manual payment to verify â€” ${request.units.toLocaleString()} units`,
+        message: `${request.requestId}: ${unitsLabel(request.units)} for ${formatPes(request.totalPes)}. Ref: ${request.payment.reference} Â· Submitted: ${request.payment.submittedReference}.`,
+        link: "/admin/sms/credits",
+        meta: { requestId: String(request._id), ref: request.requestId },
+      }))
+    );
+  }
+
+  await auditService.log({
+    action: AUDIT_ACTIONS.SMS_CREDIT_REQUEST,
+    entity: "SmsPurchaseRequest",
+    entityId: request._id,
+    userId: user._id,
+    schoolId: user.schoolId,
+    details: {
+      ref: request.requestId,
+      submittedReference: request.payment.submittedReference,
+      method: "manual",
+    },
+  });
+
+  return { request, alreadySubmitted: false };
+};
+
+/**
+ * Moves `awaiting_payment` â†’ `awaiting_approval`.
  *
  * Called from the MTN webhook. **Stops there deliberately.** The product requirement
  * is that an admin approves every purchase, so crediting the school here would make the
@@ -280,9 +328,9 @@ export const onSmsRequestPaymentConfirmed = async (reference, gateway) => {
   }
 
   // Idempotent by state, not by a claim. A redelivered webhook on an already-approved
-  // request is a no-op, and so is one on a `rejected` request — the webhook may arrive
+  // request is a no-op, and so is one on a `rejected` request â€” the webhook may arrive
   // after the admin rejected, and the money is already being refunded.
-  if (request.status === "awaiting_approval" || request.status === "approved") {
+  if (request.status === "awaiting_approval" || request.status === "awaiting_verification" || request.status === "approved") {
     return { matched: true, changed: false, request };
   }
 
@@ -295,7 +343,7 @@ export const onSmsRequestPaymentConfirmed = async (reference, gateway) => {
   if (gateway?.reason) request.payment.failureReason = String(gateway.reason).slice(0, 300);
   await request.save();
 
-  // Every active super admin, because the approval queue is theirs alone —
+  // Every active super admin, because the approval queue is theirs alone â€”
   // `admin.routes.js` gates the queue on `authorize('super_admin')`.
   const admins = await mongoose.model("User").find({
     role: "super_admin",
@@ -311,11 +359,11 @@ export const onSmsRequestPaymentConfirmed = async (reference, gateway) => {
         userId: admin._id,
         schoolId: request.schoolId,
         type: NOTIFICATION_TYPES.SMS_REQUEST,
-        title: `SMS purchase awaiting approval — ${request.units.toLocaleString()} units`,
+        title: `SMS purchase awaiting approval â€” ${request.units.toLocaleString()} units`,
         message: `${request.requestId}: ${unitsLabel(request.units)} for ${formatPes(
           request.totalPes
         )}. Payment received; approve to release the units.`,
-        link: "/admin/sms/requests",
+        link: "/admin/sms/credits",
         meta: { requestId: String(request._id), ref: request.requestId },
       }))
     );
@@ -330,17 +378,17 @@ export const onSmsRequestPaymentConfirmed = async (reference, gateway) => {
  * Ordering is the whole design here:
  *
  *   1. **Claim first.** Insert the `PlatformSmsPoolEntry`. Its sparse-unique
- *      `{requestId}` index is the claim — a second approval collides and is refused
+ *      `{requestId}` index is the claim â€” a second approval collides and is refused
  *      rather than allocating twice. If the credit to the school then failed, we are
  *      left with an allocation and no balance, which is the recoverable direction;
  *      the other way round is units credited twice with nothing to show for it.
  *   2. **Credit the balance.**
  *   3. **Write the school's own ledger row**, so the units appear in its existing
- *      purchase history and `GET /sms/credits/:schoolId` — the same place every other
+ *      purchase history and `GET /sms/credits/:schoolId` â€” the same place every other
  *      top-up is, which is what makes this auditable alongside them.
  *   4. **Notify.**
  *
- * @param {string} requestId our public id, `SMS-REQ-…`
+ * @param {string} requestId our public id, `SMS-REQ-â€¦`
  * @param {{ _id: string }} admin
  */
 export const approveSmsRequest = async (requestId, admin) => {
@@ -355,7 +403,7 @@ export const approveSmsRequest = async (requestId, admin) => {
     return { request, alreadyApproved: true };
   }
 
-  if (request.status !== "awaiting_approval") {
+  if (!["awaiting_approval", "awaiting_verification"].includes(request.status)) {
     throw new ApiError(
       `A request that is ${request.status.replace(/_/g, " ")} cannot be approved`,
       409,
@@ -363,7 +411,7 @@ export const approveSmsRequest = async (requestId, admin) => {
     );
   }
 
-  // ── 1. Claim the allocation ──
+  // â”€â”€ 1. Claim the allocation â”€â”€
   const pool = await getPoolTotals();
   if (request.units > pool.availableUnits) {
     throw new ApiError(
@@ -378,7 +426,7 @@ export const approveSmsRequest = async (requestId, admin) => {
     entry = await PlatformSmsPoolEntry.create({
       direction: "allocation",
       units: request.units,
-      // The amount *charged*, which is revenue — not the platform's own cost. Recorded
+      // The amount *charged*, which is revenue â€” not the platform's own cost. Recorded
       // here so the ledger can be read either way; see the field's note on the model.
       amountPes: request.totalPes,
       provider: "arke",
@@ -402,7 +450,7 @@ export const approveSmsRequest = async (requestId, admin) => {
     throw error;
   }
 
-  // ── 2. Credit the school's balance ──
+  // â”€â”€ 2. Credit the school's balance â”€â”€
   const school = await School.findByIdAndUpdate(
     request.schoolId,
     { $inc: { "sms.balance": request.units } },
@@ -413,7 +461,7 @@ export const approveSmsRequest = async (requestId, admin) => {
     throw new ApiError("The school no longer exists", 404, "SCHOOL_NOT_FOUND");
   }
 
-  // ── 3. The school's own ledger ──
+  // â”€â”€ 3. The school's own ledger â”€â”€
   await SmsCreditTopUp.create({
     schoolId: request.schoolId,
     units: request.units,
@@ -425,7 +473,7 @@ export const approveSmsRequest = async (requestId, admin) => {
     createdBy: admin?._id || null,
   });
 
-  // ── 4. The request's own state ──
+  // â”€â”€ 4. The request's own state â”€â”€
   request.status = "approved";
   request.approvedBy = admin?._id || null;
   request.approvedAt = new Date();
@@ -450,7 +498,7 @@ export const approveSmsRequest = async (requestId, admin) => {
 
   await notifySchoolStaff(request, {
     type: NOTIFICATION_TYPES.SMS_REQUEST_APPROVED,
-    title: `SMS credit approved — ${unitsLabel(request.units)}`,
+    title: `SMS credit approved â€” ${unitsLabel(request.units)}`,
     message: `${request.requestId} was approved. ${unitsLabel(
       request.units
     )} added to your balance, which is now ${school.sms.balance.toLocaleString()} units.`,
@@ -463,8 +511,8 @@ export const approveSmsRequest = async (requestId, admin) => {
 /**
  * Rejects a request.
  *
- * **The money has already been taken** at this point — that is what
- * `awaiting_approval` means — so a rejection is refundable and the console says so.
+ * **The money has already been taken** at this point â€” that is what
+ * `awaiting_approval` means â€” so a rejection is refundable and the console says so.
  * Refusing to reject without offering the refund would leave a school out of pocket
  * with no route out of it.
  */
@@ -473,7 +521,7 @@ export const rejectSmsRequest = async (requestId, { reason }, admin) => {
 
   if (trimmed.length < 3) {
     throw new ApiError(
-      "Give a reason — the school is told what it is",
+      "Give a reason â€” the school is told what it is",
       400,
       "REJECTION_REASON_REQUIRED"
     );
@@ -513,11 +561,11 @@ export const rejectSmsRequest = async (requestId, { reason }, admin) => {
 
   await notifySchoolStaff(request, {
     type: NOTIFICATION_TYPES.SMS_REQUEST_REJECTED,
-    title: `SMS purchase declined — ${request.requestId}`,
+    title: `SMS purchase declined â€” ${request.requestId}`,
     message: `${request.requestId} was declined: ${trimmed.slice(
       0,
       200
-    )}. A refund is available — contact support if you do not receive it.`,
+    )}. A refund is available â€” contact support if you do not receive it.`,
     link: "/dashboard/sms-requests",
   });
 
@@ -692,7 +740,7 @@ const notifySchoolStaff = async (request, { type, title, message, link }) => {
 const unitsLabel = (units) => `${Number(units).toLocaleString("en-GB")} SMS`;
 
 /** Small enough to inline. Cedi formatting is the frontend's job everywhere else. */
-const formatPes = (pes) => `GH₵ ${(Number(pes || 0) / 100).toFixed(2)}`;
+const formatPes = (pes) => `GHâ‚µ ${(Number(pes || 0) / 100).toFixed(2)}`;
 
 export default {
   getPoolTotals,
@@ -708,3 +756,4 @@ export default {
   getPlatformSmsPool,
   recordPoolTopUp,
 };
+

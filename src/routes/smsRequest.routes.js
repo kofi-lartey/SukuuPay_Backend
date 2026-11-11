@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   quoteSmsRequest,
   createSmsRequest,
+  submitManualPaymentProof,
   listRequestsForSchool,
   getSmsRequestForSchool,
 } from "../services/smsPurchaseRequest.service.js";
@@ -11,6 +12,7 @@ import { validate } from "../middleware/validate.js";
 import {
   quoteSmsRequestSchema,
   createSmsRequestSchema,
+  submitSmsPaymentProofSchema,
   listSmsRequestsSchema,
   smsRequestIdParamSchema,
 } from "../validations/smsRequest.validation.js";
@@ -83,7 +85,7 @@ smsRequestRoute.post(
   }
 );
 
-// `POST /api/sms-requests` — creates the request and prompts for payment.
+// `POST /api/sms-requests` — creates the request. MoMo sends a prompt; manual returns a payment reference for external payment.
 smsRequestRoute.post(
   "/sms-requests",
   authenticate,
@@ -93,20 +95,47 @@ smsRequestRoute.post(
   async (req, res) => {
     try {
       const result = await createSmsRequest(req.body, req.user);
-
+      const manual = result.manual === true || result.request?.payment?.method === "manual";
       return res.status(201).json({
         success: true,
-        message:
-          "Check your phone for the MTN payment prompt and approve it. An administrator will then release your credit.",
+        message: manual
+          ? "Use the payment reference shown to complete your payment, then submit your transaction reference for verification."
+          : "Check your phone for the MTN payment prompt and approve it. An administrator will then release your credit.",
         data: {
           requestId: result.request.requestId,
           units: result.request.units,
           unitPricePes: result.request.unitPricePes,
           totalPes: result.request.totalPes,
           status: result.request.status,
-          paymentReference: result.reference,
-          prompted: result.prompted,
+          paymentMethod: result.request.payment?.method || "mtn",
+          paymentReference: result.reference || result.request.payment?.reference || null,
+          prompted: result.prompted === true,
+          manual,
         },
+      });
+    } catch (error) {
+      return res
+        .status(error.status || 500)
+        .json({ success: false, message: error.message });
+    }
+  }
+);
+
+// `POST /api/sms-requests/:requestId/submit-payment` — manual payment proof for admin verification.
+smsRequestRoute.post(
+  "/sms-requests/:requestId/submit-payment",
+  authenticate,
+  requireBuyer,
+  rateLimit({ windowMs: 60 * 60 * 1000, max: 20, message: "Too many submissions. Please wait." }),
+  validate(smsRequestIdParamSchema, "params"),
+  validate(submitSmsPaymentProofSchema),
+  async (req, res) => {
+    try {
+      const result = await submitManualPaymentProof(req.params.requestId, req.body, req.user);
+      return res.status(200).json({
+        success: true,
+        message: "Payment reference submitted. An administrator will verify it and release your credit.",
+        data: result.request,
       });
     } catch (error) {
       return res

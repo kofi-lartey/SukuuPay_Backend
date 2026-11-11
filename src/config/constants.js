@@ -433,6 +433,7 @@ export const PURCHASE_PURPOSES = ["sms_credit", "id_card_print"];
 /** States a `SmsPurchaseRequest` moves through. Mirrored on the model's enum. */
 export const SMS_REQUEST_STATUS = {
   AWAITING_PAYMENT: "awaiting_payment",
+  AWAITING_VERIFICATION: "awaiting_verification",
   AWAITING_APPROVAL: "awaiting_approval",
   APPROVED: "approved",
   REJECTED: "rejected",
