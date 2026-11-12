@@ -33,6 +33,7 @@ import { webhookRoute } from './webhooks.routes.js';
 import { publicAdRoute, schoolAdRoute } from './schoolAd.routes.js';
 import { publicSchoolRoute } from './public.routes.js';
 import { maintenanceGuard } from '../middleware/maintenance.js';
+import { communityRoute } from './community.routes.js';
 
 const router = Router();
 
@@ -82,6 +83,12 @@ router.use('/', parentMessageRoute);
 // `parent.routes.js` owns the register and the report card.
 router.use('/pay', parentRoute);
 router.use('/pay', lmsStudentRoute);
+
+// Student Community — posts, comments, clubs, events, chat.
+// Mounted at `/community` because that is what the frontend calls it, and it is a
+// first-class student surface beside the parent pay portal and the teacher portal.
+// The communityAuth middleware in each route already excludes parent roles.
+router.use('/community', communityRoute);
 
 // The teacher portal — a sibling of the parent portal rather than of the admin
 // console. It answers `/api/teacher/*` and carries its own gate

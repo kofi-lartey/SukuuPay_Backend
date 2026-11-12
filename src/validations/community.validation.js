@@ -1,0 +1,125 @@
+import Joi from "joi";
+
+export const createPostSchema = Joi.object({
+  postType: Joi.string().valid("discussion", "question", "poll", "resource").default("discussion"),
+  title: Joi.string().trim().max(300).allow(null, ""),
+  body: Joi.string().trim().max(8000).allow(null, ""),
+  tags: Joi.array().items(Joi.string().trim().lowercase().max(40)).default([]),
+  clubId: Joi.string().hex().length(24).allow(null, ""),
+  media: Joi.array().items(
+    Joi.object({
+      url: Joi.string().uri().required(),
+      publicId: Joi.string().allow(""),
+      mimeType: Joi.string().allow(""),
+      bytes: Joi.number().min(0).allow(null),
+      originalName: Joi.string().trim().max(255).allow(""),
+    })
+  ).default([]),
+}).or("title", "body");
+
+export const listPostsSchema = Joi.object({
+  clubId: Joi.string().hex().length(24).allow(null, ""),
+  postType: Joi.string().valid("discussion", "question", "poll", "resource").allow(null, ""),
+  page: Joi.number().integer().min(1).default(1),
+  perPage: Joi.number().integer().min(1).max(100).default(20),
+});
+
+export const postIdParamSchema = Joi.object({
+  id: Joi.string().hex().length(24).required(),
+});
+
+export const togglePostStatusSchema = Joi.object({
+  status: Joi.string().valid("active", "archived").required(),
+});
+
+export const createPollSchema = Joi.object({
+  question: Joi.string().trim().max(300).required(),
+  options: Joi.array()
+    .items(Joi.string().trim().max(200))
+    .min(2)
+    .max(10)
+    .required(),
+  expiresAt: Joi.date().allow(null, ""),
+});
+
+export const createCommentSchema = Joi.object({
+  postId: Joi.string().hex().length(24).required(),
+  parentCommentId: Joi.string().hex().length(24).allow(null, ""),
+  body: Joi.string().trim().max(8000).required(),
+});
+
+export const listCommentsSchema = Joi.object({
+  page: Joi.number().integer().min(1).default(1),
+  perPage: Joi.number().integer().min(1).max(100).default(20),
+});
+
+export const commentIdParamSchema = Joi.object({
+  id: Joi.string().hex().length(24).required(),
+  postId: Joi.string().hex().length(24).required(),
+});
+
+export const addReactionSchema = Joi.object({
+  targetId: Joi.string().hex().length(24).required(),
+  targetType: Joi.string().valid("post", "comment").required(),
+  reactionType: Joi.string().valid("like", "helpful", "fire", "support").required(),
+});
+
+export const reactionParamSchema = Joi.object({
+  targetId: Joi.string().hex().length(24).required(),
+  targetType: Joi.string().valid("post", "comment").required(),
+});
+
+export const createClubSchema = Joi.object({
+  name: Joi.string().trim().min(1).max(100).required(),
+  description: Joi.string().trim().max(2000).allow(""),
+  category: Joi.string().trim().lowercase().valid("academic", "hobby", "sports", "tech").required(),
+  privacy: Joi.string().valid("public", "private").default("public"),
+});
+
+export const listClubsSchema = Joi.object({
+  page: Joi.number().integer().min(1).default(1),
+  perPage: Joi.number().integer().min(1).max(100).default(20),
+});
+
+export const clubIdParamSchema = Joi.object({
+  id: Joi.string().hex().length(24).required(),
+});
+
+export const updateClubSchema = Joi.object({
+  name: Joi.string().trim().min(1).max(100),
+  description: Joi.string().trim().max(2000).allow(""),
+  category: Joi.string().valid("academic", "hobby", "sports", "tech"),
+  privacy: Joi.string().valid("public", "private"),
+}).min(1);
+export const createEventSchema = Joi.object({
+  title: Joi.string().trim().min(1).max(200).required(),
+  description: Joi.string().trim().max(4000).allow(""),
+  eventType: Joi.string().valid("meeting", "competition", "trip", "activity", "virtual").default("activity"),
+  startAt: Joi.date().required(),
+  endAt: Joi.date().allow(null, ""),
+  location: Joi.string().trim().max(300).allow(""),
+  isVirtual: Joi.boolean().default(false),
+  clubId: Joi.string().hex().length(24).allow(null, ""),
+});
+
+export const updateEventSchema = Joi.object({
+  title: Joi.string().trim().min(1).max(200),
+  description: Joi.string().trim().max(4000).allow(""),
+  eventType: Joi.string().valid("meeting", "competition", "trip", "activity", "virtual"),
+  startAt: Joi.date(),
+  endAt: Joi.date().allow(null, ""),
+  location: Joi.string().trim().max(300).allow(""),
+  isVirtual: Joi.boolean(),
+  status: Joi.string().valid("draft", "published", "cancelled"),
+}).min(1);
+
+export const eventIdParamSchema = Joi.object({
+  id: Joi.string().hex().length(24).required(),
+});
+
+export const listEventsSchema = Joi.object({
+  clubId: Joi.string().hex().length(24).allow(null, ""),
+  status: Joi.string().valid("draft", "published", "cancelled").allow(null, ""),
+  page: Joi.number().integer().min(1).default(1),
+  perPage: Joi.number().integer().min(1).max(100).default(20),
+});

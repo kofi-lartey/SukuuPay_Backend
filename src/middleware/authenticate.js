@@ -8,56 +8,54 @@ const extractToken = (req) => {
   return null;
 };
 
+/** Extracts and verifies token from socket auth or request headers. Returns user object or throws. */
+export const authenticateUser = async (token) => {
+  if (!token) {
+    throw new Error('Authentication required');
+  }
+
+  const payload = verifyToken(token, 'access');
+
+  if (payload.role === 'student') {
+    const student = await Student.findById(payload.sub);
+    if (!student || student.deletedAt) {
+      throw new Error('Account no longer exists');
+    }
+    if (student.status !== 'active') {
+      throw new Error(`Account is ${student.status}`);
+    }
+    return {
+      _id: student._id,
+      role: 'student',
+      schoolId: student.schoolId,
+      studentId: student._id,
+      status: student.status,
+    };
+  }
+
+  const user = await User.findById(payload.sub);
+
+  if (!user || user.deletedAt) {
+    throw new Error('Account no longer exists');
+  }
+
+  if (user.status !== 'active') {
+    throw new Error(`Account is ${user.status}`);
+  }
+
+  if (payload.tokenVersion !== undefined && payload.tokenVersion !== user.tokenVersion) {
+    throw new Error('Session has been revoked');
+  }
+
+  return user;
+};
+
 /** Verifies the access token and attaches the live user document to the request. */
 export const authenticate = async (req, res, next) => {
   try {
     const token = extractToken(req);
-    if (!token) {
-      return res.status(401).json({ success: false, message: 'Authentication required' });
-    }
-
-    const payload = verifyToken(token, 'access');
-
-    if (payload.role === 'student') {
-      const student = await Student.findById(payload.sub);
-      if (!student || student.deletedAt) {
-        return res.status(401).json({ success: false, message: 'Account no longer exists' });
-      }
-      if (student.status !== 'active') {
-        return res.status(401).json({ success: false, message: `Account is ${student.status}` });
-      }
-      req.user = {
-        _id: student._id,
-        role: 'student',
-        schoolId: student.schoolId,
-        studentId: student._id,
-        status: student.status,
-      };
-      req.auth = payload;
-      return next();
-    }
-
-    const user = await User.findById(payload.sub);
-
-    if (!user || user.deletedAt) {
-      return res.status(401).json({ success: false, message: 'Account no longer exists' });
-    }
-
-    // A suspended or deactivated account must lose access immediately, without
-    // waiting for its token to expire.
-    if (user.status !== 'active') {
-      return res.status(401).json({
-        success: false,
-        message: `Account is ${user.status}`,
-      });
-    }
-
-    if (payload.tokenVersion !== undefined && payload.tokenVersion !== user.tokenVersion) {
-      return res.status(401).json({ success: false, message: 'Session has been revoked' });
-    }
-
+    const user = await authenticateUser(token);
     req.user = user;
-    req.auth = payload;
     next();
   } catch (error) {
     const expired = error.name === 'TokenExpiredError';

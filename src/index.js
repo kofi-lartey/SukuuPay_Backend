@@ -17,6 +17,9 @@ import { migrateGateways } from './boot/migrateGateways.js';
 import { reconcileProviderIdIndex } from './boot/reconcileProviderIdIndex.js';
 import { reconcileNullableUniqueIndexes } from './boot/reconcileNullableUniqueIndexes.js';
 import { reconcileDeclaredIndexSpecs } from './boot/reconcileDeclaredIndexSpecs.js';
+import { setCommunityIO } from './services/communityEventEmitter.js';
+import { Server } from 'socket.io';
+import createCommunityGateway from './sockets/communityGateway.js';
 
 const app = express();
 
@@ -97,6 +100,25 @@ const server = app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT} (bound 0.0.0.0)`);
 });
 
+// Socket.io — the community feature's realtime half. It is attached to the same
+// HTTP server Express is already listening on, so no port and no proxy config
+// is introduced; only the upgrade path and a namespace.
+const io = new Server(server, {
+  cors: {
+    origin: true,
+    credentials: true,
+  },
+});
+
+// Create the community gateway and attach connection handlers to the io instance.
+const communityGateway = createCommunityGateway(io);
+
+// Attach the community gateway's event emitters to the io instance.
+setCommunityIO(io, communityGateway);
+
+export default app;
+export { io as communityIO, server as communityServer, communityGateway };
+
 mongoose.connect(MONGODB_URI)
   .then(async () => {
     console.log('Connected to MongoDB successfully!');
@@ -146,5 +168,3 @@ mongoose.connect(MONGODB_URI)
     // would keep the process alive indefinitely).
     setTimeout(() => process.exit(1), 5000).unref();
   });
-
-export default app;
