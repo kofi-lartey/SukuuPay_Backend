@@ -8,7 +8,7 @@ import { resolveRole } from "../middleware/communityAuth.js";
 import {
   authorDisplayName,
   authorModelForRole,
-  withResolvedAuthorName,
+  withResolvedAuthor,
 } from "../utils/communityAuthor.js";
 
 const CREATE_RATE_LIMIT_KEY = "community:post:create";
@@ -154,7 +154,7 @@ export const fetchPosts = async ({ schoolId, clubId, postType, skip = 0, limit =
   }
 
   const decorated = posts.map((post) => {
-    const resolved = withResolvedAuthorName(post);
+    const resolved = withResolvedAuthor(post);
     const id = String(post._id);
     return {
       ...resolved,
@@ -176,7 +176,7 @@ export const fetchPostById = async (postId, user) => {
     throw new ApiError("Post not found", 404);
   }
 
-  return withResolvedAuthorName(post);
+  return withResolvedAuthor(post);
 };
 
 export const softDeletePost = async (postId, user) => {

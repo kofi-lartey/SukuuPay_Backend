@@ -78,6 +78,10 @@ export const createCommentSchema = Joi.object({
 export const listCommentsSchema = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   perPage: Joi.number().integer().min(1).max(100).default(20),
+  // Derived filters - see COMMENT_FILTERS in the service. `mentions` is scoped to the
+  // caller by the service, never by the client.
+  filter: Joi.string().valid("questions", "files", "links", "mentions"),
+  q: Joi.string().trim().max(100).allow(null, ""),
 });
 
 export const commentIdParamSchema = Joi.object({

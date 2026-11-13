@@ -103,7 +103,7 @@ const communityCommentSchema = new mongoose.Schema(
     // An edit is allowed for a short window after posting, then it stops: a
     // message that can be rewritten an hour later is a message nobody can quote.
     // `editedAt` is what the window is measured against and what the UI labels;
-    // the original text is not kept, because "edited" is enough — the author said
+    // the original text is not kept, because "edited" is enough â€” the author said
     // they changed it, and a school chat is not a legal record.
     editedAt: {
       type: Date,
@@ -111,7 +111,7 @@ const communityCommentSchema = new mongoose.Schema(
     },
     // The link card for the first URL in `body`, resolved server-side at post time
     // so no reader has to fetch it. Null when the message has no link, or when the
-    // fetch failed — a preview is a nicety, never a reason to reject a message.
+    // fetch failed â€” a preview is a nicety, never a reason to reject a message.
     linkPreview: {
       url: { type: String, default: null },
       title: { type: String, default: null },
@@ -133,7 +133,16 @@ const communityCommentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-communityCommentSchema.index({ postId: 1, createdAt: 1 });
+// The thread order, with `_id` as the tiebreaker: two messages sharing a
+// millisecond could otherwise swap places between pages, duplicating one and
+// dropping another. This is the index the default page query uses.
+communityCommentSchema.index({ postId: 1, createdAt: -1, _id: -1 });
+
+// The derived filters. Each is a prefix of `{ postId: 1, ... }` so a filtered
+// page is still a single indexed read.
+communityCommentSchema.index({ postId: 1, "media.0": 1 });
+communityCommentSchema.index({ postId: 1, "mentions.userId": 1 });
+communityCommentSchema.index({ postId: 1, "linkPreview.url": 1 });
 communityCommentSchema.index({ schoolId: 1, createdAt: -1 });
 
 communityCommentSchema.set("toJSON", {

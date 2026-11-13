@@ -21,11 +21,16 @@ export const createCommentController = async (req, res) => {
 
 export const listCommentsController = async (req, res) => {
   try {
-    const { page = 1, perPage = 20 } = req.query;
+    const { page = 1, perPage = 20, filter = null, q = null } = req.query;
 
     const result = await fetchComments(
       req.params.postId,
-      { skip: (Number(page) - 1) * Number(perPage), limit: Number(perPage) },
+      {
+        skip: (Number(page) - 1) * Number(perPage),
+        limit: Number(perPage),
+        filter,
+        q,
+      },
       req.user
     );
 
@@ -87,7 +92,7 @@ export const linkPreviewController = async (req, res) => {
     const preview = await fetchLinkPreview(req.body.url);
     return res.status(200).json({ success: true, data: preview });
   } catch (error) {
-    // A link that cannot be previewed is not a failed request — the composer shows
+    // A link that cannot be previewed is not a failed request ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the composer shows
     // no card and the message sends normally. A 200 with `data: null` keeps the
     // client from treating an unpreviewable link as an error toast.
     return res.status(200).json({ success: true, data: null, message: error.message });

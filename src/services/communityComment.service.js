@@ -11,7 +11,7 @@ import { fetchLinkPreview, firstUrlIn } from "../utils/linkPreview.js";
 import {
   authorDisplayName,
   authorModelForRole,
-  withResolvedAuthorName,
+  withResolvedAuthor,
 } from "../utils/communityAuthor.js";
 
 /**
@@ -221,14 +221,77 @@ export const updateComment = async (commentId, body, user) => {
   return comment;
 };
 
-export const fetchComments = async (postId, { skip = 0, limit = 20 }, user) => {
+/**
+ * The filters a thread or chat can be narrowed by.
+ *
+ * These are derived predicates, not stored categories: each asks a question the row
+ * can already answer, so filtering needs no migration and no write-path change.
+ * `questions` is the weakest of them - it matches a trailing "?" - and it is a
+ * filter rather than a topic for exactly that reason.
+ */
+export const COMMENT_FILTERS = ["questions", "files", "links", "mentions"];
+
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Turns the requested filter into part of the query.
+ *
+ * The filter runs in the database, not in the browser: the thread is paged, so a
+ * client-side filter over the loaded page would show "nothing matches" while
+ * matches sat on later pages.
+ */
+const filterToQuery = (filter, q, user) => {
+  const query = {};
+
+  switch (filter) {
+    case "files":
+      // `media.0` exists only when at least one attachment is present.
+      query["media.0"] = { $exists: true };
+      break;
+    case "links":
+      query["linkPreview.url"] = { $ne: null };
+      break;
+    case "mentions":
+      if (!user?._id) break;
+      query["mentions.userId"] = user._id;
+      break;
+    case "questions":
+      // A question mark at the end of the message, allowing trailing space.
+      query.body = /\?\s*$/;
+      break;
+    default:
+      break;
+  }
+
+  if (q && typeof q === "string" && q.trim()) {
+    // A regex cannot use an index, so this is a collection scan per page. At club
+    // volume that is acceptable; if it stops being, add a text index and use $text.
+    query.body = new RegExp(escapeRegex(q.trim()), "i");
+  }
+
+  return query;
+};
+
+export const fetchComments = async (
+  postId,
+  { skip = 0, limit = 20, filter = null, q = null },
+  user
+) => {
   const post = await CommunityPost.findById(postId);
   if (!post || post.isDeleted) {
     throw new ApiError("Post not found", 404);
   }
 
-  const comments = await CommunityComment.find({ postId, isDeleted: false })
-    .sort({ createdAt: -1 })
+  const query = {
+    postId,
+    isDeleted: false,
+    ...filterToQuery(filter, q, user),
+  };
+
+  const comments = await CommunityComment.find(query)
+    // `_id` breaks ties: two messages sharing a millisecond could otherwise swap
+    // places between pages, which duplicates one and drops another.
+    .sort({ createdAt: -1, _id: -1 })
     .skip(skip)
     .limit(limit)
     .populate("authorId", "name firstName studentName studentId avatar studentImage")
@@ -238,7 +301,9 @@ export const fetchComments = async (postId, { skip = 0, limit = 20 }, user) => {
     .populate("parentCommentId", "_id authorName body")
     .lean();
 
-  const total = await CommunityComment.countDocuments({ postId, isDeleted: false });
+  // Same query as the page, so `meta.total` describes what the filter matched
+  // rather than the whole thread.
+  const total = await CommunityComment.countDocuments(query);
 
   /*
    * The caller's own reaction per comment, for the same reason as posts: the
@@ -255,7 +320,7 @@ export const fetchComments = async (postId, { skip = 0, limit = 20 }, user) => {
   const mineByComment = new Map(mine.map((r) => [String(r.targetId), r.type]));
 
   const decorated = comments.map((comment) => {
-    const resolved = withResolvedAuthorName(comment);
+    const resolved = withResolvedAuthor(comment);
     return { ...resolved, myReaction: mineByComment.get(String(comment._id)) || null };
   });
 
@@ -272,7 +337,7 @@ export const fetchCommentReplies = async (parentCommentId, { skip = 0, limit = 2
 
   const total = await CommunityComment.countDocuments({ parentCommentId, isDeleted: false });
 
-  return { replies: replies.map(withResolvedAuthorName), total };
+  return { replies: replies.map(withResolvedAuthor), total };
 };
 
 export const toggleAcceptAnswer = async (commentId, user) => {
