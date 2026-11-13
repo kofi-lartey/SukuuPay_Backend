@@ -91,6 +91,15 @@ const communityCommentSchema = new mongoose.Schema(
       trim: true,
       maxlength: 100,
     },
+    // Who this message names with `@`. Stored as a snapshot of the display name
+    // rather than resolved on read: the mention is a statement about what the text
+    // said when it was written, and the picker already had the name in hand.
+    mentions: [
+      {
+        userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+        name: { type: String, default: null, trim: true, maxlength: 100 },
+      },
+    ],
     // An edit is allowed for a short window after posting, then it stops: a
     // message that can be rewritten an hour later is a message nobody can quote.
     // `editedAt` is what the window is measured against and what the UI labels;

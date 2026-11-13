@@ -1,4 +1,7 @@
+import mongoose from "mongoose";
 import { Club } from "../models/Club.js";
+import { Student } from "../models/studentModel.js";
+import { User } from "../models/userModel.js";
 import ApiError from "../utils/ApiError.js";
 import { emitClubUpdated } from "./communityEventEmitter.js";
 
@@ -121,4 +124,60 @@ export const softDeleteClub = async (clubId, user) => {
   await club.save();
   emitClubUpdated(club.schoolId, club._id, "deleted");
   return club;
+};
+
+/**
+ * Club members with display names, for the chat header and the @mention picker.
+ *
+ * ## Why both collections
+ *
+ * `Club.memberIds` is `ref: "User"`, but a student's id lives in `Student`. The
+ * same mismatch that made student authors unpopulatable applies here, so members
+ * are resolved in two queries and merged rather than populated.
+ *
+ * A club is not necessarily all students - a teacher may join - so the caller gets
+ * each member's role and can count or filter by it. The chat header asks for
+ * students specifically.
+ */
+export const fetchClubMembers = async (clubId, user) => {
+  const club = await Club.findById(clubId).lean();
+
+  if (!club || club.isDeleted) {
+    throw new ApiError("Club not found", 404);
+  }
+
+  const ids = (club.memberIds || []).map((id) => new mongoose.Types.ObjectId(id));
+  if (ids.length === 0) return { members: [], studentCount: 0, memberCount: 0 };
+
+  const [students, users] = await Promise.all([
+    Student.find({ _id: { $in: ids }, deletedAt: null }).select("studentName firstName lastName studentImage").lean(),
+    User.find({ _id: { $in: ids } }).select("name avatar").lean(),
+  ]);
+
+  const members = [
+    ...students.map((s) => ({
+      _id: String(s._id),
+      name: s.firstName || s.studentName || "Student",
+      fullName: s.studentName || [s.firstName, s.lastName].filter(Boolean).join(" "),
+      role: "student",
+      avatar: s.studentImage || null,
+    })),
+    ...users.map((u) => ({
+      _id: String(u._id),
+      name: u.name || "User",
+      fullName: u.name || "User",
+      role: "staff",
+      avatar: u.avatar || null,
+    })),
+  ];
+
+  // Preserve club order so the picker does not reshuffle between renders.
+  const byId = new Map(members.map((m) => [m._id, m]));
+  const ordered = ids.map((id) => byId.get(String(id))).filter(Boolean);
+
+  return {
+    members: ordered,
+    memberCount: ordered.length,
+    studentCount: ordered.filter((m) => m.role === "student").length,
+  };
 };

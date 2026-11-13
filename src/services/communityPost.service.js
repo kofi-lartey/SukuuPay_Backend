@@ -1,4 +1,6 @@
 import { CommunityPost } from "../models/CommunityPost.js";
+import { CommunityReaction } from "../models/CommunityReaction.js";
+import { CommunityComment } from "../models/CommunityComment.js";
 import { consumeRateLimit } from "../utils/rateLimiter.js";
 import ApiError from "../utils/ApiError.js";
 import { emitPostCreated, emitPostDeleted } from "./communityEventEmitter.js";
@@ -93,7 +95,76 @@ export const fetchPosts = async ({ schoolId, clubId, postType, skip = 0, limit =
 
   const total = await CommunityPost.countDocuments(filter);
 
-  return { posts: posts.map(withResolvedAuthorName), total };
+  /*
+   * Which reaction *this* user left on each post.
+   *
+   * The counts alone cannot answer "did I react, and with what" - the button has
+   * to render filled or not, and the client had no way to know. `PostCard` was
+   * reading `post.reactionType`, a field the API has never returned, so a reaction
+   * could be saved and the button still looked untouched until a refetch.
+   *
+   * One query for the whole page, not one per post.
+   */
+  const mine = await CommunityReaction.find({
+    targetType: "post",
+    targetId: { $in: posts.map((p) => p._id) },
+    userId: user?._id,
+  })
+    .select("targetId type")
+    .lean();
+
+  const mineByPost = new Map(mine.map((r) => [String(r.targetId), r.type]));
+
+  /*
+   * Global tallies, computed from the collections rather than kept on the post.
+   *
+   * `PostCard` rendered `post.commentsCount`, a field the schema has never had, so
+   * every post said "0 comments" no matter how many there were. Reaction counts had
+   * the same problem from the other side: each card fetched its own, so they were
+   * correct but cost a request per post and only refreshed on mount.
+   *
+   * Two aggregations for the whole page, so a reader sees the same numbers
+   * everyone else sees and the feed costs two queries instead of forty.
+   *
+   * The ids are already ObjectIds here, which matters: `aggregate` does not cast,
+   * and passing the route's strings would match nothing.
+   */
+  const ids = posts.map((p) => p._id);
+
+  const [commentCounts, reactionRows] = await Promise.all([
+    CommunityComment.aggregate([
+      { $match: { postId: { $in: ids }, isDeleted: false } },
+      { $group: { _id: "$postId", count: { $sum: 1 } } },
+    ]),
+    CommunityReaction.aggregate([
+      { $match: { targetType: "post", targetId: { $in: ids } } },
+      { $group: { _id: { targetId: "$targetId", type: "$type" }, count: { $sum: 1 } } },
+    ]),
+  ]);
+
+  const commentsByPost = new Map(commentCounts.map((c) => [String(c._id), c.count]));
+
+  const reactionsByPost = new Map();
+  for (const row of reactionRows) {
+    const id = String(row._id.targetId);
+    if (!reactionsByPost.has(id)) {
+      reactionsByPost.set(id, { like: 0, helpful: 0, fire: 0, support: 0 });
+    }
+    reactionsByPost.get(id)[row._id.type] = row.count;
+  }
+
+  const decorated = posts.map((post) => {
+    const resolved = withResolvedAuthorName(post);
+    const id = String(post._id);
+    return {
+      ...resolved,
+      myReaction: mineByPost.get(id) || null,
+      reactionCounts: reactionsByPost.get(id) || { like: 0, helpful: 0, fire: 0, support: 0 },
+      commentsCount: commentsByPost.get(id) || 0,
+    };
+  });
+
+  return { posts: decorated, total };
 };
 
 export const fetchPostById = async (postId, user) => {
@@ -204,7 +275,7 @@ export const CLUB_CHAT_TITLE = "Club Chat";
  * This is the atomic version of what the client used to do inline. The read-then-
  * write it replaces is not safe: two mounts in the same second both see no thread
  * and both create one. Here the partial unique index on `clubId` for Club Chat
- * discussions is the actual guarantee — if two requests race, one insert wins and
+ * discussions is the actual guarantee - if two requests race, one insert wins and
  * the other fails with E11000, which is caught and resolved to the winner.
  *
  * The loser gets a thread rather than an error, because "open the club chat"

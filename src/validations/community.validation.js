@@ -58,6 +58,18 @@ export const createCommentSchema = Joi.object({
     )
     .default([]),
   forwardedFrom: Joi.string().hex().length(24).allow(null, ""),
+  // The ids the client resolved from its member list. The name is a display
+  // snapshot, not authority: the service re-checks every id against the caller's
+  // school before storing, so a forged id either resolves or is dropped.
+  mentions: Joi.array()
+    .items(
+      Joi.object({
+        userId: Joi.string().hex().length(24).required(),
+        name: Joi.string().trim().max(100).allow(null, ""),
+      })
+    )
+    .max(20)
+    .default([]),
 })
   // A chat message needs *something*: text, a file, or a forward. Without this a
   // request carrying only a `postId` produced an empty row.
@@ -155,7 +167,7 @@ export const updateCommentSchema = Joi.object({
  *
  * Used by the composer to show a card *before* the message is sent. The server
  * derives the authoritative preview when the message is stored, so this endpoint
- * is a preview of a preview — the client cannot post a card the server would not
+ * is a preview of a preview - the client cannot post a card the server would not
  * have produced.
  */
 export const linkPreviewSchema = Joi.object({

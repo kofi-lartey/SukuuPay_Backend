@@ -19,6 +19,7 @@ import {
   linkPreviewController,
   toggleAcceptAnswerController,
   deleteCommentController,
+  presenceController,
 } from "../controllers/community.comment.controller.js";
 import {
   addReactionController,
@@ -32,6 +33,7 @@ import {
   getClubController,
   updateClubController,
   toggleClubMembershipController,
+  listClubMembersController,
   deleteClubController,
 } from "../controllers/club.controller.js";
 import {
@@ -130,7 +132,7 @@ communityRoute.put(
 );
 
 /**
- * `POST /api/community/clubs/:clubId/chat` — get-or-create the club's chat thread.
+ * `POST /api/community/clubs/:clubId/chat` - get-or-create the club's chat thread.
  *
  * One call instead of "list the club's posts, then create if absent". The
  * client-side version raced with itself and produced two threads for one club,
@@ -216,6 +218,16 @@ communityRoute.post(
   uploadCommunityFileController
 );
 
+/**
+ * `GET /api/community/clubs/:clubId/members` - resolved members, counts, and the
+ * @mention source for the chat composer.
+ */
+communityRoute.get(
+  "/clubs/:clubId/members",
+  communityAuth,
+  validate(clubChatParamSchema, "params"),
+  listClubMembersController
+);
 /**
  * Reactions: /api/community/reactions
  *
@@ -345,3 +357,14 @@ communityRoute.delete(
 );
 
 export default communityRoute;
+
+/**
+ * `GET /api/community/presence` - who is online in the caller's school right now.
+ *
+ * The socket pushes changes after this; this is the value for first paint.
+ */
+communityRoute.get(
+  "/presence",
+  communityAuth,
+  presenceController
+);

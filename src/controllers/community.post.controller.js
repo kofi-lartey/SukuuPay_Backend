@@ -110,7 +110,7 @@ export const toggleBookmarkController = async (req, res) => {
 };
 
 /**
- * `POST /api/community/clubs/:clubId/chat` — get-or-create the club's chat thread.
+ * `POST /api/community/clubs/:clubId/chat` - get-or-create the club's chat thread.
  *
  * A single server-authoritative call rather than "list posts, then create if
  * absent". The client-side version raced with itself and produced two threads for

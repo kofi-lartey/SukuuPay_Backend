@@ -5,6 +5,7 @@ import {
   updateClub,
   toggleClubMembership,
   softDeleteClub,
+  fetchClubMembers,
 } from "../services/club.service.js";
 
 export const createClubController = async (req, res) => {
@@ -82,11 +83,33 @@ export const deleteClubController = async (req, res) => {
   }
 };
 
+
+/**
+ * `GET /api/community/clubs/:clubId/members` - the chat header and @mention source.
+ *
+ * One call returns the resolved members (both collections), the total and the
+ * student count, so the header and the picker agree instead of each deriving a
+ * number from a different query.
+ */
+export const listClubMembersController = async (req, res) => {
+  try {
+    const result = await fetchClubMembers(req.params.clubId, req.user);
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+      code: error.code,
+    });
+  }
+};
+
 export default {
   createClubController,
   listClubsController,
   getClubController,
   updateClubController,
+  listClubMembersController,
   toggleClubMembershipController,
   deleteClubController,
 };

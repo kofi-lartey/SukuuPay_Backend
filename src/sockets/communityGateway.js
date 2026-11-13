@@ -1,5 +1,6 @@
 import { authenticateUser } from "../middleware/authenticate.js";
 import { COMMUNITY_ALLOWED_ROLES, resolveRole } from "../middleware/communityAuth.js";
+import { addPresence, removePresence, onlineUserIdsFor } from "./presence.js";
 
 /**
  * Community Socket.io gateway.
@@ -96,10 +97,20 @@ const createCommunityGateway = (io) => {
       socket.join(room);
     });
 
+    // Presence starts when the handshake is accepted, not when the client asks to
+    // join a room: a client that connects and never joins is still online, and
+    // counting only joined sockets undercounts exactly the users whose client is
+    // slowest to load.
+    addPresence(schoolId, String(user._id));
+    io.to(`school:${schoolId}`).emit("community:presence", {
+      userIds: onlineUserIdsFor(schoolId),
+    });
+
     socket.on("disconnect", () => {
-      // Rooms are scoped by schoolId; no per-user cleanup needed because the
-      // room membership is keyed to the school, and a disconnect removes the
-      // socket's implicit membership automatically.
+      removePresence(schoolId, String(user._id));
+      io.to(`school:${schoolId}`).emit("community:presence", {
+        userIds: onlineUserIdsFor(schoolId),
+      });
     });
   });
 

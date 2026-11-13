@@ -7,6 +7,7 @@ import {
   softDeleteComment,
 } from "../services/communityComment.service.js";
 import { fetchLinkPreview } from "../utils/linkPreview.js";
+import { onlineUserIdsFor } from "../sockets/presence.js";
 
 export const createCommentController = async (req, res) => {
   try {
@@ -113,12 +114,31 @@ export const deleteCommentController = async (req, res) => {
   }
 };
 
+/**
+ * `GET /api/community/presence` - who is online in the caller's school.
+ *
+ * The initial value only. Live changes arrive over the socket as
+ * `community:presence`; this exists so the header is right on first paint instead
+ * of showing zero until the next connect or disconnect.
+ */
+export const presenceController = async (req, res) => {
+  try {
+    return res.status(200).json({
+      success: true,
+      data: { userIds: onlineUserIdsFor(req.user?.schoolId) },
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({ success: false, message: error.message });
+  }
+};
+
 export default {
   createCommentController,
   listCommentsController,
   listRepliesController,
   updateCommentController,
   linkPreviewController,
+  presenceController,
   toggleAcceptAnswerController,
   deleteCommentController,
 };

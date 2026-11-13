@@ -1,5 +1,9 @@
+import mongoose from "mongoose";
 import { CommunityPost } from "../models/CommunityPost.js";
+import { Student } from "../models/studentModel.js";
+import { User } from "../models/userModel.js";
 import { CommunityComment } from "../models/CommunityComment.js";
+import { CommunityReaction } from "../models/CommunityReaction.js";
 import ApiError from "../utils/ApiError.js";
 import { emitCommentCreated } from "./communityEventEmitter.js";
 import { resolveRole } from "../middleware/communityAuth.js";
@@ -40,7 +44,7 @@ const previewFor = async (body) => {
 };
 
 export const createComment = async (payload, user) => {
-  const { postId, parentCommentId, body, media, forwardedFrom } = payload;
+  const { postId, parentCommentId, body, media, forwardedFrom, mentions } = payload;
 
   /*
    * Same rule as posts: the author comes from the authenticated principal.
@@ -112,12 +116,49 @@ export const createComment = async (payload, user) => {
     throw new ApiError("Write something or attach a file", 400, "MESSAGE_EMPTY");
   }
 
+  /*
+   * Mentions are resolved against the caller's own school, not trusted from the
+   * client. A forged id that resolves elsewhere is dropped rather than stored -
+   * a mention is a pointer other people act on, so it must not be able to name
+   * someone the sender cannot see.
+   */
+  const resolvedMentions = [];
+  if (Array.isArray(mentions) && mentions.length > 0) {
+    const ids = mentions.map((m) => m.userId).filter((id) => mongoose.Types.ObjectId.isValid(id));
+
+    if (ids.length > 0) {
+      const [students, users] = await Promise.all([
+        Student.find({ _id: { $in: ids }, schoolId, deletedAt: null })
+          .select("firstName lastName studentName")
+          .lean(),
+        User.find({ _id: { $in: ids }, schoolId })
+          .select("name")
+          .lean(),
+      ]);
+
+      const names = new Map();
+      for (const s of students) {
+        names.set(String(s._id), s.firstName || s.studentName || "Student");
+      }
+      for (const u of users) {
+        names.set(String(u._id), u.name || "User");
+      }
+
+      for (const m of mentions) {
+        const name = names.get(String(m.userId));
+        if (!name) continue;
+        resolvedMentions.push({ userId: m.userId, name: m.name || name });
+      }
+    }
+  }
+
   const comment = new CommunityComment({
     postId,
     schoolId,
     parentCommentId,
     body: body || null,
     media: media || [],
+    mentions: resolvedMentions,
     forwardedFrom: forwardedFromId,
     forwardedFromAuthor,
     linkPreview: await previewFor(body),
@@ -199,7 +240,26 @@ export const fetchComments = async (postId, { skip = 0, limit = 20 }, user) => {
 
   const total = await CommunityComment.countDocuments({ postId, isDeleted: false });
 
-  return { comments: comments.map(withResolvedAuthorName), total };
+  /*
+   * The caller's own reaction per comment, for the same reason as posts: the
+   * button has to know whether it is already filled.
+   */
+  const mine = await CommunityReaction.find({
+    targetType: "comment",
+    targetId: { $in: comments.map((c) => c._id) },
+    userId: user?._id,
+  })
+    .select("targetId type")
+    .lean();
+
+  const mineByComment = new Map(mine.map((r) => [String(r.targetId), r.type]));
+
+  const decorated = comments.map((comment) => {
+    const resolved = withResolvedAuthorName(comment);
+    return { ...resolved, myReaction: mineByComment.get(String(comment._id)) || null };
+  });
+
+  return { comments: decorated, total };
 };
 
 export const fetchCommentReplies = async (parentCommentId, { skip = 0, limit = 20 }, user) => {
