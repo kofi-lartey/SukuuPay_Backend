@@ -1,0 +1,15 @@
+{
+  "watch": ["src", "package.json"],
+  "ext": "js,mjs,cjs,json",
+  "ignore": [
+    "tests/**",
+    "scripts/**",
+    "node_modules/**",
+    "dist/**",
+    "**/*.tmp.mjs",
+    "**/*.test.js",
+    "demo-data-backup.json",
+    "test-receipt.pdf"
+  ],
+  "delay": "300"
+}

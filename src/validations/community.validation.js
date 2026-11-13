@@ -45,8 +45,23 @@ export const createPollSchema = Joi.object({
 export const createCommentSchema = Joi.object({
   postId: Joi.string().hex().length(24).required(),
   parentCommentId: Joi.string().hex().length(24).allow(null, ""),
-  body: Joi.string().trim().max(8000).required(),
-});
+  body: Joi.string().trim().max(8000).allow(null, ""),
+  media: Joi.array()
+    .items(
+      Joi.object({
+        url: Joi.string().uri().required(),
+        publicId: Joi.string().allow(""),
+        mimeType: Joi.string().allow(""),
+        bytes: Joi.number().min(0).allow(null),
+        originalName: Joi.string().trim().max(255).allow(""),
+      })
+    )
+    .default([]),
+  forwardedFrom: Joi.string().hex().length(24).allow(null, ""),
+})
+  // A chat message needs *something*: text, a file, or a forward. Without this a
+  // request carrying only a `postId` produced an empty row.
+  .or("body", "media", "forwardedFrom");
 
 export const listCommentsSchema = Joi.object({
   page: Joi.number().integer().min(1).default(1),
@@ -122,4 +137,37 @@ export const listEventsSchema = Joi.object({
   status: Joi.string().valid("draft", "published", "cancelled").allow(null, ""),
   page: Joi.number().integer().min(1).default(1),
   perPage: Joi.number().integer().min(1).max(100).default(20),
+});
+
+/**
+ * `PATCH /api/community/comments/:id`
+ *
+ * The edit window is enforced in the service against `createdAt`, not here: Joi
+ * can validate that a body was supplied, but "is this message still editable" is a
+ * database question about the author and the clock.
+ */
+export const updateCommentSchema = Joi.object({
+  body: Joi.string().trim().max(8000).required(),
+});
+
+/**
+ * `POST /api/community/link-preview`
+ *
+ * Used by the composer to show a card *before* the message is sent. The server
+ * derives the authoritative preview when the message is stored, so this endpoint
+ * is a preview of a preview — the client cannot post a card the server would not
+ * have produced.
+ */
+export const linkPreviewSchema = Joi.object({
+  url: Joi.string().trim().max(2048).required(),
+});
+/**
+ * `POST /api/community/clubs/:clubId/chat`
+ *
+ * A separate schema from `clubIdParamSchema` because the parameter is named
+ * `clubId`, not `id`. Validating this route with `clubIdParamSchema` made every
+ * request fail with 422: Joi required an `id` the route never supplies.
+ */
+export const clubChatParamSchema = Joi.object({
+  clubId: Joi.string().hex().length(24).required(),
 });

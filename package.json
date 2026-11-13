@@ -19,7 +19,8 @@
     "moolre:check": "node scripts/moolreReadiness.mjs",
     "moolre:flow": "node scripts/moolreSandboxFlow.mjs",
     "moolre:e2e": "node scripts/moolreCallbackE2E.mjs",
-    "balances:check": "node scripts/backfillStudentBalances.mjs --dry-run"
+    "balances:check": "node scripts/backfillStudentBalances.mjs --dry-run",
+    "community:authors": "node scripts/backfillCommunityAuthors.mjs"
   },
   "keywords": [],
   "author": "",

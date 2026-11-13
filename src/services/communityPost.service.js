@@ -2,38 +2,56 @@ import { CommunityPost } from "../models/CommunityPost.js";
 import { consumeRateLimit } from "../utils/rateLimiter.js";
 import ApiError from "../utils/ApiError.js";
 import { emitPostCreated, emitPostDeleted } from "./communityEventEmitter.js";
+import { resolveRole } from "../middleware/communityAuth.js";
+import {
+  authorDisplayName,
+  authorModelForRole,
+  withResolvedAuthorName,
+} from "../utils/communityAuthor.js";
 
 const CREATE_RATE_LIMIT_KEY = "community:post:create";
 
 export const createPost = async (payload, user) => {
   const {
-    schoolId,
-    authorId,
-    authorRole,
-    authorName,
-    authorStudentId,
     clubId,
-    postType,
+    postType = "discussion",
     title,
     body,
     tags,
     media,
   } = payload;
 
+  const authorRole = resolveRole(user);
+  const authorId = user?._id;
+  const schoolId = user?.schoolId;
+  const authorName = authorDisplayName(user);
+  const authorModel = authorModelForRole(authorRole);
+  const authorStudentId = authorRole === "student" ? (user.studentId || user._id) : null;
+
+  /*
+   * Identity is read from the authenticated principal, never from the request
+   * body. `validate(createPostSchema)` runs with `stripUnknown: true`, and the
+   * schema deliberately does not declare `authorId`/`authorRole`/`schoolId`,
+   * so those keys were silently deleted from `req.body` before this service
+   * ran. Trusting the body therefore produced `authorRole === undefined` and
+   * the "Role 'undefined' is not allowed to create posts" 403; deriving it
+   * here removes both the failure and the spoofing surface.
+   */
+  if (!authorId || !schoolId) {
+    throw new ApiError("Your account is not linked to a school", 403, "SCHOOL_ACCESS_DENIED");
+  }
+
   if (!["student", "teacher", "school_admin", "super_admin"].includes(authorRole)) {
     throw new ApiError("Role '" + authorRole + "' is not allowed to create posts", 403);
   }
 
-  if (authorRole === "parent") {
-    throw new ApiError("Community access is not available for parents", 403);
-  }
-
   // Rate limit post creation per user per window
-  consumeRateLimit(`${CREATE_RATE_LIMIT_KEY}:${user._id}`, 5, 15 * 60 * 1000);
+  consumeRateLimit(`${CREATE_RATE_LIMIT_KEY}:${authorId}`, 5, 15 * 60 * 1000);
 
   const post = new CommunityPost({
     schoolId,
     authorId,
+    authorModel,
     authorRole,
     authorName,
     authorStudentId,
@@ -63,28 +81,31 @@ export const fetchPosts = async ({ schoolId, clubId, postType, skip = 0, limit =
     filter.postType = postType;
   }
 
+  // Every field either collection can supply. `authorId` resolves through
+  // `refPath`, so the same projection has to cover a `User` (`name`, `avatar`)
+  // and a `Student` (`studentName`, `firstName`, `studentImage`).
   const posts = await CommunityPost.find(filter)
     .sort({ createdAt: -1 })
     .skip(skip)
     .limit(limit)
-    .populate("authorId", "name studentId avatar")
+    .populate("authorId", "name firstName studentName studentId avatar studentImage")
     .lean();
 
   const total = await CommunityPost.countDocuments(filter);
 
-  return { posts, total };
+  return { posts: posts.map(withResolvedAuthorName), total };
 };
 
 export const fetchPostById = async (postId, user) => {
   const post = await CommunityPost.findById(postId)
-    .populate("authorId", "name studentId avatar")
+    .populate("authorId", "name firstName studentName studentId avatar studentImage")
     .lean();
 
   if (!post || post.isDeleted) {
     throw new ApiError("Post not found", 404);
   }
 
-  return post;
+  return withResolvedAuthorName(post);
 };
 
 export const softDeletePost = async (postId, user) => {
@@ -132,10 +153,19 @@ export const bookmarkPost = async (postId, user) => {
 };
 
 export const createPoll = async (payload, user) => {
-  const { schoolId, authorId, authorRole, authorName, question, options } = payload;
+  const { question, options } = payload;
+  const authorRole = resolveRole(user);
+  const authorId = user?._id;
+  const schoolId = user?.schoolId;
+  const authorName = authorDisplayName(user);
+  const authorModel = authorModelForRole(authorRole);
 
-  if (authorRole === "parent") {
-    throw new ApiError("Community access is not available for parents", 403);
+  if (!authorId || !schoolId) {
+    throw new ApiError("Your account is not linked to a school", 403, "SCHOOL_ACCESS_DENIED");
+  }
+
+  if (!["student", "teacher", "school_admin", "super_admin"].includes(authorRole)) {
+    throw new ApiError("Role '" + authorRole + "' is not allowed to create posts", 403);
   }
 
   if (!options || options.length < 2 || options.length > 10) {
@@ -145,6 +175,7 @@ export const createPoll = async (payload, user) => {
   const post = new CommunityPost({
     schoolId,
     authorId,
+    authorModel,
     authorRole,
     authorName,
     postType: "poll",
@@ -163,4 +194,54 @@ export const createPoll = async (payload, user) => {
   await post.save();
   emitPostCreated(schoolId, post);
   return post;
+};
+/** The one thread title the platform reserves for a club's chat. */
+export const CLUB_CHAT_TITLE = "Club Chat";
+
+/**
+ * Returns the club's chat thread, creating it only if none exists.
+ *
+ * This is the atomic version of what the client used to do inline. The read-then-
+ * write it replaces is not safe: two mounts in the same second both see no thread
+ * and both create one. Here the partial unique index on `clubId` for Club Chat
+ * discussions is the actual guarantee — if two requests race, one insert wins and
+ * the other fails with E11000, which is caught and resolved to the winner.
+ *
+ * The loser gets a thread rather than an error, because "open the club chat"
+ * should never fail because someone else opened it a moment earlier.
+ */
+export const ensureClubChat = async (clubId, user) => {
+  const existing = await CommunityPost.findOne({
+    clubId,
+    postType: "discussion",
+    title: CLUB_CHAT_TITLE,
+    isDeleted: false,
+  }).sort({ createdAt: 1 });
+
+  if (existing) return existing;
+
+  try {
+    return await createPost(
+      {
+        clubId,
+        postType: "discussion",
+        title: CLUB_CHAT_TITLE,
+        body: "Chat thread",
+      },
+      user
+    );
+  } catch (error) {
+    if (error.code !== 11000) throw error;
+
+    // Lost the race: the other request's row is committed, so read it.
+    const winner = await CommunityPost.findOne({
+      clubId,
+      postType: "discussion",
+      title: CLUB_CHAT_TITLE,
+      isDeleted: false,
+    }).sort({ createdAt: 1 });
+
+    if (!winner) throw error;
+    return winner;
+  }
 };

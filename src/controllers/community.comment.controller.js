@@ -2,9 +2,11 @@ import {
   createComment,
   fetchComments,
   fetchCommentReplies,
+  updateComment,
   toggleAcceptAnswer,
   softDeleteComment,
 } from "../services/communityComment.service.js";
+import { fetchLinkPreview } from "../utils/linkPreview.js";
 
 export const createCommentController = async (req, res) => {
   try {
@@ -66,6 +68,31 @@ export const listRepliesController = async (req, res) => {
   }
 };
 
+export const updateCommentController = async (req, res) => {
+  try {
+    const comment = await updateComment(req.params.id, req.body.body, req.user);
+    return res.status(200).json({ success: true, data: comment });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+      code: error.code,
+    });
+  }
+};
+
+export const linkPreviewController = async (req, res) => {
+  try {
+    const preview = await fetchLinkPreview(req.body.url);
+    return res.status(200).json({ success: true, data: preview });
+  } catch (error) {
+    // A link that cannot be previewed is not a failed request — the composer shows
+    // no card and the message sends normally. A 200 with `data: null` keeps the
+    // client from treating an unpreviewable link as an error toast.
+    return res.status(200).json({ success: true, data: null, message: error.message });
+  }
+};
+
 export const toggleAcceptAnswerController = async (req, res) => {
   try {
     const comment = await toggleAcceptAnswer(req.params.id, req.user);
@@ -90,6 +117,8 @@ export default {
   createCommentController,
   listCommentsController,
   listRepliesController,
+  updateCommentController,
+  linkPreviewController,
   toggleAcceptAnswerController,
   deleteCommentController,
 };

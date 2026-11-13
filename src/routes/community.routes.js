@@ -10,10 +10,13 @@ import {
   togglePostStatusController,
   toggleBookmarkController,
   createPollController,
+  ensureClubChatController,
 } from "../controllers/community.post.controller.js";
 import {
   createCommentController,
   listCommentsController,
+  updateCommentController,
+  linkPreviewController,
   toggleAcceptAnswerController,
   deleteCommentController,
 } from "../controllers/community.comment.controller.js";
@@ -39,6 +42,8 @@ import {
   rsvpEventController,
   deleteEventController,
 } from "../controllers/community.event.controller.js";
+import { uploadCommunityFileController } from "../controllers/community.upload.controller.js";
+import { uploadCommunityFileRoute } from "../middleware/upload.js";
 import {
   createPostSchema,
   listPostsSchema,
@@ -54,6 +59,9 @@ import {
   clubIdParamSchema,
   updateClubSchema,
   commentIdParamSchema,
+  updateCommentSchema,
+  linkPreviewSchema,
+  clubChatParamSchema,
   createEventSchema,
   updateEventSchema,
   eventIdParamSchema,
@@ -122,6 +130,19 @@ communityRoute.put(
 );
 
 /**
+ * `POST /api/community/clubs/:clubId/chat` � get-or-create the club's chat thread.
+ *
+ * One call instead of "list the club's posts, then create if absent". The
+ * client-side version raced with itself and produced two threads for one club,
+ * which is how a thread holding every message rendered as empty.
+ */
+communityRoute.post(
+  "/clubs/:clubId/chat",
+  communityAuth,
+  validate(clubChatParamSchema, "params"),
+  ensureClubChatController
+);
+/**
  * Comments: /api/community/posts/:postId/comments
  *
  * All routes require `communityAuth`.
@@ -147,11 +168,52 @@ communityRoute.put(
   toggleAcceptAnswerController
 );
 
+/**
+ * `PATCH /api/community/comments/:id` — edit a message inside the edit window.
+ *
+ * Not nested under the post: the author is being checked against the comment, and
+ * the post id is already on the document, so a second path segment would be a
+ * field the client could get wrong without changing what is allowed.
+ */
+communityRoute.patch(
+  "/comments/:id",
+  communityAuth,
+  validate(commentIdParamSchema, "params"),
+  validate(updateCommentSchema),
+  updateCommentController
+);
+
+/**
+ * `POST /api/community/link-preview` — card for a link, before it is posted.
+ *
+ * Authenticated, because an open preview endpoint is a free SSRF probe and a
+ * bandwidth amplifier for anyone who finds it.
+ */
+communityRoute.post(
+  "/link-preview",
+  communityAuth,
+  validate(linkPreviewSchema),
+  linkPreviewController
+);
+
 communityRoute.delete(
   "/posts/:postId/comments/:id",
   communityAuth,
   validate(commentIdParamSchema, "params"),
   deleteCommentController
+);
+
+/**
+ * Attachments: /api/community/upload
+ *
+ * Authenticated and community-gated like every other route here. The file is
+ * validated against its own bytes in the service — see `services/communityUpload.service.js`.
+ */
+communityRoute.post(
+  "/upload",
+  communityAuth,
+  uploadCommunityFileRoute,
+  uploadCommunityFileController
 );
 
 /**

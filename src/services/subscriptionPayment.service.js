@@ -97,7 +97,17 @@ export const initiateSubscriptionPayment = async (
   await school.save();
 
   await auditService.log({
-    action: "subscription.payment_initiated",
+    /*
+     * `subscription.payment_initiated` was written here, and it is in neither the
+     * `AuditLog` enum nor `AUDIT_ACTIONS` in `config/constants.js`. `auditService.log`
+     * catches the Mongoose ValidationError that raises and logs it, so this write
+     * has always silently produced no row: a school moved to `suspended` with no
+     * trace of who initiated it.
+     *
+     * `payment.record_manual` is the existing action for an administrator keying in
+     * a payment by hand, which is what this is.
+     */
+    action: "payment.record_manual",
     entity: "School",
     entityId: school._id,
     userId: null,
@@ -158,7 +168,13 @@ export const approveSubscriptionPayment = async (manualPaymentId, adminUserId) =
   await school.save();
 
   await auditService.log({
-    action: "subscription.payment_approved",
+    /*
+     * `subscription.payment_approved` was outside the enum for the same reason as
+     * the initiation row above, so the moment a school's subscription was activated
+     * left no audit trail at all. `payment.success` is the existing action for a
+     * payment reaching completion — and until now nothing in the product wrote it.
+     */
+    action: "payment.success",
     entity: "School",
     entityId: school._id,
     userId: adminUserId,

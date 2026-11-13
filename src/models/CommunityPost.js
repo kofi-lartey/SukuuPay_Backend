@@ -31,13 +31,23 @@ const communityPostSchema = new mongoose.Schema(
     },
     authorId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
+      // `refPath` rather than a fixed `ref`: an author is a `User` (staff) or a
+      // `Student`, and those are separate collections. A fixed `ref: "User"`
+      // made every student-authored row unpopulatable — the query ran against
+      // `users` with a `students` `_id` and matched nothing.
+      refPath: "authorModel",
       required: true,
       index: true,
     },
+    authorModel: {
+      type: String,
+      enum: ["User", "Student"],
+      required: true,
+      default: "User",
+    },
     authorRole: {
       type: String,
-      enum: ["student", "teacher", "school_admin"],
+      enum: ["student", "teacher", "school_admin", "super_admin"],
       required: true,
       default: "student",
     },
@@ -133,6 +143,43 @@ communityPostSchema.index({ schoolId: 1, createdAt: -1 });
 communityPostSchema.index({ clubId: 1, createdAt: -1 });
 communityPostSchema.index({ schoolId: 1, postType: 1, createdAt: -1 });
 communityPostSchema.index({ schoolId: 1, tags: 1, createdAt: -1 });
+
+/**
+ * One Club Chat thread per club, enforced by the database rather than by
+ * convention.
+ *
+ * The client's get-or-create is a read followed by a write, and two of them in
+ * the same second — React's double-invoked effect in development, or a second
+ * tab — both read "no thread" and both write one. That produced two Club Chat
+ * posts for a club, and because the client reads whichever it finds first, the
+ * thread holding every message could render as empty.
+ *
+ * A partial index is the right shape: it applies only to Club Chat discussions,
+ * so ordinary posts titled "Club Chat" are unaffected, and it makes the second
+ * insert fail with E11000 rather than silently succeeding. The service catches
+ * that and returns the winner (`ensureClubChat`), so the loser still gets a
+ * thread instead of an error.
+ *
+ * `isDeleted: false` is in the filter so a club can have a fresh thread after a
+ * moderator removes the old one without colliding with it.
+ */
+communityPostSchema.index(
+  { clubId: 1 },
+  {
+    name: "clubChat_unique_per_club",
+    unique: true,
+    partialFilterExpression: {
+      postType: "discussion",
+      title: "Club Chat",
+      isDeleted: false,
+      // `clubId` defaults to null, and a unique index over a nullable field is the
+      // "one null row per collection" bug: without this, a Club Chat post that
+      // somehow carried no club would be the only one allowed anywhere. `$type`
+      // rather than `$ne: null`, because MongoDB refuses to build the `$ne` form.
+      clubId: { $type: "objectId" },
+    },
+  }
+);
 
 communityPostSchema.set("toJSON", {
   virtuals: true,

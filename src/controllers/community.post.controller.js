@@ -6,6 +6,7 @@ import {
   togglePostStatus,
   bookmarkPost,
   createPoll,
+  ensureClubChat,
 } from "../services/communityPost.service.js";
 
 /**
@@ -108,9 +109,30 @@ export const toggleBookmarkController = async (req, res) => {
   }
 };
 
+/**
+ * `POST /api/community/clubs/:clubId/chat` — get-or-create the club's chat thread.
+ *
+ * A single server-authoritative call rather than "list posts, then create if
+ * absent". The client-side version raced with itself and produced two threads for
+ * one club, which is how a thread full of messages came to render as empty.
+ */
+export const ensureClubChatController = async (req, res) => {
+  try {
+    const post = await ensureClubChat(req.params.clubId, req.user);
+    return res.status(200).json({ success: true, data: post });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message,
+      code: error.code,
+    });
+  }
+};
+
 export default {
   createPostController,
   createPollController,
+  ensureClubChatController,
   listPostsController,
   getPostController,
   deletePostController,

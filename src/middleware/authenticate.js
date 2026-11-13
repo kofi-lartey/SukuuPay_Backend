@@ -30,6 +30,15 @@ export const authenticateUser = async (token) => {
       schoolId: student.schoolId,
       studentId: student._id,
       status: student.status,
+      // The Student collection has no `name` or `avatar`; it stores
+      // `studentName`, `firstName`/`lastName` and `studentImage`. Without these
+      // three the community feed had nothing to snapshot and every post and
+      // comment written by a student rendered as "Unknown" — see
+      // `utils/communityAuthor.js`.
+      name: student.studentName,
+      firstName: student.firstName,
+      lastName: student.lastName,
+      avatar: student.studentImage || null,
     };
   }
 

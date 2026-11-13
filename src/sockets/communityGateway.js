@@ -1,5 +1,5 @@
-import { Server } from "socket.io";
 import { authenticateUser } from "../middleware/authenticate.js";
+import { COMMUNITY_ALLOWED_ROLES, resolveRole } from "../middleware/communityAuth.js";
 
 /**
  * Community Socket.io gateway.
@@ -16,8 +16,11 @@ import { authenticateUser } from "../middleware/authenticate.js";
  *   - community:post_deleted { postId }
  *   - community:comment_created { postId, commentId }
  *   - community:reaction     { targetId, targetType, reactionType }
- *   - community:club_updated { clubId, action: "created" | "updated" | "membership" }
+ *   - community:club_updated { postId, action: "created" | "updated" | "membership" }
  */
+
+/** `school:<24-hex>` — the only room shape this gateway ever joins. */
+const SCHOOL_ROOM = /^school:[a-f0-9]{24}$/i;
 
 const createCommunityGateway = (io) => {
   io.on("connection", async (socket) => {
@@ -25,23 +28,34 @@ const createCommunityGateway = (io) => {
     let user;
     try {
       user = await authenticateUser(token);
-    } catch {
+    } catch (error) {
+      // Without this the only symptom was a socket that never joined a room,
+      // which is indistinguishable from a quiet feed. The reason is logged so a
+      // bad/expired token is diagnosable instead of mysterious.
+      console.warn(
+        "[CommunitySocket] rejected handshake:",
+        error?.message,
+        "| token:",
+        token ? `${String(token).slice(0, 8)}…` : "(none)"
+      );
       socket.disconnect(true);
       return;
     }
 
     if (!user) {
+      console.warn("[CommunitySocket] rejected handshake: no principal resolved");
       socket.disconnect(true);
       return;
     }
 
-    // Access control: only allowed roles may connect
-    const ALLOWED_ROLES = ['super_admin', 'school_admin', 'teacher', 'student'];
-    if (user.role === 'parent') {
-      socket.disconnect(true);
-      return;
-    }
-    if (!ALLOWED_ROLES.includes(user.role)) {
+    /*
+     * The allow-list is imported from `communityAuth` rather than restated. Two
+     * copies of "who may use community" drift apart the moment one is edited,
+     * and a drifted socket copy fails silently by disconnecting.
+     */
+    const role = resolveRole(user);
+    if (!COMMUNITY_ALLOWED_ROLES.includes(role)) {
+      console.warn(`[CommunitySocket] rejected role '${role}' for user ${user._id}`);
       socket.disconnect(true);
       return;
     }
@@ -49,10 +63,37 @@ const createCommunityGateway = (io) => {
     const schoolId = user.schoolId ? String(user.schoolId) : null;
 
     socket.on("community:join", (payload = {}) => {
-      const room = payload?.room || schoolId;
-      if (room) {
-        socket.join(room);
+      const requested = payload?.room;
+
+      /*
+       * The room is derived from the authenticated principal, never taken from
+       * the client. The previous code joined `payload.room` verbatim, so any
+       * signed-in user could subscribe to `school:<someone else's id>` and read
+       * that school's feed and chat.
+       *
+       * A super_admin has no school of their own, so they may name a room —
+       * still constrained to the one shape this gateway knows, which blocks a
+       * crafted name from reaching an unrelated Socket.io namespace.
+       */
+      if (role === "super_admin") {
+        if (requested && SCHOOL_ROOM.test(requested)) {
+          socket.join(requested);
+          console.log(`[CommunitySocket] super_admin joined ${requested}`);
+        }
+        return;
       }
+
+      const room = schoolId ? `school:${schoolId}` : null;
+      if (!room) {
+        console.warn(`[CommunitySocket] user ${user._id} has no school; join ignored`);
+        return;
+      }
+      if (requested && requested !== room) {
+        console.warn(
+          `[CommunitySocket] user ${user._id} asked for ${requested}; joined ${room} instead`
+        );
+      }
+      socket.join(room);
     });
 
     socket.on("disconnect", () => {

@@ -435,6 +435,28 @@ export const uploadTeacherMessage = multer({
   { name: "attachment", maxCount: 1 },
 ]);
 export const uploadTeacherMessageRoute = asClientErrors(uploadTeacherMessage);
+
+// ─────────────────────────────────────────────
+// COMMUNITY ATTACHMENTS
+// In-memory so the service can sniff the real type before anything is persisted:
+// a file is only handed to Cloudinary once its bytes have been checked against
+// its declared MIME type. 15 MB, matching the teacher-message ceiling.
+// ─────────────────────────────────────────────
+const communityUploadStorage = multer.memoryStorage();
+
+export const uploadCommunityFile = multer({
+  storage: communityUploadStorage,
+  // Deliberately permissive. The real gate is `sniffMime` in the service —
+  // `file.mimetype` is a client-supplied claim, so a filter here would be a
+  // second copy of a weaker check that the bytes can contradict.
+  fileFilter: (req, file, cb) => cb(null, true),
+  limits: {
+    fileSize: 15 * 1024 * 1024,
+    files: 1,
+  },
+}).single("file");
+
+export const uploadCommunityFileRoute = asClientErrors(uploadCommunityFile);
 export default {
   uploadLogo,
   uploadStamp,
@@ -451,4 +473,8 @@ export default {
   deleteFromCloudinary,
   extractPublicId,
   readUploaded,
+  uploadTeacherMessage,
+  uploadTeacherMessageRoute,
+  uploadCommunityFile,
+  uploadCommunityFileRoute,
 };
