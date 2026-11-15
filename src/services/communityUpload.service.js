@@ -59,5 +59,10 @@ export const uploadCommunityAttachment = async (file, schoolId) => {
     mimeType: sniffed.mime,
     bytes: result.bytes || file.size,
     originalName: file.originalname || null,
+    // Cloudinary probes a duration for audio and video assets it can read; raw
+    // formats it cannot probe come back without one. Nullable all the way through
+    // rather than defaulted to zero: a 40-second note rendered as "0:00" is worse
+    // than no number at all, because the player can still fill it in on first play.
+    durationSeconds: typeof result.duration === "number" ? result.duration : null,
   };
 };

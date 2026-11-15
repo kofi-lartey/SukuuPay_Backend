@@ -29,9 +29,9 @@ healthCheckJob.start(); // Every 5 min: probes MongoDB, payment gateways and SMS
 teacherAttendanceJob.start(); // Every 5 min: marks missed teacher periods
 app.set('trust proxy', 1);
 
-// ─────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 // Raw body capture
-// ─────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 // Meta and Arkesel sign the exact bytes they sent, so their callbacks
 // can only be authenticated against the unparsed body: a JSON parse followed by
 // `JSON.stringify` reorders nothing but re-escapes unicode, collapses nothing
@@ -67,14 +67,14 @@ app.use((_req, res) => {
 });
 
 // Feeds the in-process error ring buffer (`utils/errorBuffer.js`) that backs
-// `GET /admin/health/errors`, then forwards. Nothing is persisted anywhere —
-// `errorHandler.js` below only console.errors — so without this the console's
+// `GET /admin/health/errors`, then forwards. Nothing is persisted anywhere Ã¢â‚¬â€
+// `errorHandler.js` below only console.errors Ã¢â‚¬â€ so without this the console's
 // recent-errors screen has no data and would have to invent some.
 //
 // Registered immediately before `errorHandler` so it sees the error first, and it
 // is purely additive: `errorHandler` stays the single authority on what a client
 // sees, still the thing that strips 5xx messages. The `next(error)` here is
-// Express's own mechanism — an errored request has no handler left to answer it —
+// Express's own mechanism Ã¢â‚¬â€ an errored request has no handler left to answer it Ã¢â‚¬â€
 // and is not the "never forward an error" rule that applies to controllers.
 app.use(recordRequestError);
 
@@ -86,11 +86,11 @@ app.use(errorHandler);
 // port it was told to expect, and they give a deploy only a short window to
 // accept a connection. Listening only after `mongoose.connect()` resolved meant
 // any slow, retried, or failed connection left nothing bound, so the deploy
-// died with "No server listening on port …" even though the process was alive
+// died with "No server listening on port Ã¢â‚¬Â¦" even though the process was alive
 // and the database was fine.
 //
 // Listening first also means `/health` is reachable while the database is still
-// connecting or down — which is exactly when an operator or uptime monitor most
+// connecting or down Ã¢â‚¬â€ which is exactly when an operator or uptime monitor most
 // needs a truthful answer. The health controller already reports the database
 // state, so the endpoint can describe a degraded instance instead of not
 // answering at all.
@@ -100,7 +100,7 @@ const server = app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT} (bound 0.0.0.0)`);
 });
 
-// Socket.io — the community feature's realtime half. It is attached to the same
+// Socket.io Ã¢â‚¬â€ the community feature's realtime half. It is attached to the same
 // HTTP server Express is already listening on, so no port and no proxy config
 // is introduced; only the upgrade path and a namespace.
 const io = new Server(server, {
@@ -127,31 +127,31 @@ mongoose.connect(MONGODB_URI)
     // SUPER_ADMIN_PASSWORD and reconciled on every boot.
     //
     // It runs here, inside the connect handler, and not beside `app.listen`
-    // because it writes to Mongo — and `app.listen` is deliberately first so a
+    // because it writes to Mongo Ã¢â‚¬â€ and `app.listen` is deliberately first so a
     // slow connect cannot kill a deploy (see the comment above). A reconcile that
     // could not reach the database would provision nothing and report success.
     //
     // Fatal on failure, like the connect itself: an instance whose port is bound
     // and whose `/health` answers 200, with no account that can reach
     // `/api/admin`, is worse than an instance that restarts. There is no in-product
-    // way to create a platform owner — that is the point of the invariant — so a
+    // way to create a platform owner Ã¢â‚¬â€ that is the point of the invariant Ã¢â‚¬â€ so a
     // silent failure here has no recovery but a redeploy, and a loud one at least
     // says why.
     await ensureSuperAdmin();
     // One-shot migration: move any school still on a retired gateway mode
     // (hubtel, paystack, arke, mnotify) to the sole active gateway, moolre.
-    // Idempotent — re-runs are a no-op.
+    // Idempotent Ã¢â‚¬â€ re-runs are a no-op.
     await migrateGateways();
     // Replace the legacy unique `providerId` index (which indexed explicit
     // `null`s, so only one password-only invite could ever succeed per
-    // database) with the declared partial one. Idempotent — re-runs are a no-op.
+    // database) with the declared partial one. Idempotent Ã¢â‚¬â€ re-runs are a no-op.
     await reconcileProviderIdIndex();
     // The same repair for the unique indexes over nullable fields: a unique
     // index that admits an explicit `null` allows exactly one null row per
     // collection, which is how a second unreceipted payment died on E11000
     // and a parent could not pay at all.
     await reconcileNullableUniqueIndexes();
-    // And the indexes whose *options* carry meaning — `sparse` and the
+    // And the indexes whose *options* carry meaning Ã¢â‚¬â€ `sparse` and the
     // `partialFilterExpression`s. Mongoose matches indexes by name and never
     // rewrites one whose options have drifted, so a live index can keep the
     // wrong spec indefinitely; the mismatch also blocks every index after it

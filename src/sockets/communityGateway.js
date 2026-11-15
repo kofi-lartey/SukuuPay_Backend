@@ -7,9 +7,21 @@ import { addPresence, removePresence, onlineUserIdsFor } from "./presence.js";
  *
  * Authenticated rooms are keyed by schoolId: a student in Tamale's community
  * room should never hear Accra's. The client connects with the same bearer token
- * it sends to `/api`, and the handshake carries the user id — the same user doc
- * the `authenticate` middleware resolves — so the room join is an authorization
+ * it sends to `/api`, and the handshake carries the user id â€” the same user doc
+ * the `authenticate` middleware resolves â€” so the room join is an authorization
  * decision, not a naming preference.
+ *
+ * ## Why authentication is middleware, not inline
+ *
+ * The previous version authenticated inside the async `connection` handler. The
+ * client's `connect` event then fired before the server finished the database
+ * lookup, and any event emitted immediately afterwards - `community:join`,
+ * typing, recording - was dropped because the handler had not been registered
+ * yet. That is why presence stayed at zero and messages needed a reload.
+ *
+ * Running it as `io.use(...)` means that by the time `io.on("connection", ...)`
+ * fires, the socket is already authenticated and the handlers below are registered
+ * synchronously.
  *
  * Events:
  *   - community:join        { room: schoolId }
@@ -18,64 +30,57 @@ import { addPresence, removePresence, onlineUserIdsFor } from "./presence.js";
  *   - community:comment_created { postId, commentId }
  *   - community:reaction     { targetId, targetType, reactionType }
  *   - community:club_updated { postId, action: "created" | "updated" | "membership" }
+ *   - community:presence     { userIds }
+ *   - community:typing       { userId, name, isTyping }
+ *   - community:recording    { userId, name, isRecording }
  */
 
-/** `school:<24-hex>` — the only room shape this gateway ever joins. */
+/** `school:<24-hex>` â€” the only room shape this gateway ever joins. */
 const SCHOOL_ROOM = /^school:[a-f0-9]{24}$/i;
 
 const createCommunityGateway = (io) => {
-  io.on("connection", async (socket) => {
+  io.use(async (socket, next) => {
     const token = socket.handshake.auth?.token || socket.auth?.token;
     let user;
     try {
       user = await authenticateUser(token);
     } catch (error) {
-      // Without this the only symptom was a socket that never joined a room,
-      // which is indistinguishable from a quiet feed. The reason is logged so a
-      // bad/expired token is diagnosable instead of mysterious.
       console.warn(
         "[CommunitySocket] rejected handshake:",
         error?.message,
         "| token:",
-        token ? `${String(token).slice(0, 8)}…` : "(none)"
+        token ? `${String(token).slice(0, 8)}â€¦` : "(none)"
       );
-      socket.disconnect(true);
-      return;
+      return next(new Error(error?.message || "Authentication required"));
     }
 
     if (!user) {
       console.warn("[CommunitySocket] rejected handshake: no principal resolved");
-      socket.disconnect(true);
-      return;
+      return next(new Error("Authentication required"));
     }
 
-    /*
-     * The allow-list is imported from `communityAuth` rather than restated. Two
-     * copies of "who may use community" drift apart the moment one is edited,
-     * and a drifted socket copy fails silently by disconnecting.
-     */
     const role = resolveRole(user);
     if (!COMMUNITY_ALLOWED_ROLES.includes(role)) {
       console.warn(`[CommunitySocket] rejected role '${role}' for user ${user._id}`);
-      socket.disconnect(true);
-      return;
+      return next(new Error("Community access is not available"));
     }
 
-    const schoolId = user.schoolId ? String(user.schoolId) : null;
+    socket.data.user = user;
+    socket.data.role = role;
+    socket.data.schoolId = user.schoolId ? String(user.schoolId) : null;
 
+    next();
+  });
+
+  io.on("connection", (socket) => {
+    const user = socket.data.user;
+    const role = socket.data.role;
+    const schoolId = socket.data.schoolId;
+
+    // Register the handlers synchronously, before any async work.
     socket.on("community:join", (payload = {}) => {
       const requested = payload?.room;
 
-      /*
-       * The room is derived from the authenticated principal, never taken from
-       * the client. The previous code joined `payload.room` verbatim, so any
-       * signed-in user could subscribe to `school:<someone else's id>` and read
-       * that school's feed and chat.
-       *
-       * A super_admin has no school of their own, so they may name a room —
-       * still constrained to the one shape this gateway knows, which blocks a
-       * crafted name from reaching an unrelated Socket.io namespace.
-       */
       if (role === "super_admin") {
         if (requested && SCHOOL_ROOM.test(requested)) {
           socket.join(requested);
@@ -97,13 +102,31 @@ const createCommunityGateway = (io) => {
       socket.join(room);
     });
 
-    // Presence starts when the handshake is accepted, not when the client asks to
-    // join a room: a client that connects and never joins is still online, and
-    // counting only joined sockets undercounts exactly the users whose client is
-    // slowest to load.
+    // Presence starts when the handshake is accepted.
     addPresence(schoolId, String(user._id));
     io.to(`school:${schoolId}`).emit("community:presence", {
       userIds: onlineUserIdsFor(schoolId),
+    });
+
+    /*
+     * Ephemeral activity. Neither of these is persisted: they describe what is
+     * happening right now, and a row in the database would be wrong a second later.
+     * Both are relayed to the room except the sender, who already knows.
+     */
+    socket.on("community:typing", (payload = {}) => {
+      socket.to(`school:${schoolId}`).emit("community:typing", {
+        userId: String(user._id),
+        name: user.firstName || user.name || null,
+        isTyping: Boolean(payload.isTyping),
+      });
+    });
+
+    socket.on("community:recording", (payload = {}) => {
+      socket.to(`school:${schoolId}`).emit("community:recording", {
+        userId: String(user._id),
+        name: user.firstName || user.name || null,
+        isRecording: Boolean(payload.isRecording),
+      });
     });
 
     socket.on("disconnect", () => {
@@ -131,7 +154,7 @@ const createCommunityGateway = (io) => {
     },
 
     /** Broadcast a reaction tally change. */
-    reaction: (schoolId, { targetId, targetType, reactionType }) => {
+    reaction: (schoolId, targetId, targetType, reactionType) => {
       io.to(`school:${schoolId}`).emit("community:reaction", {
         targetId,
         targetType,

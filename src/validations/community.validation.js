@@ -13,6 +13,7 @@ export const createPostSchema = Joi.object({
       mimeType: Joi.string().allow(""),
       bytes: Joi.number().min(0).allow(null),
       originalName: Joi.string().trim().max(255).allow(""),
+      durationSeconds: Joi.number().min(0).allow(null),
     })
   ).default([]),
 }).or("title", "body");
@@ -54,6 +55,7 @@ export const createCommentSchema = Joi.object({
         mimeType: Joi.string().allow(""),
         bytes: Joi.number().min(0).allow(null),
         originalName: Joi.string().trim().max(255).allow(""),
+        durationSeconds: Joi.number().min(0).allow(null),
       })
     )
     .default([]),

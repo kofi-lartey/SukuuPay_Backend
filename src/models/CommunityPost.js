@@ -94,6 +94,7 @@ const communityPostSchema = new mongoose.Schema(
         mimeType: { type: String, default: null },
         bytes: { type: Number, default: null, min: 0 },
         originalName: { type: String, default: null, trim: true, maxlength: 255 },
+        durationSeconds: { type: Number, default: null, min: 0 },
       },
     ],
     tags: [
