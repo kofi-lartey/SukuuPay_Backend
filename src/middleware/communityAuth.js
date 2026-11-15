@@ -12,7 +12,7 @@ import ApiError from "../utils/ApiError.js";
  * The check happens before any other community middleware so a parent's
  * request never reaches a controller that would otherwise scope a query.
  */
-export const COMMUNITY_ALLOWED_ROLES = ["super_admin", "school_admin", "teacher", "student"];
+export const COMMUNITY_ALLOWED_ROLES = ["super_admin", "school_admin", "teacher", "student", "accountant"];
 
 /**
  * The token is a bearer credential, so it is masked rather than printed whole.

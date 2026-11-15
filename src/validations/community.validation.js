@@ -107,11 +107,20 @@ export const createClubSchema = Joi.object({
   description: Joi.string().trim().max(2000).allow(""),
   category: Joi.string().trim().lowercase().valid("academic", "hobby", "sports", "tech").required(),
   privacy: Joi.string().valid("public", "private").default("public"),
+  eligibleRoles: Joi.array()
+    .items(Joi.string().valid("student", "teacher", "school_admin", "accountant"))
+    .min(1)
+    .default(["student", "teacher", "school_admin", "accountant"]),
+  password: Joi.string().trim().min(4).max(128).allow(""),
 });
 
 export const listClubsSchema = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   perPage: Joi.number().integer().min(1).max(100).default(20),
+});
+
+export const toggleClubMembershipSchema = Joi.object({
+  password: Joi.string().trim().max(128).allow(""),
 });
 
 export const clubIdParamSchema = Joi.object({
@@ -123,6 +132,18 @@ export const updateClubSchema = Joi.object({
   description: Joi.string().trim().max(2000).allow(""),
   category: Joi.string().valid("academic", "hobby", "sports", "tech"),
   privacy: Joi.string().valid("public", "private"),
+  eligibleRoles: Joi.array()
+    .items(Joi.string().valid("student", "teacher", "school_admin", "accountant"))
+    .min(1),
+  // `Club.password` is `select: false`, so the edit form can never pre-fill the
+  // stored hash. The three states are therefore explicit:
+  //   - absent/blank string  -> leave unchanged
+  //   - non-empty string     -> replace the hash
+  //   - `removePassword`     -> clear it
+  // A blank string meaning both "keep" and "clear" would make it impossible to
+  // express removal, hence the separate flag.
+  password: Joi.string().trim().min(4).max(128).allow(""),
+  removePassword: Joi.boolean(),
 }).min(1);
 export const createEventSchema = Joi.object({
   title: Joi.string().trim().min(1).max(200).required(),

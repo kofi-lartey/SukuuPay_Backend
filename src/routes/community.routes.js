@@ -58,6 +58,7 @@ import {
   reactionParamSchema,
   createClubSchema,
   listClubsSchema,
+  toggleClubMembershipSchema,
   clubIdParamSchema,
   updateClubSchema,
   commentIdParamSchema,
@@ -299,6 +300,7 @@ communityRoute.put(
   "/clubs/:id/membership",
   communityAuth,
   validate(clubIdParamSchema, "params"),
+  validate(toggleClubMembershipSchema),
   toggleClubMembershipController
 );
 

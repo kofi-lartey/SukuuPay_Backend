@@ -63,7 +63,7 @@ export const createComment = async (payload, user) => {
     throw new ApiError("Your account is not linked to a school", 403, "SCHOOL_ACCESS_DENIED");
   }
 
-  if (!["student", "teacher", "school_admin", "super_admin"].includes(authorRole)) {
+  if (!["student", "teacher", "school_admin", "super_admin", "accountant"].includes(authorRole)) {
     throw new ApiError("Only students, teachers, and school admins may comment", 403);
   }
 

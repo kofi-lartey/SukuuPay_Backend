@@ -43,7 +43,7 @@ export const createPost = async (payload, user) => {
     throw new ApiError("Your account is not linked to a school", 403, "SCHOOL_ACCESS_DENIED");
   }
 
-  if (!["student", "teacher", "school_admin", "super_admin"].includes(authorRole)) {
+  if (!["student", "teacher", "school_admin", "super_admin", "accountant"].includes(authorRole)) {
     throw new ApiError("Role '" + authorRole + "' is not allowed to create posts", 403);
   }
 
@@ -235,7 +235,7 @@ export const createPoll = async (payload, user) => {
     throw new ApiError("Your account is not linked to a school", 403, "SCHOOL_ACCESS_DENIED");
   }
 
-  if (!["student", "teacher", "school_admin", "super_admin"].includes(authorRole)) {
+  if (!["student", "teacher", "school_admin", "super_admin", "accountant"].includes(authorRole)) {
     throw new ApiError("Role '" + authorRole + "' is not allowed to create posts", 403);
   }
 

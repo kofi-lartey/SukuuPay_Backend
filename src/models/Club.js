@@ -7,6 +7,7 @@ import mongoose from "mongoose";
  */
 const COMMUNITY_CATEGORIES = ["academic", "hobby", "sports", "tech"];
 const COMMUNITY_PRIVACIES = ["public", "private"];
+const CLUB_ELIGIBLE_ROLES = ["student", "teacher", "school_admin", "accountant"];
 
 const clubSchema = new mongoose.Schema(
   {
@@ -39,6 +40,18 @@ const clubSchema = new mongoose.Schema(
       enum: COMMUNITY_PRIVACIES,
       default: "public",
       index: true,
+    },
+    eligibleRoles: {
+      type: [String],
+      enum: CLUB_ELIGIBLE_ROLES,
+      default: CLUB_ELIGIBLE_ROLES,
+    },
+    password: {
+      type: String,
+      default: null,
+      trim: true,
+      maxlength: 255,
+      select: false,
     },
     memberIds: [
       { type: mongoose.Schema.Types.ObjectId, ref: "User", default: [] },
@@ -73,6 +86,7 @@ clubSchema.set("toJSON", {
 
 export const CLUB_CATEGORIES_VALUES = COMMUNITY_CATEGORIES;
 export const CLUB_PRIVACIES_VALUES = COMMUNITY_PRIVACIES;
+export const CLUB_ELIGIBLE_ROLES_VALUES = CLUB_ELIGIBLE_ROLES;
 
 export const Club = mongoose.model("Club", clubSchema);
 export default Club;

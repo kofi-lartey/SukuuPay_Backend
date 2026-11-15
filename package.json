@@ -20,7 +20,8 @@
     "moolre:flow": "node scripts/moolreSandboxFlow.mjs",
     "moolre:e2e": "node scripts/moolreCallbackE2E.mjs",
     "balances:check": "node scripts/backfillStudentBalances.mjs --dry-run",
-    "community:authors": "node scripts/backfillCommunityAuthors.mjs"
+    "community:authors": "node scripts/backfillCommunityAuthors.mjs",
+    "community:owners": "node scripts/backfillClubCreatedBy.mjs"
   },
   "keywords": [],
   "author": "",

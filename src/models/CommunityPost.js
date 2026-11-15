@@ -47,7 +47,7 @@ const communityPostSchema = new mongoose.Schema(
     },
     authorRole: {
       type: String,
-      enum: ["student", "teacher", "school_admin", "super_admin"],
+      enum: ["student", "teacher", "school_admin", "super_admin", "accountant"],
       required: true,
       default: "student",
     },
