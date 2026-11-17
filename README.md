@@ -164,9 +164,9 @@ export const doSomething = async (input, user) => {
 | ID Cards | `idCard.service.js`, `idCardTemplate.service.js` | Template designer, bulk PDF generation |
 | SMS/WhatsApp | `sms.service.js`, `whatsapp.service.js` | Multi-provider send, delivery receipts, credit purchase |
 
-## Frontend Interaction
+## Frontend Integration
 
-The frontend (React + Vite, in `../frontend`) communicates via:
+The **frontend is a separate repository**: [github.com/kofi-lartey/SukuuPay](https://github.com/kofi-lartey/SukuuPay) (React + Vite). It is not part of this monorepo.
 
 ### REST API
 - **Base URL**: `VITE_API_BASE_URL` (default `https://sukuupay-backend.onrender.com/api`)
@@ -179,7 +179,7 @@ The frontend (React + Vite, in `../frontend`) communicates via:
 - **Auth**: Token in handshake `auth.token`
 - **Rooms**: `school:{schoolId}`, `club:{clubId}`
 - **Events**: `post:new`, `club:updated`, `chat:message`, `reaction:added`
-- **Client**: `frontend/src/utils/socket.js` (auto-reconnect, token refresh)
+- **Client**: See the frontend repo at `src/utils/socket.js` (auto-reconnect, token refresh)
 
 ### Portal Integration Points
 | Frontend Portal | Backend Routes | Auth Style |
@@ -188,6 +188,13 @@ The frontend (React + Vite, in `../frontend`) communicates via:
 | Parent Portal | `/api/pay/:token/*` | Token in URL |
 | Teacher Portal | `/api/teacher/*` | JWT + `requireTeacher` |
 | Student Community | `/api/community/*` | JWT + `communityAuth` |
+
+### Parent Pay Portal — Token Security
+The Parent Pay Portal uses a token in the URL path (`/api/pay/:token/*`) instead of JWT. This is safe because:
+- Tokens are **single-student scoped** — one token only unlocks one student's fees/attendance/records
+- Tokens **expire** and can be revoked by the school
+- All token endpoints are **rate-limited** to prevent enumeration
+- No JWT is used to avoid parent account friction (no password, no login), but the token **does not grant access to other students or schools**
 
 ## Getting Started
 
@@ -200,13 +207,15 @@ The frontend (React + Vite, in `../frontend`) communicates via:
 
 ### Environment Variables
 See `config/env.js` for full annotated list. Critical:
+
+# Example — copy to .env, never commit real values
 ```bash
 MONGODB_URI=
 JWT_SECRET=
 PORT=2345
 SUPER_ADMIN_EMAIL=
-SUPER_ADMIN_PASSWORD=
 SUPER_ADMIN_NAME=
+# CLIENT_URL and WEBHOOK_BASE_URL are examples only — replace with your own deploy URLs
 CLIENT_URL=https://sukuupay.netlify.app
 WEBHOOK_BASE_URL=https://sukuupay-backend.onrender.com
 MOOLRE_API_USER=
