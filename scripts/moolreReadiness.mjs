@@ -24,6 +24,7 @@ import {
   MOOLRE_API_USER,
   MOOLRE_BASE_URL,
   MOOLRE_PUBLIC_KEY,
+  MOOLRE_SMS_BASE_URL,
   MOOLRE_SMS_SENDER_ID,
   MOOLRE_SMS_VASKEY,
   MOOLRE_WHATSAPP_VASKEY,
@@ -35,8 +36,8 @@ const check = (name, ok, detail) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
 };
 
-const post = async (path, headers, body) => {
-  const res = await fetch(`${MOOLRE_BASE_URL}${path}`, {
+const post = async (path, headers, body, base = MOOLRE_BASE_URL) => {
+  const res = await fetch(`${base}${path}`, {
     method: 'POST',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify(body),
@@ -184,7 +185,8 @@ if (!privateKeyWorks) {
 const smsKeyRejected = await post(
   '/open/sms/status',
   { 'X-API-VASKEY': MOOLRE_SMS_VASKEY || '' },
-  { type: 2 }
+  { type: 2 },
+  MOOLRE_SMS_BASE_URL
 );
 if (smsKeyRejected.body?.code !== 'ASMQ03' && MOOLRE_WHATSAPP_VASKEY) {
   const alt = await post(
@@ -205,7 +207,7 @@ console.log('\n── SMS ──────────────────
 if (!MOOLRE_SMS_VASKEY) {
   check('MOOLRE_SMS_VASKEY is set', false, 'not set');
 } else {
-  const sms = await post('/open/sms/status', { 'X-API-VASKEY': MOOLRE_SMS_VASKEY }, { type: 2 });
+  const sms = await post('/open/sms/status', { 'X-API-VASKEY': MOOLRE_SMS_VASKEY }, { type: 2 }, MOOLRE_SMS_BASE_URL);
   check(
     'the SMS VAS key authenticates',
     sms.body?.code === 'ASMQ03',
@@ -224,7 +226,8 @@ if (!MOOLRE_SMS_VASKEY) {
   const senderIdStatus = await post(
     '/open/sms/status',
     { 'X-API-VASKEY': MOOLRE_SMS_VASKEY },
-    { type: 1, senderid: MOOLRE_SMS_SENDER_ID }
+    { type: 1, senderid: MOOLRE_SMS_SENDER_ID },
+    MOOLRE_SMS_BASE_URL
   );
   const approval = senderIdStatus.body?.data?.approval;
   check(
@@ -237,7 +240,8 @@ if (!MOOLRE_SMS_VASKEY) {
     const listed = await post(
       '/open/sms/status',
       { 'X-API-VASKEY': MOOLRE_SMS_VASKEY },
-      { type: 7 }
+      { type: 7 },
+      MOOLRE_SMS_BASE_URL
     );
     const ids = Array.isArray(listed.body?.data) ? listed.body.data : [];
     console.log(

@@ -156,7 +156,7 @@ export const listAllSchools = async (query) => {
     platformFeePercent: school.subscription?.platformFeePercent ?? 0,
     tags: school.subscription?.tags ?? [],
     featureFlags: school.subscription?.featureFlags ?? null,
-    onboardingCompletedAt: school.subscription?.onboardingCompletedAt ?? null,
+    onboardingCompletedAt: school.onboardingCompletedAt ?? school.subscription?.onboardingCompletedAt ?? (school.name && school.region ? school.createdAt : null),
   }));
 
   return {

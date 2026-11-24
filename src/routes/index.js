@@ -34,6 +34,7 @@ import { publicAdRoute, schoolAdRoute } from './schoolAd.routes.js';
 import { publicSchoolRoute } from './public.routes.js';
 import { maintenanceGuard } from '../middleware/maintenance.js';
 import { communityRoute } from './community.routes.js';
+import { schoolVerificationRoute } from './schoolVerification.routes.js';
 
 const router = Router();
 
@@ -60,6 +61,7 @@ router.use(maintenanceGuard);
 router.use('/', authRoute);
 router.use('/', userRoute);
 router.use('/', schoolRoute);
+router.use('/', schoolVerificationRoute);
 router.use('/', studentRoute);
 router.use('/', paymentRoute);
 router.use('/', paymentPlanRoute);

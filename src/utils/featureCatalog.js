@@ -194,7 +194,7 @@ export const FEATURES = {
 export const TIERS = {
   starter: {
     marketing: 'Starter',
-    server: ['trial', 'basic'],
+    server: ['trial', 'free', 'basic', 'starter'],
     inheritance: null, // base tier
     features: [
       // Core (inherited)
@@ -208,7 +208,7 @@ export const TIERS = {
   },
   growth: {
     marketing: 'Growth',
-    server: ['standard', 'premium'],
+    server: ['standard', 'premium', 'growth'],
     inheritance: 'starter',
     features: [
       ...TIERS.starter.features,
@@ -223,7 +223,7 @@ export const TIERS = {
   },
   campus: {
     marketing: 'Campus',
-    server: ['enterprise'],
+    server: ['enterprise', 'campus'],
     inheritance: 'growth',
     features: [
       ...TIERS.growth.features,

@@ -543,7 +543,7 @@ export const updateSchool = async (schoolId, data, requester) => {
     throw new ApiError("You do not have access to this school", 403, "FORBIDDEN");
   }
 
-  const protectedFields = ["slug", "schoolCode", "createdBy", "stats", "subscription", "status", "suspendedReason", "suspendedAt", "deletedAt"];
+  const protectedFields = ["slug", "schoolCode", "createdBy", "stats", "subscription", "status", "suspendedReason", "suspendedAt", "deletedAt", "verificationStatus", "verificationTier", "kybDocuments", "rejectionReason", "verifiedAt", "verifiedBy"];
   const updates = { ...data };
 
   protectedFields.forEach((field) => {
@@ -603,15 +603,56 @@ export const updateSchool = async (schoolId, data, requester) => {
     }
   }
 
-  await school.save();
+  // Handle external directory link - update verification status
+  if (updates.externalDirectoryId && updates.externalDirectorySource) {
+    school.externalDirectoryId = updates.externalDirectoryId;
+    school.externalDirectorySource = updates.externalDirectorySource;
+    if (school.verificationStatus === "UNVERIFIED") {
+      school.verificationStatus = "DIRECTORY_MATCHED";
+      school.verificationTier = 1;
+    }
+  }
 
-  await auditService.log({
-    action: "student.update",
-    entity: "School",
-    entityId: school._id,
-    userId: requester._id,
-    details: { updatedFields: Object.keys(updates) },
-  });
+  // Update district if provided
+  if (updates.district !== undefined) {
+    school.district = updates.district;
+  }
+
+  // Update schoolLevel if provided
+  if (updates.schoolLevel !== undefined) {
+    school.schoolLevel = updates.schoolLevel;
+  }
+
+  // Update schoolOwnership if provided
+  if (updates.schoolOwnership !== undefined) {
+    school.schoolOwnership = updates.schoolOwnership;
+  }
+
+  // Update emisCode if provided
+  if (updates.emisCode !== undefined) {
+    school.emisCode = updates.emisCode || null;
+  }
+
+  // Update nasiaRegistrationNumber if provided
+  if (updates.nasiaRegistrationNumber !== undefined) {
+    school.nasiaRegistrationNumber = updates.nasiaRegistrationNumber || null;
+  }
+
+  // Remove these from updates to avoid double-setting
+  delete updates.externalDirectoryId;
+  delete updates.externalDirectorySource;
+  delete updates.district;
+  delete updates.schoolLevel;
+  delete updates.schoolOwnership;
+  delete updates.emisCode;
+  delete updates.nasiaRegistrationNumber;
+
+  // Set onboardingCompletedAt if not already set and school has basic profile
+  if (!school.onboardingCompletedAt && school.name && school.region) {
+    school.onboardingCompletedAt = new Date();
+  }
+
+  await school.save();
 
   return school.toJSON();
 };
@@ -631,10 +672,15 @@ export const updateSchoolLogo = async (schoolId, logoUrl, oldLogoUrl, requester)
   }
 
   school.logo = logoUrl;
+  // Set onboardingCompletedAt if not already set and school has basic profile
+  if (!school.onboardingCompletedAt && school.name && school.region) {
+    school.onboardingCompletedAt = new Date();
+  }
+
   await school.save();
 
   await auditService.log({
-    action: "school.logo_update",
+    action: AUDIT_ACTIONS.SCHOOL_UPDATE,
     entity: "School",
     entityId: school._id,
     userId: requester._id,

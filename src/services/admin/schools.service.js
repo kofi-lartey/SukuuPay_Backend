@@ -60,7 +60,7 @@ export const PLATFORM_FIELD_PATHS = {
   featureFlags: "subscription.featureFlags",
   internalNotes: "subscription.internalNotes",
   accountManagerId: "subscription.accountManagerId",
-  onboardingCompletedAt: "subscription.onboardingCompletedAt",
+  onboardingCompletedAt: "onboardingCompletedAt",
   tags: "subscription.tags",
 };
 
@@ -277,7 +277,7 @@ export const getAdminSchoolDetail = async (schoolId) => {
     tags: readPlatformField(school, "tags") ?? [],
     featureFlags: readPlatformField(school, "featureFlags") ?? null,
     internalNotes: readPlatformField(school, "internalNotes") ?? "",
-    onboardingCompletedAt: readPlatformField(school, "onboardingCompletedAt") ?? null,
+    onboardingCompletedAt: readPlatformField(school, "onboardingCompletedAt") ?? (school.name && school.region ? school.createdAt : null),
     platformFeePercent: readPlatformField(school, "platformFeePercent") ?? 0,
     stats: school.stats,
     studentCount,

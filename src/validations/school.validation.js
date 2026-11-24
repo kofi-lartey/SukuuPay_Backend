@@ -87,9 +87,16 @@ export const updateSchoolSchema = Joi.object({
   region: Joi.string()
     .valid(...ghanaRegions)
     .optional(),
+  district: Joi.string().trim().max(100).optional(),
   gpsAddress: gpsAddressValidator.optional(),
   brandColor: Joi.string().pattern(/^#[0-9A-Fa-f]{6}$/).optional(),
   "academic.classes": Joi.array().items(Joi.string().trim().max(50)).optional(),
+  emisCode: Joi.string().trim().max(50).optional(),
+  nasiaRegistrationNumber: Joi.string().trim().max(50).optional(),
+  schoolLevel: Joi.string().valid("Basic/Primary", "JHS", "SHS/SHTS", "TVET", "International").optional(),
+  schoolOwnership: Joi.string().valid("Public", "Private").optional(),
+  externalDirectoryId: Joi.string().trim().max(100).optional(),
+  externalDirectorySource: Joi.string().valid("sukuudata", "ghana_api", "manual").optional(),
   ...locationKeys,
 }).min(1);
 

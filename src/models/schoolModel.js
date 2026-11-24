@@ -174,7 +174,7 @@ const schoolModel = new mongoose.Schema(
     subscription: {
       plan: {
         type: String,
-        enum: ["trial", "basic", "standard", "premium", "enterprise"],
+        enum: ["trial", "free", "starter", "growth", "campus", "basic", "standard", "premium", "enterprise"],
         default: "trial",
       },
       status: {
@@ -342,6 +342,136 @@ const schoolModel = new mongoose.Schema(
       index: true,
     },
 
+    /**
+     * Verification & KYB fields
+     *
+     * Tier 0 = UNVERIFIED (manual entry, no directory match)
+     * Tier 1 = DIRECTORY_MATCHED (soft-verified via Ghana schools directory)
+     * Tier 2 = VERIFIED (full KYB document review passed)
+     */
+    verificationStatus: {
+      type: String,
+      enum: ["UNVERIFIED", "DIRECTORY_MATCHED", "PENDING_REVIEW", "VERIFIED", "REJECTED"],
+      default: "UNVERIFIED",
+      index: true,
+    },
+    verificationTier: {
+      type: Number,
+      enum: [0, 1, 2],
+      default: 0,
+      index: true,
+    },
+    emisCode: {
+      type: String,
+      trim: true,
+      sparse: true,
+      unique: true,
+    },
+    nasiaRegistrationNumber: {
+      type: String,
+      trim: true,
+      sparse: true,
+      unique: true,
+    },
+    externalDirectorySource: {
+      type: String,
+      enum: ["sukuudata", "ghana_api", "manual", null],
+      default: null,
+      index: true,
+    },
+    externalDirectoryId: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    region: {
+      type: String,
+      required: true,
+      enum: [
+        "Ahafo",
+        "Ashanti",
+        "Bono",
+        "Bono East",
+        "Central",
+        "Eastern",
+        "Greater Accra",
+        "North East",
+        "Northern",
+        "Oti",
+        "Savannah",
+        "Upper East",
+        "Upper West",
+        "Volta",
+        "Western",
+        "Western North",
+      ],
+    },
+    district: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    schoolLevel: {
+      type: String,
+      enum: ["Basic/Primary", "JHS", "SHS/SHTS", "TVET", "International"],
+      default: "Basic/Primary",
+    },
+    schoolOwnership: {
+      type: String,
+      enum: ["Public", "Private"],
+      default: "Private",
+    },
+    kybDocuments: [
+      {
+        type: {
+          type: String,
+          enum: ["NASIA_LICENSE", "RGD_CERTIFICATE", "AUTHORIZATION_LETTER", "HEADTEACHER_ID"],
+          required: true,
+        },
+        fileUrl: {
+          type: String,
+          required: true,
+        },
+        uploadedAt: {
+          type: Date,
+          default: Date.now,
+        },
+        reviewStatus: {
+          type: String,
+          enum: ["PENDING", "APPROVED", "REJECTED"],
+          default: "PENDING",
+        },
+        reviewNote: {
+          type: String,
+          trim: true,
+          default: "",
+        },
+        reviewedAt: {
+          type: Date,
+          default: null,
+        },
+        reviewedBy: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User",
+          default: null,
+        },
+      },
+    ],
+    rejectionReason: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    verifiedAt: {
+      type: Date,
+      default: null,
+    },
+    verifiedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+
     academic: {
       currentTerm: { type: String, default: "" },
       currentYear: { type: String, default: new Date().getFullYear().toString() },
@@ -470,6 +600,9 @@ schoolModel.index({ status: 1, region: 1 });
 schoolModel.index({ status: 1, "subscription.status": 1 });
 schoolModel.index({ tags: 1, status: 1 });
 schoolModel.index({ onboardingCompletedAt: 1 });
+schoolModel.index({ verificationStatus: 1, verificationTier: 1 });
+schoolModel.index({ externalDirectorySource: 1, externalDirectoryId: 1 });
+schoolModel.index({ region: 1, district: 1 });
 
 schoolModel.set("toJSON", {
   virtuals: true,

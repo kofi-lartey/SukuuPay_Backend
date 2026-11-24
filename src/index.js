@@ -20,6 +20,7 @@ import { reconcileDeclaredIndexSpecs } from './boot/reconcileDeclaredIndexSpecs.
 import { setCommunityIO } from './services/communityEventEmitter.js';
 import { Server } from 'socket.io';
 import createCommunityGateway from './sockets/communityGateway.js';
+import { setVerificationIO } from './sockets/verificationGateway.js';
 
 const app = express();
 
@@ -112,6 +113,9 @@ const io = new Server(server, {
 
 // Create the community gateway and attach connection handlers to the io instance.
 const communityGateway = createCommunityGateway(io);
+
+// Attach the verification gateway's event emitters to the io instance.
+setVerificationIO(io);
 
 // Attach the community gateway's event emitters to the io instance.
 setCommunityIO(io, communityGateway);

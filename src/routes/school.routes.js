@@ -55,9 +55,10 @@ schoolRoute.post("/schools/me", authenticate, validate(provisionMySchoolSchema),
 
 /**
  * `POST /schools/me/subscription/payment` — initiate a manual subscription
- * payment. The school is on trial or expired, selects a paid tier, and the
- * endpoint creates a pending `ManualPayment` and suspends the subscription
- * until an administrator approves it.
+ * payment. Any school may call this (a trial school converting to paid, or an
+ * active school upgrading tier). The selected tier is staged and the endpoint
+ * creates a pending `ManualPayment` and suspends the subscription until an
+ * administrator approves it.
  */
 schoolRoute.post(
   "/schools/me/subscription/payment",
