@@ -48,6 +48,8 @@
     "multer": "^2.4.0",
     "multer-storage-cloudinary": "^4.0.0",
     "pdfkit": "^0.20.2",
+    "puppeteer": "^25.19.0",
+    "@puppeteer/browsers": "^3.3.0",
     "qrcode": "^1.5.4",
     "sharp": "^0.35.5",
     "socket.io": "^4.8.4",

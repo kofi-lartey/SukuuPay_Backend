@@ -1724,9 +1724,9 @@ export const verifyPaymentByReference = async (token, reference) => {
 export const buildParentReceipt = async (token, paymentId) => {
   const payment = await findPaymentForToken(token, paymentId);
 
-  const [student, school] = await Promise.all([
+    const [student, school] = await Promise.all([
     Student.findById(payment.studentId)
-      .select('studentId studentName studentClass')
+      .select('studentId studentName studentClass totalOwed totalPaid balance')
       .lean(),
     fetchSchool(payment.schoolId),
   ]);

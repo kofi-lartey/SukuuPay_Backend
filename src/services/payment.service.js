@@ -1448,8 +1448,8 @@ export const generateReceipt = async (paymentId, user) => {
   // to that this function is the only place that already has. Without it the
   // delivery endpoints have to look the student up again, and a second read
   // of the same record on the same request is how the two answers drift.
-  const payment = await Payment.findOne(filter)
-    .populate("studentId", "studentId studentName studentClass parents")
+    const payment = await Payment.findOne(filter)
+    .populate("studentId", "studentId studentName studentClass totalOwed totalPaid balance parents")
     .populate("schoolId", "name schoolCode address city region phone email logo brandColor")
     .lean();
 
@@ -1492,6 +1492,9 @@ export const generateReceipt = async (paymentId, user) => {
         studentId: payment.studentId.studentId,
         studentName: payment.studentId.studentName,
         studentClass: payment.studentId.studentClass,
+        totalOwed: payment.studentId.totalOwed || 0,
+        totalPaid: payment.studentId.totalPaid || 0,
+        balance: payment.studentId.balance || 0,
         // Where to send the receipt. `null` when the record has no address —
         // the caller asks the bursar for one rather than inventing it.
         parentEmail: primaryParent?.email || null,
@@ -1515,6 +1518,8 @@ export const generateReceipt = async (paymentId, user) => {
       paymentMethod: payment.paymentMethod,
       description: payment.description,
       feesBreakdown: payment.feesBreakdown,
+      totalFees: payment.studentId?.totalOwed ?? payment.amount,
+      paidToDate: payment.studentId?.totalPaid ?? payment.amount,
     },
     // The primary parent's subdocument id, so a supplied email can be
     // persisted against the right record.
