@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
-import { install } from "@puppeteer/browsers";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -36,19 +35,14 @@ const getChromeExecutablePath = async () => {
     "CHROME_EXECUTABLE",
   ]) {
     const value = process.env[env];
-    if (value && fs.existsSync(value)) return value;
+    if (typeof value === "string" && value && fs.existsSync(value)) return value;
   }
   for (const candidate of COMMON_CHROME_PATHS) {
     try {
-      if (fs.existsSync(candidate)) return candidate;
+      if (typeof candidate === "string" && fs.existsSync(candidate)) return candidate;
     } catch {}
   }
-
-  const { executablePath } = await install({
-    browser: "chrome",
-    buildId: "latest",
-  });
-  return executablePath;
+  return null;
 };
 
 export const normaliseBreakdown = (feesBreakdown, fallbackAmount) => {
@@ -142,6 +136,11 @@ export const generateReceiptPdf = async (payment, { student, school } = {}) => {
 </div></body></html>`;
 
   const executablePath = await getChromeExecutablePath();
+  if (!executablePath) {
+    throw new Error(
+      "No Chrome/Chromium executable found. Set PUPPETEER_EXECUTABLE_PATH to a Chrome binary, or install Chrome on this host.",
+    );
+  }
   const browser = await puppeteer.launch({ headless: "new", executablePath });
   const page = await browser.newPage();
   await page.setContent(html, { waitUntil: "networkidle0" });
