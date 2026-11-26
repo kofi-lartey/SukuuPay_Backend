@@ -1,49 +1,6 @@
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import puppeteer from "puppeteer";
+import PDFDocument from "pdfkit";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-
-const COMMON_CHROME_PATHS =
-  process.platform === "win32"
-    ? [
-        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-        "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-        "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-      ]
-    : process.platform === "darwin"
-    ? [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-      ]
-    : [
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/microsoft-edge",
-      ];
-
-const getChromeExecutablePath = async () => {
-  for (const env of [
-    "PUPPETEER_EXECUTABLE_PATH",
-    "CHROME_PATH",
-    "GOOGLE_CHROME_BIN",
-    "CHROME_EXECUTABLE",
-  ]) {
-    const value = process.env[env];
-    if (typeof value === "string" && value && fs.existsSync(value)) return value;
-  }
-  for (const candidate of COMMON_CHROME_PATHS) {
-    try {
-      if (typeof candidate === "string" && fs.existsSync(candidate)) return candidate;
-    } catch {}
-  }
-  return null;
-};
+const money = (value) => `GH₵ ${((Number(value) || 0) / 100).toLocaleString("en-GH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export const normaliseBreakdown = (feesBreakdown, fallbackAmount) => {
   const lines = (Array.isArray(feesBreakdown) ? feesBreakdown : [])
@@ -64,8 +21,6 @@ export const receiptFilename = (receiptNumber, paymentId) => {
   return `${stem || "receipt"}.pdf`;
 };
 
-const money = (value) => `GH₵ ${((Number(value) || 0) / 100).toLocaleString("en-GH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
 export const generateReceiptPdf = async (payment, { student, school } = {}) => {
   const receiptRef = payment?.receiptNumber || payment?.paymentId || "RCP-0000";
   const date = payment?.paymentDate || payment?.createdAt || new Date();
@@ -83,73 +38,94 @@ export const generateReceiptPdf = async (payment, { student, school } = {}) => {
   const balance = Math.max(0, totalFees - paidToDate);
   const description = payment?.description || "School fees payment";
 
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Receipt ${receiptRef}</title><style>
-  @page { size: A4; margin: 0; }
-  * { box-sizing: border-box; }
-  body { margin: 0; font-family: "Century Gothic", "Futura", "Segoe UI", Arial, sans-serif; color: #4a5a52; background: #fff; }
-  .page { width: 210mm; min-height: 297mm; padding: 18mm 16mm; position: relative; }
-  .head { display: flex; justify-content: space-between; align-items: flex-start; }
-  h1 { font-size: 52px; font-weight: 300; letter-spacing: 8px; margin: 0; }
-  .logo { width: 80px; height: 80px; border-radius: 50%; background: #c9dcc4; display: flex; align-items: center; justify-content: center; font-size: 11px; overflow: hidden; }
-  .logo img { width: 100%; height: 100%; object-fit: cover; }
-  .bar { background: #c9dcc4; display: flex; justify-content: space-between; padding: 5px 8px; margin: 22px 0 18px; font-size: 11px; letter-spacing: 1px; }
-  .bar b { font-weight: 700; }
-  .cols { display: flex; gap: 24px; font-size: 12px; line-height: 1.7; }
-  .cols > div { flex: 1; }
-  .cols h4 { margin: 0 0 4px; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; }
-  .muted { opacity: .8; }
-  .pm span { display: block; padding-left: 16px; position: relative; }
-  .pm span.on::before { content: "X"; position: absolute; left: 0; font-weight: 700; }
-  table { width: 100%; border-collapse: collapse; margin-top: 26px; font-size: 12px; }
-  thead th { text-align: left; font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; padding: 8px 6px; border-top: 3px solid #c9dcc4; border-bottom: 3px solid #c9dcc4; }
-  td { padding: 10px 6px; border-bottom: 1px solid #c9dcc4; }
-  .c-no { width: 8%; }
-  .c-num, th.c-num { text-align: right; }
-  .totals { margin: 18px 0 0 auto; width: 60%; font-size: 12px; }
-  .totals div { display: flex; justify-content: space-between; padding: 4px 8px; }
-  .totals .grand { background: #c9dcc4; font-weight: 700; letter-spacing: 1px; }
-  .totals .balance { background: #4a5a52; color: #fff; font-weight: 700; letter-spacing: 1px; margin-top: 6px; }
-  .notes { margin-top: 26px; font-size: 11.5px; line-height: 1.6; }
-  .thanks { text-align: center; letter-spacing: 5px; font-size: 20px; margin-top: 50px; }
-  @media print { .page { box-shadow: none; } }
-  </style></head><body><div class="page">
-  <div class="head"><h1>RECEIPT</h1>${school?.logo ? `<div class="logo"><img src="${school.logo}" alt="logo" /></div>` : '<div class="logo">LOGO</div>'}</div>
-  <div class="bar"><span><b>RECEIPT REF.</b> ${receiptRef}</span><span><b>DATE:</b> ${dateStr}</span></div>
-  <div class="cols">
-    <div><h4>${schoolName}</h4><div class="muted">${schoolAddress}</div></div>
-    <div><h4>Paid To</h4><div>${studentName}</div><div class="muted">ID: ${studentId} • ${className}</div></div>
-    <div class="pm"><h4>Payment Method</h4><span class="on">${method}</span><span>Cash</span><span>Bank Transfer</span><span>Other</span></div>
-  </div>
-  <table><thead><tr><th>No.</th><th>Description</th><th class="c-num">Qty</th><th class="c-num">Price</th><th class="c-num">Total</th></tr></thead><tbody>
-  <tr><td class="c-no">1</td><td>${description}</td><td class="c-num">1</td><td class="c-num">${money(amount)}</td><td class="c-num">${money(amount)}</td></tr>
-  </tbody></table>
-  <div class="totals">
-    <div><span>SUB TOTAL</span><span>${money(amount)}</span></div>
-    <div><span>TAX / DISCOUNT</span><span>GH₵ 0.00</span></div>
-    <div class="grand"><span>GRAND TOTAL</span><span>${money(amount)}</span></div>
-    <div><span>TOTAL FEES</span><span>${money(totalFees)}</span></div>
-    <div><span>PAID TO DATE</span><span>${money(paidToDate)}</span></div>
-    <div class="balance"><span>REMAINING BALANCE</span><span>${money(balance)}</span></div>
-  </div>
-  <div class="notes"><b>Notes</b><br>Thank you for your payment. This receipt confirms ${balance > 0 ? "part payment" : "full settlement"}. The remaining balance is shown above.</div>
-  <div class="thanks">THANK YOU</div>
-</div></body></html>`;
+  return new Promise((resolve, reject) => {
+    try {
+      const doc = new PDFDocument({ size: "A4", margin: 50 });
+      const chunks = [];
+      doc.on("data", (chunk) => chunks.push(chunk));
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+      doc.on("error", reject);
 
-  const executablePath = await getChromeExecutablePath();
-  if (!executablePath) {
-    throw new Error(
-      "No Chrome/Chromium executable found. Set PUPPETEER_EXECUTABLE_PATH to a Chrome binary, or install Chrome on this host.",
-    );
-  }
-  const browser = await puppeteer.launch({ headless: "new", executablePath });
-  const page = await browser.newPage();
-  await page.setContent(html, { waitUntil: "networkidle0" });
-  const pdf = await page.pdf({ format: "A4", printBackground: true });
-  await browser.close();
-  // Puppeteer resolves `page.pdf()` to a `Uint8Array`, but Brevo's attachment
-  // boundary requires a `Buffer` (or base64 string). Coerce it here so every
-  // caller — download, email, WhatsApp — receives a real Buffer.
-  return Buffer.from(pdf);
+      // Header
+      doc.font("Helvetica-Bold").fontSize(40).fillColor("#4a5a52").text("RECEIPT", 50, 40, { align: "left" });
+      doc.font("Helvetica").fontSize(10).fillColor("#4a5a52").text(`Receipt Ref: ${receiptRef}`, 50, 95);
+      doc.text(`Date: ${dateStr}`, 450, 95, { align: "right" });
+
+      // School info
+      doc.font("Helvetica-Bold").fontSize(14).text(schoolName, 50, 125);
+      doc.font("Helvetica").fontSize(10).fillColor("#888").text(schoolAddress, 50, 145);
+
+      // Paid to / method
+      doc.font("Helvetica-Bold").fontSize(12).fillColor("#4a5a52").text("Paid To", 50, 175);
+      doc.font("Helvetica").fontSize(10).fillColor("#4a5a52").text(studentName, 50, 192);
+      doc.text(`ID: ${studentId} ${className ? `• ${className}` : ""}`, 50, 207);
+
+      doc.font("Helvetica-Bold").fontSize(12).fillColor("#4a5a52").text("Payment Method", 300, 175);
+      doc.font("Helvetica").fontSize(10).fillColor("#4a5a52").text(method, 300, 192);
+
+      // Line separator
+      doc.moveTo(50, 225).lineTo(545, 225).strokeColor("#c9dcc4").lineWidth(2).stroke();
+
+      // Table header
+      let y = 240;
+      doc.font("Helvetica-Bold").fontSize(9).fillColor("#4a5a52");
+      doc.text("Description", 50, y);
+      doc.text("Qty", 420, y, { width: 40, align: "right" });
+      doc.text("Price", 470, y, { width: 60, align: "right" });
+      doc.text("Total", 530, y, { width: 60, align: "right" });
+      y += 20;
+      doc.moveTo(50, y).lineTo(545, y).strokeColor("#c9dcc4").stroke();
+      y += 8;
+
+      // Table row
+      doc.font("Helvetica").fontSize(9).fillColor("#4a5a52");
+      doc.text(description, 50, y);
+      doc.text("1", 420, y, { width: 40, align: "right" });
+      doc.text(money(amount), 470, y, { width: 60, align: "right" });
+      doc.text(money(amount), 530, y, { width: 60, align: "right" });
+      y += 30;
+
+      // Totals
+      doc.font("Helvetica-Bold").fontSize(10).fillColor("#4a5a52");
+      doc.text("SUB TOTAL", 420, y, { width: 120, align: "right" });
+      doc.text(money(amount), 530, y, { width: 60, align: "right" });
+      y += 18;
+      doc.font("Helvetica").fontSize(10).fillColor("#4a5a52");
+      doc.text("TAX / DISCOUNT", 420, y, { width: 120, align: "right" });
+      doc.text("GH₵ 0.00", 530, y, { width: 60, align: "right" });
+      y += 18;
+      doc.font("Helvetica-Bold").fontSize(10).fillColor("#4a5a52").fillColor("#c9dcc4");
+      doc.rect(420, y, 130, 18).fill();
+      doc.fillColor("#4a5a52").text("GRAND TOTAL", 420, y + 4, { width: 120, align: "right" });
+      doc.text(money(amount), 530, y + 4, { width: 60, align: "right" });
+      y += 28;
+      doc.font("Helvetica").fontSize(10).fillColor("#4a5a52");
+      doc.text("TOTAL FEES", 420, y, { width: 120, align: "right" });
+      doc.text(money(totalFees), 530, y, { width: 60, align: "right" });
+      y += 18;
+      doc.text("PAID TO DATE", 420, y, { width: 120, align: "right" });
+      doc.text(money(paidToDate), 530, y, { width: 60, align: "right" });
+      y += 18;
+      doc.fillColor("#4a5a52");
+      doc.text("REMAINING BALANCE", 420, y, { width: 120, align: "right" });
+      doc.text(money(balance), 530, y, { width: 60, align: "right" });
+
+      // Notes
+      y += 30;
+      doc.font("Helvetica-Bold").fontSize(10).fillColor("#4a5a52").text("Notes", 50, y);
+      doc.font("Helvetica").fontSize(9).fillColor("#4a5a52").text(
+        `Thank you for your payment. This receipt confirms ${balance > 0 ? "part payment" : "full settlement"}. The remaining balance is shown above.`,
+        50, y + 14, { width: 495 }
+      );
+
+      // Footer
+      doc.font("Helvetica-Bold").fontSize(20).fillColor("#4a5a52").text("THANK YOU", 50, y + 80, { align: "center" });
+
+      doc.end();
+    } catch (error) {
+      reject(error);
+    }
+  });
 };
 
 export default { generateReceiptPdf, normaliseBreakdown, receiptFilename };
