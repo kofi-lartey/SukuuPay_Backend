@@ -46,6 +46,12 @@ const paymentSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    campusId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Campus",
+      default: null,
+      index: true,
+    },
     parentId: {
       type: mongoose.Schema.Types.ObjectId,
       default: null,
@@ -331,6 +337,7 @@ const paymentSchema = new mongoose.Schema(
 
 // ── Indexes ──
 paymentSchema.index({ schoolId: 1, status: 1 });
+paymentSchema.index({ schoolId: 1, campusId: 1, status: 1 });
 paymentSchema.index({ schoolId: 1, createdAt: -1 });
 paymentSchema.index({ studentId: 1, status: 1 });
 paymentSchema.index({ paymentPlanId: 1, status: 1 });

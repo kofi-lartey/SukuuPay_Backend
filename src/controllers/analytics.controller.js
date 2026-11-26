@@ -6,6 +6,7 @@ import {
   getRevenueChart,
   getOverdue,
   getCashflow,
+  getCashflowVelocity,
   getCompliance,
   getDefaultRate,
   getClassPerformance,
@@ -82,6 +83,16 @@ export const getCashflowController = asyncHandler(async (req, res) => {
   return res.status(200).json({
     success: true,
     message: "Cashflow forecast retrieved successfully",
+    data: result,
+  });
+});
+
+export const getCashflowVelocityController = asyncHandler(async (req, res) => {
+  const result = await getCashflowVelocity(req.params.schoolId, req.query, req.user);
+
+  return res.status(200).json({
+    success: true,
+    message: "Cashflow velocity retrieved successfully",
     data: result,
   });
 });

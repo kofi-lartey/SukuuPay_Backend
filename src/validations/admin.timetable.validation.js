@@ -22,6 +22,7 @@ const periodSchema = Joi.object({
   subject: Joi.string().trim().min(2).max(80).required(),
   teacher: Joi.string().trim().max(100).allow("").optional(),
   room: Joi.string().trim().max(50).allow("").optional(),
+  teacherId: Joi.string().pattern(/^[a-fA-F0-9]{24}$/).allow(null, "").optional(),
 });
 
 /**

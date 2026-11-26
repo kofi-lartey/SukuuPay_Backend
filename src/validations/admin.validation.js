@@ -37,7 +37,7 @@ const listAllSchoolsQuerySchema = Joi.object({
   perPage: Joi.number().integer().min(1).max(MAX_PER_PAGE).default(DEFAULT_PER_PAGE),
   status: Joi.string().valid("active", "suspended", "archived").optional(),
   region: Joi.string().optional(),
-  plan: Joi.string().valid("trial", "basic", "standard", "premium", "enterprise").optional(),
+  plan: Joi.string().valid("trial", "free", "starter", "growth").optional(),
   // An operator label from `School.tags`. Free text rather than an enum, so the
   // vocabulary can grow without a deploy — which is why the bound is a length and
   // not a membership test. A tag nobody has used matches nothing, which is a better
@@ -58,7 +58,7 @@ const revenueQuerySchema = Joi.object({
   startDate: Joi.date().iso().optional(),
   endDate: Joi.date().iso().optional(),
   period: Joi.string().valid("all", "mtd", "ytd", "last30").default("all"),
-  plan: Joi.string().valid("trial", "basic", "standard", "premium", "enterprise").optional(),
+  plan: Joi.string().valid("trial", "free", "starter", "growth").optional(),
   region: Joi.string().optional(),
 });
 
@@ -83,7 +83,7 @@ const revenueSeriesQuerySchema = Joi.object({
   period: Joi.string().valid("mtd", "ytd", "last30", "all").default("ytd"),
   startDate: Joi.date().iso().optional(),
   endDate: Joi.date().iso().optional(),
-  plan: Joi.string().valid("trial", "basic", "standard", "premium", "enterprise").optional(),
+  plan: Joi.string().valid("trial", "free", "starter", "growth").optional(),
   region: Joi.string().optional(),
 });
 

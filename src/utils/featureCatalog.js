@@ -25,6 +25,8 @@
  * can resolve everything in one place, and UI (frontend) does not need
  * a full copy of the server model.
  */
+import { normalizePlan } from '../config/constants.js';
+
 export const FEATURES = {
   // Core platform (available to all tiers)
   bulkStudentUpload: {
@@ -192,9 +194,9 @@ export const FEATURES = {
  * Tier definitions — mapping server plan values to marketing tiers and feature inheritance.
  */
 export const TIERS = {
-  starter: {
-    marketing: 'Starter',
-    server: ['trial', 'free', 'basic', 'starter'],
+  free: {
+    marketing: 'Free',
+    server: ['trial', 'free'],
     inheritance: null, // base tier
     features: [
       // Core (inherited)
@@ -202,13 +204,21 @@ export const TIERS = {
       FEATURES.momoPayments.id,
       FEATURES.smsReminders.id,
       FEATURES.pdfReceipts.id,
+    ],
+  },
+  starter: {
+    marketing: 'Starter',
+    server: ['starter'],
+    inheritance: 'free',
+    features: [
+      ...TIERS.free.features,
       // Starter-specific (LMS)
       FEATURES.lmsBasic.id,
     ],
   },
   growth: {
     marketing: 'Growth',
-    server: ['standard', 'premium', 'growth'],
+    server: ['growth'],
     inheritance: 'starter',
     features: [
       ...TIERS.starter.features,
@@ -219,22 +229,6 @@ export const TIERS = {
       // Growth LMS
       FEATURES.lmsQuizzes.id,
       FEATURES.lmsAnalytics.id,
-    ],
-  },
-  campus: {
-    marketing: 'Campus',
-    server: ['enterprise', 'campus'],
-    inheritance: 'growth',
-    features: [
-      ...TIERS.growth.features,
-      // Campus-specific
-      FEATURES.multiCampusControls.id,
-      FEATURES.customAuditReports.id,
-      FEATURES.successAccountManager.id,
-      FEATURES.erpIntegration.id,
-      FEATURES.customSenderId.id,
-      // Campus LMS
-      FEATURES.lmsAdvanced.id,
     ],
   },
 };
@@ -253,8 +247,12 @@ export const TIER_RANK = ['starter', 'growth', 'campus'];
 export const getTierForSchool = (school) => {
   if (!school?.subscription?.plan) return null;
 
+  // Normalize first: a legacy or status-suffixed plan (e.g. `"premiumactive"`)
+  // resolves to its surviving tier so the school keeps its entitlements.
+  const plan = normalizePlan(school.subscription.plan);
+
   for (const tierKey of TIER_RANK) {
-    if (TIERS[tierKey].server.includes(school.subscription.plan)) {
+    if (TIERS[tierKey].server.includes(plan)) {
       return tierKey;
     }
   }

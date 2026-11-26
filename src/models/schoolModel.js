@@ -158,6 +158,33 @@ const schoolModel = new mongoose.Schema(
         airteltigo: { type: Boolean, default: true },
       },
     },
+    /**
+     * Multi-signatory financial controls (Campus tier).
+     *
+     * Additive: defaults describe the single-signature behaviour every existing
+     * school already runs, so the field landing changes nothing until an admin
+     * opts in. `perCampusLimits` lets a school cap a single campus below the
+     * school-wide ceiling without a document per campus.
+     */
+    financialControls: {
+      multiSignatory: { type: Boolean, default: false },
+      requiredSignatures: { type: Number, default: 1, min: 1 },
+      signatoryRoles: {
+        type: [String],
+        enum: ["school_admin", "accountant"],
+        default: ["school_admin"],
+      },
+      perCampusLimits: [
+        {
+          campusId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "Campus",
+          },
+          dailyLimit: { type: Number, min: 0 },
+          perTransactionLimit: { type: Number, min: 0 },
+        },
+      ],
+    },
     sms: {
       provider: {
         type: String,
@@ -174,7 +201,7 @@ const schoolModel = new mongoose.Schema(
     subscription: {
       plan: {
         type: String,
-        enum: ["trial", "free", "starter", "growth", "campus", "basic", "standard", "premium", "enterprise"],
+        enum: ["trial", "free", "starter", "growth"],
         default: "trial",
       },
       status: {

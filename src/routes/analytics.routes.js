@@ -7,6 +7,7 @@ import {
   getRevenueChartController,
   getOverdueController,
   getCashflowController,
+  getCashflowVelocityController,
   getComplianceController,
   getDefaultRateController,
   getClassPerformanceController,
@@ -23,6 +24,7 @@ import {
   revenueChartQuerySchema,
   overdueQuerySchema,
   cashflowQuerySchema,
+  cashflowVelocityQuerySchema,
   complianceQuerySchema,
   defaultRateQuerySchema,
   classPerformanceQuerySchema,
@@ -90,6 +92,13 @@ analyticsRoute.get(
   validateSchoolId,
   validate(cashflowQuerySchema, "query"),
   getCashflowController
+);
+
+analyticsRoute.get(
+  "/analytics/cashflow/:schoolId/velocity",
+  validateSchoolId,
+  validate(cashflowVelocityQuerySchema, "query"),
+  getCashflowVelocityController
 );
 
 analyticsRoute.get(

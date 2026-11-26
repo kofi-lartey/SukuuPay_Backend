@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { Timetable } from "../../models/Timetable.js";
 import { School } from "../../models/schoolModel.js";
 import { User } from "../../models/userModel.js";
@@ -28,6 +29,7 @@ export const normalizeDays = (days) => {
         subject: String(p.subject || "").trim(),
         teacher: String(p.teacher || "").trim(),
         room: String(p.room || "").trim(),
+        teacherId: p.teacherId ? new mongoose.Types.ObjectId(p.teacherId) : null,
       }))
       .filter((p) => p.subject && p.startTime && p.endTime && Number.isFinite(p.period))
       .sort((a, b) => a.period - b.period);
@@ -779,31 +781,46 @@ export const approveTimetable = async (
 ) => {
   const { className, term, academicYear, comment } = (arg && arg.className) ? arg : {};
   // Snippet-style approval by document id (final clash check).
-  if (arg && !arg.className) {
-    const timetableId = (arg && (arg.timetableId || arg._id)) || arg;
-    const timetable = await Timetable.findById(timetableId);
-    if (!timetable) throw new ApiError('Timetable not found', 404);
-    for (const [day, periods] of Object.entries(timetable.days || {})) {
-      for (const period of (periods || [])) {
-        await checkTeacherClash(
-          schoolId,
-          timetable.term,
-          timetable.academicYear,
-          day,
-          period.startTime,
-          period.endTime,
-          period.teacherId,
-          timetableId
-        );
-      }
-    }
-    timetable.status = 'approved';
-    timetable.submissionStatus = 'approved';
-    timetable.approvedAt = new Date();
-    timetable.approvedBy = adminUserId;
-    await timetable.save();
-    return timetable.toObject ? timetable.toObject() : timetable;
-  }
+   if (arg && !arg.className) {
+     const timetableId = (arg && (arg.timetableId || arg._id)) || arg;
+     const timetable = await Timetable.findById(timetableId);
+     if (!timetable) throw new ApiError('Timetable not found', 404);
+     if (timetable.submissionStatus !== "submitted") {
+       throw new ApiError(
+         `Only a submitted timetable can be approved (current: ${timetable.submissionStatus})`,
+         403,
+         "TIMETABLE_NOT_SUBMITTED"
+       );
+     }
+     for (const [day, periods] of Object.entries(timetable.days || {})) {
+       for (const period of (periods || [])) {
+         await checkTeacherClash(
+           schoolId,
+           timetable.term,
+           timetable.academicYear,
+           day,
+           period.startTime,
+           period.endTime,
+           period.teacherId,
+           timetableId
+         );
+       }
+     }
+     timetable.status = 'approved';
+     timetable.submissionStatus = 'approved';
+     timetable.approvedAt = new Date();
+     timetable.approvedBy = adminUserId;
+     await timetable.save();
+     await auditLog({
+       action: AUDIT_ACTIONS.TIMETABLE_APPROVE,
+       entity: "Timetable",
+       entityId: timetable._id,
+       userId: adminUserId,
+       schoolId,
+       meta: { className: timetable.className, term: timetable.term, academicYear: timetable.academicYear },
+     });
+     return timetable.toObject ? timetable.toObject() : timetable;
+   }
   if (!className || !term || !academicYear) {
     throw new ApiError(
       "className, term, and academicYear are required",

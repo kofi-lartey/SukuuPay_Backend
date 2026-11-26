@@ -85,6 +85,9 @@ export const cashflowQuerySchema = Joi.object({
   class: Joi.string().trim().max(50).optional().allow("", null),
 });
 
+// The velocity endpoint consumes the same query shape as the forecast.
+export const cashflowVelocityQuerySchema = cashflowQuerySchema;
+
 export const complianceQuerySchema = Joi.object({
   academicYear: Joi.string().trim().max(20).optional().allow("", null),
   term: Joi.string().trim().max(20).optional().allow("", null),

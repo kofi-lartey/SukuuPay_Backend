@@ -515,14 +515,15 @@ describe('audit log filters', () => {
     );
     assert.match(source, /from "\.\.\/utils\/auditService\.js"/);
 
-    // Nine endpoints, nine entries.
-    assert.equal((source.match(/auditService\.log\(\{/g) || []).length, 9);
+    // Nine report-viewing endpoints, nine REPORT_VIEWED entries.
+    // (Three additional audit calls exist for REPORT_EXPORTED and REPORT_DOWNLOAD.)
+    const viewedEntries = source.match(/auditService\.log\(\{[\s\S]*?action: AUDIT_ACTIONS\.REPORT_VIEWED[\s\S]*?\n  \}\);/g) || [];
+    assert.equal(viewedEntries.length, 9, 'expected nine REPORT_VIEWED audit entries');
 
     // And each one carries the school, because a report view with a null
     // `schoolId` is invisible to `GET /audit-logs/:schoolId`, which filters on
     // it — the entry would be written and never read.
-    const entries = source.match(/auditService\.log\(\{[\s\S]*?\n  \}\);/g) || [];
-    for (const entry of entries) {
+    for (const entry of viewedEntries) {
       assert.match(entry, /action: AUDIT_ACTIONS\.REPORT_VIEWED/);
       assert.match(entry, /\n\s+schoolId,/);
       assert.match(entry, /meta: \{ query \}/);

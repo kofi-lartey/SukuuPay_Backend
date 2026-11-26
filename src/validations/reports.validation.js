@@ -38,6 +38,32 @@ const formatSchema = Joi.string()
   .optional()
   .allow("", null);
 
+const reportFormatSchema = Joi.string()
+  .trim()
+  .lowercase()
+  .valid("csv", "pdf", "xlsx")
+  .optional()
+  .allow("", null);
+
+const createTemplateBodySchema = Joi.object({
+  name: Joi.string().trim().min(1).max(200).required(),
+  type: Joi.string()
+    .valid("moe_compliance", "custom_audit", "financial_summary")
+    .required(),
+  format: reportFormatSchema.default("csv"),
+  moeCompliant: Joi.boolean().default(false),
+  parameters: Joi.object().default({}),
+});
+
+const createJobBodySchema = Joi.object({
+  templateId: objectId.required(),
+  parameters: Joi.object().default({}),
+});
+
+const jobIdParamSchema = Joi.object({
+  id: objectId.required(),
+});
+
 const dateSchema = Joi.date().iso().optional();
 
 const academicYearSchema = Joi.string().trim().pattern(/^\d{4}\/\d{4}$/).optional().allow("", null);
@@ -45,6 +71,14 @@ const termSchema = Joi.string().trim().max(20).optional().allow("", null);
 const classSchema = Joi.string().trim().max(50).optional().allow("", null);
 const pageSchema = Joi.number().integer().min(1).default(1);
 const perPageSchema = Joi.number().integer().min(1).max(200).default(50);
+
+const reportListQuerySchema = Joi.object({
+  page: pageSchema,
+  perPage: perPageSchema,
+  status: Joi.string()
+    .valid("queued", "processing", "completed", "failed")
+    .optional(),
+});
 
 export const dailyQuerySchema = Joi.object({
   date: dateSchema,
@@ -190,4 +224,8 @@ export {
   SORT_ORDER_ENUM,
   objectId,
   formatSchema,
+  createTemplateBodySchema,
+  createJobBodySchema,
+  jobIdParamSchema,
+  reportListQuerySchema,
 };

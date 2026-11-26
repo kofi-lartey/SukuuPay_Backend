@@ -67,6 +67,12 @@ export const userModel = new mongoose.Schema(
       default: null,
       index: true,
     },
+    assignedCampuses: {
+      type: [mongoose.Schema.Types.ObjectId],
+      ref: "Campus",
+      default: [],
+      index: true,
+    },
     isPlatformOwner: {
       type: Boolean,
       default: false, // true ONLY for you (founder)

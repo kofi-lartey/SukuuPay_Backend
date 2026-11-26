@@ -41,7 +41,7 @@ import { resolveErrorMessage } from "../../middleware/errorHandler.js";
 export const upsertTimetableController = async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
-    const result = await upsertTimetable(schoolId, req.user._id, req.body);
+    const result = await upsertTimetable(schoolId, req.user._id, req.body, { actorRole: req.user.role });
 
     return res.status(200).json({
       success: true,

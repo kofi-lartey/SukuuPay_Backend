@@ -1055,6 +1055,159 @@ export const getCashflow = async (schoolIdParam, query, user) => {
   return result;
 };
 
+// ──────────────────── 7b. Cashflow velocity ────────────────────
+
+export const getCashflowVelocity = async (schoolIdParam, query, user) => {
+  const schoolId = resolveSchoolId(user, schoolIdParam);
+  if (!schoolId) {
+    throw new ApiError("No school in scope", 403, "NO_SCHOOL_SCOPE");
+  }
+
+  const school = await fetchSchool(schoolId);
+
+  const horizon = Number(query.horizon) || 90;
+  const asOf = query.asOf ? new Date(query.asOf) : new Date();
+  const horizonEnd = addDays(asOf, horizon);
+
+  const match = {
+    schoolId,
+    deletedAt: null,
+    planStatus: { $in: ["active", "pending_acceptance"] },
+    endDate: { $gte: startOfDayAccra(asOf) },
+  };
+
+  if (query.class) {
+    const classStudents = await Student.find({
+      schoolId,
+      studentClass: query.class,
+      deletedAt: null,
+    }).select("_id");
+    match.studentId = { $in: classStudents.map((s) => s._id) };
+  }
+
+  const plans = await PaymentPlan.find(match).select(
+    "studentId installments startDate endDate planStatus"
+  ).lean();
+
+  // Same Sunday-anchored weekly bucket as getCashflow, so the two endpoints agree
+  // on where a given due date falls.
+  const weeklyBucket = (date) => {
+    const d = new Date(date);
+    const dayOfWeek = d.getUTCDay();
+    const startOfWeek = new Date(d);
+    startOfWeek.setUTCDate(d.getUTCDate() - dayOfWeek);
+    startOfWeek.setUTCHours(0, 0, 0, 0);
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setUTCDate(startOfWeek.getUTCDate() + 6);
+    endOfWeek.setUTCHours(23, 59, 59, 999);
+    return {
+      label: `week_${startOfWeek.toISOString().slice(0, 10)}`,
+      start: startOfWeek,
+      end: endOfWeek,
+    };
+  };
+
+  // Walk the horizon week by week so empty weeks are emitted as explicit zero
+  // buckets rather than silently dropped — a gap would let a chart draw a straight
+  // line across a quiet week (see adminAnalytics.test.js).
+  const seriesMap = new Map();
+  const firstWeekStart = weeklyBucket(asOf).start;
+  const lastWeekStart = weeklyBucket(horizonEnd).start;
+  for (let cursor = new Date(firstWeekStart); cursor <= lastWeekStart; cursor = addDays(cursor, 7)) {
+    const label = `week_${cursor.toISOString().slice(0, 10)}`;
+    const end = new Date(cursor);
+    end.setUTCDate(cursor.getUTCDate() + 6);
+    end.setUTCHours(23, 59, 59, 999);
+    seriesMap.set(label, {
+      period: label,
+      startDate: new Date(cursor),
+      endDate: end,
+      projected: 0,
+      collected: 0,
+    });
+  }
+
+  let totalProjected = 0;
+  let totalCollected = 0;
+  let paidCount = 0;
+  let onTimeCount = 0;
+  let daysToPaySum = 0;
+  let daysToPayCount = 0;
+
+  for (const plan of plans) {
+    for (const inst of plan.installments) {
+      const amount = inst.amount || 0;
+      const amountPaid = inst.amountPaid || 0;
+      totalProjected += amount;
+      totalCollected += amountPaid;
+
+      if (inst.status === "paid") {
+        paidCount += 1;
+        if (inst.paidAt) {
+          const paidAt = new Date(inst.paidAt);
+          const dueDate = new Date(inst.dueDate);
+          if (paidAt <= dueDate) onTimeCount += 1;
+          daysToPaySum += (paidAt - dueDate) / 86400000;
+          daysToPayCount += 1;
+        }
+      }
+
+      const dueDate = new Date(inst.dueDate);
+      if (dueDate < asOf || dueDate > horizonEnd) continue;
+
+      const bucket = weeklyBucket(dueDate);
+      const b = seriesMap.get(bucket.label);
+      if (!b) continue;
+      b.projected += amount;
+      b.collected += amountPaid;
+    }
+  }
+
+  const collectionVelocity =
+    totalProjected === 0 ? 0 : round(totalCollected / totalProjected);
+  const averageDaysToPay =
+    daysToPayCount === 0 ? 0 : round(daysToPaySum / daysToPayCount, 1);
+  const onTimeRate = paidCount === 0 ? 0 : round(onTimeCount / paidCount);
+
+  const series = Array.from(seriesMap.values()).sort((a, b) =>
+    a.startDate < b.startDate ? -1 : a.startDate > b.startDate ? 1 : 0
+  );
+
+  const result = {
+    school: { name: school.name },
+    horizonDays: horizon,
+    asOf: asOf.toISOString(),
+    summary: {
+      projectedInflow: totalProjected,
+      projectedInflowDisplay: formatCedis(totalProjected),
+      collectedToDate: totalCollected,
+      collectedToDateDisplay: formatCedis(totalCollected),
+      collectionVelocity,
+      averageDaysToPay,
+      onTimeRate,
+      activePlansConsidered: plans.length,
+    },
+    series: series.map((b) => ({
+      period: b.period,
+      startDate: b.startDate.toISOString(),
+      endDate: b.endDate.toISOString(),
+      projected: b.projected,
+      collected: b.collected,
+      velocity: b.projected === 0 ? 0 : round(b.collected / b.projected),
+    })),
+  };
+
+  await auditService.log({
+    action: "report.viewed",
+    entity: "AnalyticsCashflowVelocity",
+    entityId: schoolId,
+    userId: user._id,
+    details: { query },
+  });
+
+  return result;
+};
+
 // ──────────────────── 8. Compliance ────────────────────
 
 export const getCompliance = async (schoolIdParam, query, user) => {

@@ -10,6 +10,8 @@ const lessonSchema = new mongoose.Schema({
 
 const studyPlanSchema = new mongoose.Schema({
   schoolId: { type: mongoose.Schema.Types.ObjectId, ref: "School", required: true, index: true },
+  campusId: { type: mongoose.Schema.Types.ObjectId, ref: "Campus", default: null, index: true },
+  sharingScope: { type: String, enum: ["campus", "school"], default: "school" },
   className: { type: String, required: true },
   subject: { type: String, required: true },
   teacherId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
@@ -35,6 +37,8 @@ const questionSchema = new mongoose.Schema({
 
 const assessmentSchema = new mongoose.Schema({
   schoolId: { type: mongoose.Schema.Types.ObjectId, ref: "School", required: true, index: true },
+  campusId: { type: mongoose.Schema.Types.ObjectId, ref: "Campus", default: null, index: true },
+  sharingScope: { type: String, enum: ["campus", "school"], default: "school" },
   className: { type: String, required: true },
   subject: { type: String, required: true },
   teacherId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
@@ -58,6 +62,7 @@ const answerSchema = new mongoose.Schema({
 
 const submissionSchema = new mongoose.Schema({
   schoolId: { type: mongoose.Schema.Types.ObjectId, ref: "School", required: true, index: true },
+  campusId: { type: mongoose.Schema.Types.ObjectId, ref: "Campus", default: null, index: true },
   assessmentId: { type: mongoose.Schema.Types.ObjectId, ref: "Assessment", required: true, index: true },
   studentId: { type: mongoose.Schema.Types.ObjectId, ref: "Student", required: true, index: true },
   status: { type: String, enum: ["in_progress", "submitted", "graded"], default: "in_progress" },
@@ -73,6 +78,7 @@ const submissionSchema = new mongoose.Schema({
 
 const meetingSchema = new mongoose.Schema({
   schoolId: { type: mongoose.Schema.Types.ObjectId, ref: "School", required: true, index: true },
+  campusId: { type: mongoose.Schema.Types.ObjectId, ref: "Campus", default: null, index: true },
   className: { type: String, required: true, index: true },
   teacherId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
   title: { type: String, required: true },

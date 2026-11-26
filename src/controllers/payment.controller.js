@@ -24,7 +24,6 @@ import {
   buildParentReceipt,
 } from "../services/pay.service.js";
 import { generateReceiptPdf, receiptFilename, normaliseBreakdown } from "../utils/receiptService.js";
-import { sendEmailWithAttachment } from "../services/emailService.js";
 import { sendWhatsAppDocument } from "../utils/whatsappApi.js";
 import { Student } from "../models/studentModel.js";
 import ApiError from "../utils/ApiError.js";
@@ -762,35 +761,32 @@ export const emailReceiptController = async (req, res) => {
       );
     }
 
-    const { pdf, filename } = await renderReceiptAttachment(doc);
+    const filename = receiptFilename(doc.receiptNumber, doc.paymentId);
 
     const when = doc.date ? new Date(doc.date) : new Date();
     const dateLine = Number.isNaN(when.getTime())
       ? "—"
       : when.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 
-    await sendEmailWithAttachment({
-      to,
-      subject: `Payment receipt ${doc.receiptNumber || ""} — ${doc.student?.studentName || "your child"}`.trim(),
-      html: [
-        "<p>Dear Parent,</p>",
-        `<p>Please find attached the payment receipt for ${escapeHtml(
-          doc.student?.studentName || "your child"
-        )}.</p>`,
-        "<ul>",
-        `<li><strong>Receipt number:</strong> ${escapeHtml(doc.receiptNumber || "—")}</li>`,
-        `<li><strong>Amount:</strong> GH₵ ${moneyLine(doc.amount)}</li>`,
-        `<li><strong>Date:</strong> ${escapeHtml(dateLine)}</li>`,
-        "</ul>",
-        `<p>Thank you.<br />${escapeHtml(doc.school?.name || "School")}</p>`,
-      ].join(""),
-      attachments: [{ name: filename, content: pdf }],
-    });
+    const subject = `Payment receipt ${doc.receiptNumber || ""} — ${doc.student?.studentName || "your child"}`.trim();
+    const body = [
+      `Dear Parent,`,
+      `Please find attached the payment receipt for ${escapeHtml(doc.student?.studentName || "your child")}.`,
+      ``,
+      `Receipt number: ${escapeHtml(doc.receiptNumber || "—")}`,
+      `Amount: GH₵ ${moneyLine(doc.amount)}`,
+      `Date: ${escapeHtml(dateLine)}`,
+      ``,
+      `Thank you.`,
+      `${escapeHtml(doc.school?.name || "School")}`,
+    ].join("\n");
+
+    const mailtoUrl = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 
     return res.status(200).json({
       success: true,
-      message: `Receipt sent to ${to}`,
-      data: { to },
+      message: `Receipt ready to email to ${to}`,
+      data: { to, mailtoUrl, filename },
     });
   } catch (error) {
     console.error("[receipt-email/admin] failed:", error);

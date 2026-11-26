@@ -50,6 +50,21 @@ const AUDIT_ACTIONS = [
   // GES-facing audit trail, who looked at a debtors list is as much evidence as
   // who changed it.
   "report.viewed",
+  // Financial batch lifecycle. A batch is the bursar's signed packet of
+  // disbursements for a term — who created it, who signed it, and who approved
+  // or rejected it are the four questions a regulator asks, and each is a
+  // different actor with a different blast radius. Recorded separately rather
+  // than as one `financial.batch` status because "who signed" and "who
+  // approved" are not the same role and conflating them answers neither.
+  "financial.batch_created",
+  "financial.batch_signed",
+  "financial.batch_approved",
+  "financial.batch_rejected",
+  // Exporting a report is the act that leaves the school: the CSV leaves the
+  // platform with whoever requested it, so it is auditable in its own right,
+  // distinct from the read that is `report.viewed`.
+  "report.exported",
+  "report.download",
   // Who changed someone's access, and who removed an account.
   //
   // `user.invite` covers creating a colleague. These two cover everything after
@@ -231,6 +246,13 @@ const AUDIT_ACTIONS = [
   "school.logo_update",
   "school.stamp_update",
 
+  // ── Campus lifecycle ──
+  // Campuses belong to a school on the Campus tier. Each mutation is its own
+  // action so an auditor can answer who created, changed, or retired a site.
+  "campus.create",
+  "campus.update",
+  "campus.archive",
+
   // ── Academics: attendance, report cards, timetables ──────────────────────
   //
   // The three school-side writes on the academic surface. Each is its own action
@@ -339,6 +361,19 @@ const AUDIT_ACTIONS = [
   "parent.conversation_viewed",
   "parent.notifications_viewed",
   "parent.notification_read",
+
+  // ── Financial batches (multi-signatory approvals) ──
+  //
+  // Parity: any value here must also appear in `AUDIT_ACTIONS` in
+  // `config/constants.js`. The four states a disbursement batch moves through —
+  // created, signed, approved, rejected — are separate actions because "who
+  // proposed it", "who signed it" and "who released the money" are different
+  // questions, and a rejection must be visible rather than inferred from a batch
+  // that simply stopped.
+  "financial.batch_created",
+  "financial.batch_signed",
+  "financial.batch_approved",
+  "financial.batch_rejected",
 ];
 
 const auditLogSchema = new mongoose.Schema(

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authRoute } from './authRoutes.js';
 import { userRoute } from './userRoutes.js';
 import { schoolRoute } from './school.routes.js';
+import { campusRoute } from './campus.routes.js';
 import { studentRoute } from './student.routes.js';
 import { paymentRoute } from './payment.routes.js';
 import { paymentPlanRoute } from './paymentPlan.routes.js';
@@ -35,6 +36,7 @@ import { publicSchoolRoute } from './public.routes.js';
 import { maintenanceGuard } from '../middleware/maintenance.js';
 import { communityRoute } from './community.routes.js';
 import { schoolVerificationRoute } from './schoolVerification.routes.js';
+import { financialRoute } from './financial.routes.js';
 
 const router = Router();
 
@@ -61,6 +63,7 @@ router.use(maintenanceGuard);
 router.use('/', authRoute);
 router.use('/', userRoute);
 router.use('/', schoolRoute);
+router.use('/v2', campusRoute);
 router.use('/', schoolVerificationRoute);
 router.use('/', studentRoute);
 router.use('/', paymentRoute);
@@ -105,6 +108,8 @@ router.use('/teacher', teacherRoute);
 router.use('/teacher/lms', lmsRoute);
 
 router.use('/settings', settingsRoute);
+
+router.use('/v2/financial/batches', financialRoute);
 
 /**
  * The school's own console for academics — attendance, report cards,

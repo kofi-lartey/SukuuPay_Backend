@@ -13,6 +13,7 @@ import {
   validateGhanaPhone,
 } from "../../utils/generateCode.js";
 import { getProvisioningDefaults } from "../platformSettings.service.js";
+import { normalizePlan } from "../../config/constants.js";
 import ApiError from "../../utils/ApiError.js";
 import { optionalId } from "../../utils/platformQuery.js";
 import { addDays, addMonths } from "../../utils/dateHelpers.js";
@@ -863,7 +864,7 @@ export const updateSchoolSubscription = async (schoolId, payload = {}) => {
    * a no-op round trip that reads as though the defaults were being recomputed, and
    * invites a second reader to "fix" the order and break the fallback.
    */
-  if (nextPlan !== undefined) school.subscription.plan = nextPlan;
+  if (nextPlan !== undefined) school.subscription.plan = normalizePlan(nextPlan);
   if (nextStatus !== undefined) school.subscription.status = nextStatus;
 
   await school.save();

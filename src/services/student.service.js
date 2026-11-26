@@ -17,10 +17,11 @@ import { parseImportFile } from "../utils/csvParser.js";
 import { createStudentSchema } from "../validations/student.validation.js";
 import * as auditService from "../utils/auditService.js";
 import { StudyPlan, Assessment, Submission } from "../models/LMS.js";
+import { buildVisibilityFilter } from "./lms.service.js";
 import { Payment } from "../models/paymentModel.js";
 import { Attendance } from "../models/Attendance.js";
 import { Grade } from "../models/Grade.js";
-import { TeacherAssignment } from "../models/TeacherAssignment.js";
+import { AuditLog } from "../models/AuditLog.js";
 import { Timetable } from "../models/Timetable.js";
 import * as parentMessageService from "./parentMessage.service.js";
 import { buildSubjectResults } from "../utils/subjectResults.js";
@@ -1038,9 +1039,11 @@ export const getStudentSelfLms = async (user) => {
     throw new ApiError("Student account is not linked to a student record", 403, "STUDENT_NOT_LINKED");
   }
   const student = await loadStudent(user.studentId, user);
+  const cid = student.campusId ? String(student.campusId) : null;
+  const base = { schoolId: student.schoolId, className: student.studentClass, status: "published" };
   const [studyPlans, assessments] = await Promise.all([
-    StudyPlan.find({ schoolId: student.schoolId, className: student.studentClass, status: "published" }).sort({ createdAt: -1 }).lean(),
-    Assessment.find({ schoolId: student.schoolId, className: student.studentClass, status: "published" }).sort({ createdAt: -1 }).lean(),
+    StudyPlan.find(buildVisibilityFilter(base, cid)).sort({ createdAt: -1 }).lean(),
+    Assessment.find(buildVisibilityFilter(base, cid)).sort({ createdAt: -1 }).lean(),
   ]);
   const submissions = await Submission.find({ studentId: student._id }).lean();
   const subMap = new Map(submissions.map((s) => [String(s.assessmentId), s]));
@@ -1065,6 +1068,11 @@ export const startStudentSelfLmsAssessment = async (user, assessmentId) => {
   if (!assessment) throw new ApiError("Not found", 404, "NOT_FOUND");
   if (assessment.status !== "published") throw new ApiError("Not available", 400, "NOT_AVAILABLE");
   if (assessment.className !== student.studentClass) throw new ApiError("Not assigned", 403, "NOT_ASSIGNED");
+  // Campus visibility: a campus-scoped assessment is only startable by a
+  // student at that campus (or school-wide, campusId null).
+  const cid = student.campusId ? String(student.campusId) : null;
+  const visible = !assessment.sharingScope || assessment.sharingScope === "school" || !assessment.campusId || String(assessment.campusId) === cid || cid === null;
+  if (!visible) throw new ApiError("Not available at your campus", 403, "CAMPUS_NOT_VISIBLE");
   if (assessment.dueDate && new Date() > new Date(assessment.dueDate)) throw new ApiError("Assessment expired", 400, "EXPIRED");
 
   let sub = await Submission.findOne({ assessmentId: assessment._id, studentId: student._id });
@@ -1085,7 +1093,7 @@ export const startStudentSelfLmsAssessment = async (user, assessmentId) => {
     }
   }
   if (!sub) {
-    sub = new Submission({ schoolId: student.schoolId, assessmentId: assessment._id, studentId: student._id, status: "in_progress" });
+    sub = new Submission({ schoolId: student.schoolId, campusId: student.campusId || null, assessmentId: assessment._id, studentId: student._id, status: "in_progress" });
   }
   if (!sub.startedAt) {
     sub.startedAt = new Date();
@@ -1137,7 +1145,7 @@ export const submitStudentSelfLmsAssessment = async (user, assessmentId, answers
   const totalScore = normalized.reduce((s, a) => s + (a.scoreAwarded || 0), 0);
 
   let sub = await Submission.findOne({ assessmentId: assessment._id, studentId: student._id });
-  if (!sub) sub = new Submission({ schoolId: student.schoolId, assessmentId: assessment._id, studentId: student._id });
+  if (!sub) sub = new Submission({ schoolId: student.schoolId, campusId: student.campusId || null, assessmentId: assessment._id, studentId: student._id });
   sub.answers = normalized;
   sub.totalScore = totalScore;
   if (final) {
@@ -1231,12 +1239,12 @@ export const getStudentTimetable = async (user) => {
     if (timetable && timetable.days && Object.values(timetable.days).some((v) => Array.isArray(v) && v.length)) break;
   }
   if (!timetable || !timetable.days || !Object.values(timetable.days).some((v) => Array.isArray(v) && v.length)) {
-    timetable = await Timetable.findOne({
-      schoolId: student.schoolId,
+    return {
+      className: student.studentClass,
       term,
-      status: { $in: ["published", "approved"] },
-      deletedAt: null,
-    }).sort({ academicYear: -1 }).lean();
+      academicYear: academicYear,
+      days: { Monday: [], Tuesday: [], Wednesday: [], Thursday: [], Friday: [] },
+    };
   }
 
   return {

@@ -3,6 +3,8 @@ import { PaymentPlan } from "../models/paymentPlanModel.js";
 import { Student } from "../models/studentModel.js";
 import { School } from "../models/schoolModel.js";
 import { Payment } from "../models/paymentModel.js";
+import { ReportTemplate } from "../models/ReportTemplate.js";
+import { ReportJob } from "../models/ReportJob.js";
 import {
   addDays,
   addMonths,
@@ -13,6 +15,10 @@ import {
 import { formatCedis } from "../utils/formatters.js";
 import * as auditService from "../utils/auditService.js";
 import { AUDIT_ACTIONS } from "../config/constants.js";
+import { cloudinary } from "../utils/cloudinary.js";
+import { csvFor, workbookFor } from "../utils/reportExport.js";
+import { pdfFor } from "../utils/reportPdf.js";
+import { CLOUDINARY_UPLOAD_FOLDER } from "../config/env.js";
 
 class ApiError extends Error {
   constructor(message, status = 500, code = "INTERNAL_ERROR") {
@@ -1188,4 +1194,426 @@ export const getHeadmasterMonthlyReport = async (schoolIdParam, query, user) => 
   });
 
   return result;
+};
+
+// ──────────────────── Wave 3: custom audit templates & report jobs ────────────────────
+
+const REPORT_JOB_EXPIRES_IN_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+const slugFor = (name) => String(name || "report").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+
+const timestampForFile = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+
+const uploadFileBuffer = async (buffer, { filename, folder }) => {
+  if (!buffer || !Buffer.isBuffer(buffer) || buffer.length === 0) {
+    throw new ApiError("Report file buffer is empty", 500, "EMPTY_REPORT_BUFFER");
+  }
+  const ext = filename.split(".").pop() || "bin";
+  const mimeType = {
+    csv: "text/csv",
+    pdf: "application/pdf",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  }[ext] || "application/octet-stream";
+  const publicId = `sukuupay-reports-${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+  const dataUri = `data:${mimeType};base64,${buffer.toString("base64")}`;
+  return new Promise((resolve, reject) => {
+    cloudinary.v2.uploader.upload(
+      dataUri,
+      {
+        folder: folder || CLOUDINARY_UPLOAD_FOLDER,
+        public_id: publicId,
+        resource_type: "raw",
+        ...(ext ? { format: ext } : {}),
+      },
+      (error, result) => {
+        if (error) reject(error);
+        else resolve(result);
+      }
+    );
+  });
+};
+
+const signedDownloadUrl = (publicId, expiresAt) =>
+  cloudinary.v2.url(publicId, {
+    resource_type: "raw",
+    sign_url: true,
+    expires_at: Math.floor(expiresAt.getTime() / 1000),
+  });
+
+// ── Fixed MoE compliance column set (owned by SukuuPay) ─────────────────────────────
+const MOE_COLUMNS = [
+  { key: "studentId", header: "Student EMIS Code" },
+  { key: "studentName", header: "Name" },
+  { key: "studentClass", header: "Class" },
+  { key: "term", header: "Term" },
+  { key: "academicYear", header: "Academic Year" },
+  { key: "totalOwed", header: "Fees Assessed" },
+  { key: "totalPaid", header: "Fees Paid" },
+  { key: "balance", header: "Balance" },
+  { key: "paymentDate", header: "Payment Date" },
+  { key: "receiptNumber", header: "Receipt Number" },
+  { key: "auditActor", header: "Audit Actor" },
+  { key: "timestamp", header: "Timestamp" },
+];
+
+const buildMoeRows = async (schoolId, parameters, actorName) => {
+  const match = { schoolId, deletedAt: null };
+  if (parameters.class) match.studentClass = parameters.class;
+  if (parameters.academicYear) match.academicYear = parameters.academicYear;
+
+  const students = await Student.find(match)
+    .select("studentId studentName studentClass academicYear totalOwed totalPaid balance")
+    .lean();
+
+  const studentIds = students.map((s) => s._id);
+  const latestPayments = await Payment.aggregate([
+    {
+      $match: {
+        schoolId,
+        studentId: { $in: studentIds },
+        status: "completed",
+        deletedAt: null,
+      },
+    },
+    { $sort: { completedAt: -1 } },
+    {
+      $group: {
+        _id: "$studentId",
+        paymentDate: { $first: "$completedAt" },
+        receiptNumber: { $first: "$receiptNumber" },
+      },
+    },
+  ]);
+  const paymentByStudent = new Map(
+    latestPayments.map((p) => [String(p._id), { paymentDate: p.paymentDate, receiptNumber: p.receiptNumber }])
+  );
+
+  const term = parameters.term || null;
+  const auditActor = actorName || "system";
+  const timestamp = new Date();
+
+  return students.map((s) => {
+    const p = paymentByStudent.get(String(s._id));
+    return {
+      studentId: s.studentId,
+      studentName: s.studentName,
+      studentClass: s.studentClass,
+      term,
+      academicYear: s.academicYear || null,
+      totalOwed: s.totalOwed || 0,
+      totalPaid: s.totalPaid || 0,
+      balance: s.balance || 0,
+      paymentDate: p ? p.paymentDate : null,
+      receiptNumber: p ? p.receiptNumber : null,
+      auditActor,
+      timestamp,
+    };
+  });
+};
+
+const buildCustomAuditRows = async (schoolId, parameters, actorName) => {
+  const columns = Array.isArray(parameters.columns) ? parameters.columns : [];
+  const match = { schoolId, deletedAt: null, ...(parameters.filter || {}) };
+  const students = await Student.find(match).lean();
+  const auditActor = actorName || "system";
+  const timestamp = new Date();
+  return students.map((s) => {
+    const row = { auditActor, timestamp };
+    for (const column of columns) {
+      row[column.key] = s[column.key];
+    }
+    return row;
+  });
+};
+
+const buildFinancialSummaryRows = async (schoolId, parameters, actorName) => {
+  const match = { schoolId, deletedAt: null, status: "completed" };
+  if (parameters.startDate || parameters.endDate) {
+    match.completedAt = {};
+    if (parameters.startDate) match.completedAt.$gte = new Date(parameters.startDate);
+    if (parameters.endDate) match.completedAt.$lte = new Date(parameters.endDate);
+  }
+  if (parameters.class) {
+    const studentIds = await classScope(schoolId, parameters.class);
+    if (studentIds) match.studentId = { $in: studentIds };
+  }
+
+  const payments = await Payment.aggregate([
+    { $match: match },
+    {
+      $lookup: {
+        from: Student.collection.name,
+        localField: "studentId",
+        foreignField: "_id",
+        as: "student",
+      },
+    },
+    { $unwind: { path: "$student", preserveNullAndEmptyArrays: true } },
+    {
+      $project: {
+        receiptNumber: 1,
+        invoiceNumber: 1,
+        amount: 1,
+        paymentMethod: 1,
+        provider: 1,
+        status: 1,
+        completedAt: 1,
+        createdAt: 1,
+        studentName: { $ifNull: ["$student.studentName", "Unknown student"] },
+        studentCode: { $ifNull: ["$student.studentId", null] },
+        studentClass: { $ifNull: ["$student.studentClass", null] },
+      },
+    },
+    { $sort: { completedAt: -1, createdAt: -1 } },
+  ]);
+
+  const auditActor = actorName || "system";
+  const timestamp = new Date();
+  return payments.map((p) => ({
+    studentId: p.studentCode,
+    studentName: p.studentName,
+    studentClass: p.studentClass,
+    term: null,
+    academicYear: null,
+    totalOwed: null,
+    totalPaid: p.amount || 0,
+    balance: null,
+    paymentDate: p.completedAt,
+    receiptNumber: p.receiptNumber,
+    auditActor,
+    timestamp,
+  }));
+};
+
+const buildSections = async (template, schoolId, actorName) => {
+  const title = template.name || "Report";
+  const generatedAt = new Date().toISOString();
+
+  let columns = [];
+  let rows = [];
+
+  if (template.type === "moe_compliant" || template.type === "moe_compliance") {
+    columns = MOE_COLUMNS;
+    rows = await buildMoeRows(schoolId, template.parameters || {}, actorName);
+  } else if (template.type === "custom_audit") {
+    columns = Array.isArray(template.parameters.columns)
+      ? template.parameters.columns.map((c) => ({ key: c.key, header: c.header || c.key }))
+      : [];
+    rows = await buildCustomAuditRows(schoolId, template.parameters || {}, actorName);
+  } else {
+    // financial_summary
+    columns = [
+      { key: "studentId", header: "Student EMIS Code" },
+      { key: "studentName", header: "Name" },
+      { key: "studentClass", header: "Class" },
+      { key: "term", header: "Term" },
+      { key: "academicYear", header: "Academic Year" },
+      { key: "totalOwed", header: "Fees Assessed" },
+      { key: "totalPaid", header: "Fees Paid" },
+      { key: "balance", header: "Balance" },
+      { key: "paymentDate", header: "Payment Date" },
+      { key: "receiptNumber", header: "Receipt Number" },
+      { key: "auditActor", header: "Audit Actor" },
+      { key: "timestamp", header: "Timestamp" },
+    ];
+    rows = await buildFinancialSummaryRows(schoolId, template.parameters || {}, actorName);
+  }
+
+  // Pad any missing columns so every row serialises consistently.
+  const normalizedRows = rows.map((row) => {
+    const out = { ...row };
+    for (const column of columns) {
+      if (!(column.key in out)) out[column.key] = null;
+    }
+    return out;
+  });
+
+  const sections = [
+    {
+      name: "Summary",
+      title: "Summary",
+      columns: [
+        { key: "rows", header: "Row Count" },
+        { key: "generatedAt", header: "Generated At" },
+      ],
+      rows: [{ rows: normalizedRows.length, generatedAt }],
+    },
+    {
+      name: "Details",
+      title: title,
+      columns,
+      rows: normalizedRows,
+    },
+  ];
+  return sections;
+};
+
+const serializeBuffer = async (template, sections) => {
+  const format = (template.format || "csv").toLowerCase();
+  const base = `${slugFor(template.name || "report")}-${timestampForFile()}`;
+  if (format === "csv") {
+    return { buffer: Buffer.from(csvFor(sections), "utf-8"), filename: `${base}.csv` };
+  }
+  if (format === "xlsx") {
+    return { buffer: workbookFor(sections), filename: `${base}.xlsx` };
+  }
+  if (format === "pdf") {
+    const buffer = pdfFor(sections, {
+      title: template.name || "Report",
+      subtitle: `Generated ${new Date().toISOString().slice(0, 19).replace("T", " ")} UTC`,
+    });
+    return { buffer, filename: `${base}.pdf` };
+  }
+  throw new ApiError(`Unsupported report format: ${format}`, 400, "UNSUPPORTED_FORMAT");
+};
+
+export const createTemplate = async (data, user) => {
+  const schoolId = user && user.schoolId ? new mongoose.Types.ObjectId(user.schoolId) : null;
+  if (!schoolId) throw new ApiError("No school in scope", 403, "NO_SCHOOL_SCOPE");
+
+  const template = await ReportTemplate.create({
+    schoolId,
+    name: data.name,
+    type: data.type,
+    format: data.format || "csv",
+    moeCompliant: !!data.moeCompliant,
+    parameters: data.parameters || {},
+    createdBy: user._id,
+  });
+
+  await auditService.log({
+    action: AUDIT_ACTIONS.REPORT_EXPORTED,
+    entity: "ReportTemplate",
+    entityId: template._id,
+    userId: user._id,
+    schoolId,
+    meta: { name: template.name, type: template.type, format: template.format },
+  });
+
+  return template;
+};
+
+export const listTemplates = async (schoolId) => {
+  const match = schoolId ? { schoolId } : {};
+  return ReportTemplate.find(match).sort({ createdAt: -1 }).lean();
+};
+
+export const createJob = async (templateId, user, overrideParams) => {
+  const schoolId = user && user.schoolId ? new mongoose.Types.ObjectId(user.schoolId) : null;
+  if (!schoolId) throw new ApiError("No school in scope", 403, "NO_SCHOOL_SCOPE");
+
+  const template = await ReportTemplate.findById(templateId).lean();
+  if (!template) throw new ApiError("Template not found", 404, "TEMPLATE_NOT_FOUND");
+  if (String(template.schoolId) !== String(schoolId)) {
+    throw new ApiError("Template not accessible", 403, "TEMPLATE_NOT_ACCESSIBLE");
+  }
+
+  const job = await ReportJob.create({
+    templateId,
+    schoolId,
+    status: "queued",
+    requestedBy: user._id,
+  });
+
+  return job;
+};
+
+export const getJob = async (jobId) => {
+  const job = await ReportJob.findById(jobId).lean();
+  if (!job) throw new ApiError("Job not found", 404, "JOB_NOT_FOUND");
+
+  // Handing out the signed download URL is the disclosure moment: the file
+  // leaves the platform, so it is audited as `report.download` (distinct from
+  // the on-screen read `report.viewed` and the file generation `report.exported`).
+  if (job.fileUrl) {
+    await auditService.log({
+      action: AUDIT_ACTIONS.REPORT_DOWNLOAD,
+      entity: "ReportJob",
+      entityId: job._id,
+      userId: job.requestedBy,
+      schoolId: job.schoolId,
+      meta: { fileUrl: job.fileUrl },
+    });
+  }
+
+  return job;
+};
+
+export const listJobs = async (schoolId, options = {}) => {
+  const match = schoolId ? { schoolId } : {};
+  if (options.status) match.status = options.status;
+  const page = Math.max(Number(options.page || 1), 1);
+  const perPage = Math.min(Math.max(Number(options.perPage || 50), 1), 200);
+  const [jobs, total] = await Promise.all([
+    ReportJob.find(match)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * perPage)
+      .limit(perPage)
+      .lean(),
+    ReportJob.countDocuments(match),
+  ]);
+  return {
+    jobs,
+    total,
+    page,
+    perPage,
+    totalPages: Math.max(Math.ceil(total / perPage), 1),
+  };
+};
+
+export const runReportJob = async (jobId) => {
+  const job = await ReportJob.findById(jobId);
+  if (!job) throw new ApiError("Job not found", 404, "JOB_NOT_FOUND");
+
+  const template = await ReportTemplate.findById(job.templateId).lean();
+  if (!template) {
+    job.status = "failed";
+    job.errorMessage = "Template not found";
+    await job.save();
+    return job;
+  }
+
+  const schoolId = job.schoolId;
+  const actorName = "system";
+  try {
+    job.status = "processing";
+    await job.save();
+
+    const sections = await buildSections(template, schoolId, actorName);
+    const { buffer, filename } = await serializeBuffer(template, sections);
+
+    const uploadResult = await uploadFileBuffer(buffer, {
+      filename,
+      folder: CLOUDINARY_UPLOAD_FOLDER,
+    });
+
+    const expiresAt = new Date(Date.now() + REPORT_JOB_EXPIRES_IN_MS);
+    const downloadUrl = signedDownloadUrl(uploadResult.public_id, expiresAt);
+
+    job.fileUrl = downloadUrl || uploadResult.secure_url;
+    job.expiresAt = expiresAt;
+    job.status = "completed";
+    await job.save();
+
+    await auditService.log({
+      action: AUDIT_ACTIONS.REPORT_EXPORTED,
+      entity: "ReportJob",
+      entityId: job._id,
+      userId: job.requestedBy,
+      schoolId,
+      meta: {
+        templateId: template._id,
+        format: template.format,
+        fileUrl: job.fileUrl,
+        filename,
+      },
+    });
+
+    return job;
+  } catch (error) {
+    job.status = "failed";
+    job.errorMessage = String(error?.message || error);
+    await job.save();
+    throw error;
+  }
 };

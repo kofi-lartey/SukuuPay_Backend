@@ -91,7 +91,7 @@ export const updateGatewayModeSchema = Joi.object({
  * a rounding decision that two different screens would make differently.
  */
 export const updateSubscriptionSchema = Joi.object({
-  plan: Joi.string().valid('trial', 'basic', 'standard', 'premium', 'enterprise'),
+  plan: Joi.string().valid('trial', 'free', 'starter', 'growth'),
   monthlyFee: Joi.number().integer().min(0),
   status: Joi.string().valid('trial', 'active', 'expired', 'suspended', 'cancelled'),
   trialEndsAt: Joi.date().iso(),
@@ -217,7 +217,7 @@ export const createSchoolAsPlatformSchema = Joi.object({
    * markup, which is exactly what self-service provisioning produces.
    */
   subscription: Joi.object({
-    plan: Joi.string().valid('trial', 'basic', 'standard', 'premium', 'enterprise'),
+plan: Joi.string().valid('trial', 'free', 'starter', 'growth'),
     status: Joi.string().valid('trial', 'active', 'expired', 'suspended', 'cancelled'),
     trialEndsAt: Joi.date().iso(),
     currentPeriodStart: Joi.date().iso(),
@@ -295,7 +295,7 @@ export const listAdminSchoolsQuerySchema = Joi.object({
   perPage: Joi.number().integer().min(1).max(200).default(20),
   status: Joi.string().valid('active', 'suspended', 'archived'),
   region: Joi.string().valid(...getGhanaRegions()),
-  plan: Joi.string().valid('trial', 'basic', 'standard', 'premium', 'enterprise'),
+  plan: Joi.string().valid('trial', 'free', 'starter', 'growth'),
   tag: Joi.string().trim().max(50).allow('').optional(),
   search: Joi.string().trim().max(100).allow('').optional(),
   sortBy: Joi.string()

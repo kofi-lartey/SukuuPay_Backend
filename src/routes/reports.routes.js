@@ -10,7 +10,15 @@ import {
   getOverdueReportController,
   getHeadmasterMonthlyReportController,
 } from "../controllers/reports.controller.js";
+import {
+  createTemplateController,
+  listTemplatesController,
+  createJobController,
+  getJobController,
+  listJobsController,
+} from "../controllers/reports.controller.js";
 import { authenticate, authorize } from "../middleware/authenticate.js";
+import { requireCampusTier } from "../middleware/campus.middleware.js";
 import { validate } from "../middleware/validate.js";
 import rateLimit from "../middleware/rateLimit.js";
 import {
@@ -24,6 +32,10 @@ import {
   parentContactsQuerySchema,
   overdueQuerySchema,
   headmasterMonthlyQuerySchema,
+  createTemplateBodySchema,
+  createJobBodySchema,
+  jobIdParamSchema,
+  reportListQuerySchema,
 } from "../validations/reports.validation.js";
 
 export const reportsRoute = Router();
@@ -105,3 +117,49 @@ reportsRoute.get(
   validate(headmasterMonthlyQuerySchema, "query"),
   getHeadmasterMonthlyReportController
 );
+
+// ──────────────────── Wave 3: custom audit reports & MoE compliance exports ────────────────────
+// Mounted at /api/v2/reports (mount prefix) and gated on the campus tier.
+
+const reportsV2Route = Router();
+reportsV2Route.use(authenticate, requireCampusTier);
+
+const v2RateLimit = rateLimit({
+  windowMs: 60_000,
+  max: 30,
+  message: "Too many report job requests. Please try again later.",
+  keyBy: "user",
+});
+reportsV2Route.use(v2RateLimit);
+
+reportsV2Route.post(
+  "/templates",
+  validate(createTemplateBodySchema, "body"),
+  createTemplateController
+);
+
+reportsV2Route.get(
+  "/templates",
+  validate(reportListQuerySchema, "query"),
+  listTemplatesController
+);
+
+reportsV2Route.post(
+  "/jobs",
+  validate(createJobBodySchema, "body"),
+  createJobController
+);
+
+reportsV2Route.get(
+  "/jobs/:id",
+  validate(jobIdParamSchema, "params"),
+  getJobController
+);
+
+reportsV2Route.get(
+  "/jobs",
+  validate(reportListQuerySchema, "query"),
+  listJobsController
+);
+
+reportsRoute.use("/v2/reports", reportsV2Route);

@@ -186,7 +186,7 @@ describe('provisionMySchoolSchema', () => {
     const { value } = await run(provisionMySchoolSchema, {
       ...valid,
       status: 'active',
-      subscription: { plan: 'enterprise' },
+      subscription: { plan: 'growth' },
       createdBy: 'someone-else',
     });
     assert.equal(value.status, undefined);

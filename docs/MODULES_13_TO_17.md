@@ -1189,7 +1189,7 @@ At least one field must be provided.
   "message": "Billing information retrieved successfully",
   "data": {
     "subscription": {
-      "plan": "standard",
+      "plan": "starter",
       "status": "active",
       "monthlyFee": 15000,
       "currentPeriodStart": "2025-10-01T00:00:00.000Z",
@@ -1270,7 +1270,7 @@ Platform-level operations available exclusively to `super_admin` users. Covers s
 | `perPage` | integer | no | 20 | Items per page (max 100) |
 | `status` | enum | no | — | Filter by status: `active`, `suspended`, `archived` |
 | `region` | string | no | — | Filter by Ghana region name |
-| `plan` | enum | no | — | Filter by subscription plan: `trial`, `basic`, `standard`, `premium`, `enterprise` |
+| `plan` | enum | no | — | Filter by subscription plan: `trial`, `free`, `starter`, `growth` |
 | `search` | string | no | — | Search by name, email, school code, phone, or city |
 | `sortBy` | string | no | createdAt | Sort field: `name`, `createdAt`, `schoolCode`, `region`, `status` |
 | `sortOrder` | string | no | desc | Sort direction: `asc` or `desc` |
@@ -1294,7 +1294,7 @@ Platform-level operations available exclusively to `super_admin` users. Covers s
       "region": "Greater Accra",
       "status": "active",
       "subscription": {
-        "plan": "standard",
+        "plan": "starter",
         "status": "active",
         "currentPeriodEnd": "2025-03-01T00:00:00.000Z"
       },
@@ -1464,7 +1464,7 @@ Platform-level operations available exclusively to `super_admin` users. Covers s
       "name": "Sunnyvale Schools",
       "schoolCode": "SUN-001",
       "status": "active",
-      "subscription": { "plan": "standard", "status": "active", "currentPeriodEnd": "2025-03-01T00:00:00.000Z" },
+      "subscription": { "plan": "starter", "status": "active", "currentPeriodEnd": "2025-03-01T00:00:00.000Z" },
       "sms": { "provider": "moolre", "balance": 1500, "senderId": "SUNSCHOOL" }
     },
     "counts": {

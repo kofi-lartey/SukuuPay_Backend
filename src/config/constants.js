@@ -80,6 +80,29 @@ export const AUDIT_ACTIONS = {
   USER_ROLE_CHANGE: "user.role_change",
   USER_REMOVE: "user.remove",
 
+  // ── Financial batches ──
+  //
+  // A batch is the bursar's signed packet of disbursements for a term. Four
+  // actors, four actions: who drafted it, who signed it, who approved it, and
+  // who rejected it. Each is a different role with a different blast radius,
+  // and a single `financial.batch` status would conflate them — "who signed"
+  // is the bursar and "who approved" is the headmaster, and a regulator asking
+  // either question needs a different answer.
+  FINANCIAL_BATCH_CREATED: "financial.batch_created",
+  FINANCIAL_BATCH_SIGNED: "financial.batch_signed",
+  FINANCIAL_BATCH_APPROVED: "financial.batch_approved",
+  FINANCIAL_BATCH_REJECTED: "financial.batch_rejected",
+
+  // ── Report exports / downloads ──
+  //
+  // `report.exported` is the moment the file leaves the platform and
+  // `report.download` is the click that fetched it. Both are distinct from
+  // `report.viewed` (the on-screen read) because an export is the act that
+  // puts the school's whole financial history in someone's hands, and a school
+  // asking "who took this data" wants the exporter's name, not the viewer's.
+  REPORT_EXPORTED: "report.exported",
+  REPORT_DOWNLOAD: "report.download",
+
   // ── Platform console ──
   //
   // Namespaced `admin.*` because these are the platform owner's actions taken
@@ -239,6 +262,14 @@ export const AUDIT_ACTIONS = {
   SCHOOL_LOGO_UPDATE: "school.logo_update",
   SCHOOL_STAMP_UPDATE: "school.stamp_update",
 
+  // ── Campus lifecycle ──
+  // Campuses belong to a school on the Campus plan. Each mutation is its own action
+  // so an auditor can answer "who created this site", "who changed it", and
+  // "who retired it" separately.
+  CAMPUS_CREATE: "campus.create",
+  CAMPUS_UPDATE: "campus.update",
+  CAMPUS_ARCHIVE: "campus.archive",
+
   // ── Academics: attendance, report cards, timetables ──
   //
   // Three writes, three actions, because the questions asked of each are
@@ -350,6 +381,19 @@ export const AUDIT_ACTIONS = {
   PARENT_CONVERSATION_VIEWED: "parent.conversation_viewed",
   PARENT_NOTIFICATIONS_VIEWED: "parent.notifications_viewed",
   PARENT_NOTIFICATION_READ: "parent.notification_read",
+
+  // ── Financial batches (multi-signatory approvals) ──
+  //
+  // A disbursement batch moves money only after it has been created, signed by
+  // the required signatories, and approved. The three states are separate
+  // actions because the questions asked of them are different: "who proposed
+  // this batch", "who signed it", and "who released the funds". A rejection is
+  // recorded too, so an audit trail can show a batch was stopped rather than
+  // simply never finished.
+  FINANCIAL_BATCH_CREATED: "financial.batch_created",
+  FINANCIAL_BATCH_SIGNED: "financial.batch_signed",
+  FINANCIAL_BATCH_APPROVED: "financial.batch_approved",
+  FINANCIAL_BATCH_REJECTED: "financial.batch_rejected",
 };
 
 /**
@@ -691,3 +735,69 @@ export const GRADING_SYSTEMS = ["WAEC", "IB", "Cambridge", "Custom"];
 
 // School types
 export const SCHOOL_TYPES = ["public", "private", "international", "mission", "charter"];
+
+// ── Campus tier ──
+//
+// The subscription plan that unlocks multi-campus operation, and the capability
+// flags that plan is expected to carry. Kept as plain exports so plan checks and
+// feature gates read the same strings rather than re-typing them.
+export const CAMPUS_PLAN = "campus";
+export const CAMPUS_FEATURE_FLAGS = [
+  "multi_campus",
+  "multi_signatory",
+  "moe_reports",
+  "lms_multi_campus",
+];
+
+// ── Subscription plan normalization ──
+//
+// `subscription.plan` may be stored with a status suffix concatenated to it
+// (e.g. `"campusactive"` instead of `"campus"`). Every plan comparison reads
+// the raw enum value, so a concatenated value never matches `CAMPUS_PLAN` and
+// silently revokes campus entitlements. Strip any trailing status suffix so the
+// plan portion is recovered; already-clean values pass through unchanged.
+export const SUBSCRIPTION_PLANS = [
+  "trial", "free", "starter", "growth",
+];
+export const SUBSCRIPTION_STATUSES = ["active", "suspended", "expired", "cancelled", "pending"];
+
+// ── Legacy plan aliases ──
+//
+// The published tier structure is Free / Starter / Growth. Older records
+// (and any status-suffixed value such as `"premiumactive"`) may still carry
+// a retired plan name. Map every retired name onto its surviving tier so a
+// legacy school keeps the entitlements and billing it was sold:
+//
+//   basic      → free     (the old entry-level paid name, now Free)
+//   standard   → starter  (the old mid name, now Starter)
+//   premium    → growth   (the old top name, now Growth — GH₵ 275)
+//   enterprise → growth   (custom top tier folds into Growth)
+export const LEGACY_PLAN_ALIASES = {
+  basic: "free",
+  standard: "starter",
+  premium: "growth",
+  enterprise: "growth",
+};
+
+/**
+ * Recover the plan portion of a `subscription.plan` value that may carry a
+ * status suffix (e.g. `"campusactive"` -> `"campus"`). Clean values pass
+ * through unchanged. Unknown values are returned as-is so callers can still
+ * surface them in error metadata.
+ */
+export const normalizePlan = (plan) => {
+  if (!plan || typeof plan !== "string") return plan;
+  const lower = plan.toLowerCase();
+  if (SUBSCRIPTION_PLANS.includes(lower)) return plan;
+  for (const status of SUBSCRIPTION_STATUSES) {
+    if (lower.endsWith(status)) {
+      const candidate = plan.slice(0, -status.length);
+      if (SUBSCRIPTION_PLANS.includes(candidate.toLowerCase())) return candidate;
+      // A retired name with a status suffix (e.g. "premiumactive").
+      const aliased = LEGACY_PLAN_ALIASES[candidate.toLowerCase()];
+      if (aliased) return aliased;
+    }
+  }
+  // A bare retired name (e.g. "premium").
+  return LEGACY_PLAN_ALIASES[lower] || plan;
+};

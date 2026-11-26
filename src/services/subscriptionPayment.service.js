@@ -4,6 +4,7 @@ import { School } from "../models/schoolModel.js";
 import ApiError from "../utils/ApiError.js";
 import * as auditService from "../utils/auditService.js";
 import { PlatformLedger } from "../models/PlatformLedger.js";
+import { normalizePlan } from "../config/constants.js";
 
 /**
  * Phone number schools pay their subscription to via Mobile Money.
@@ -83,7 +84,7 @@ export const initiateSubscriptionPayment = async (
     expectedAmount: Number(monthlyFee) || 0,
   });
 
-  school.subscription.plan = plan;
+  school.subscription.plan = normalizePlan(plan);
   school.subscription.paymentStatus = "pending";
   school.subscription.status = "suspended";
   school.subscription.currentPeriodStart = now;

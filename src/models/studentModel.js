@@ -158,6 +158,12 @@ const studentModel = new mongoose.Schema(
       required: true,
       index: true,
     },
+    campusId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Campus",
+      default: null,
+      index: true,
+    },
 
     // ── Status / lifecycle ──
     status: {

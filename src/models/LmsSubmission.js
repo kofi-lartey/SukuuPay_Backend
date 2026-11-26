@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 const submissionSchema = new mongoose.Schema(
   {
     schoolId: { type: mongoose.Schema.Types.ObjectId, ref: "School", required: true, index: true },
+    campusId: { type: mongoose.Schema.Types.ObjectId, ref: "Campus", default: null, index: true },
     assessmentId: { type: mongoose.Schema.Types.ObjectId, ref: "LmsAssessment", required: true, index: true },
     studentId: { type: mongoose.Schema.Types.ObjectId, ref: "Student", required: true, index: true },
     answers: { type: [{ questionIndex: Number, answer: String }], default: [] },

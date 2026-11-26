@@ -8,6 +8,11 @@ import {
   getParentContactsReport,
   getOverdueReport,
   getHeadmasterMonthlyReport,
+  createTemplate,
+  listTemplates,
+  createJob,
+  getJob,
+  listJobs,
 } from "../services/reports.service.js";
 import { sendReportFile } from "../utils/reportExport.js";
 import { formatCedis } from "../utils/formatters.js";
@@ -359,5 +364,64 @@ export const getClassCollectionsReportController = makeController("class-collect
 export const getParentContactsReportController = makeController("parent-contacts");
 export const getOverdueReportController = makeController("overdue");
 export const getHeadmasterMonthlyReportController = makeController("headmaster-monthly");
+
+// ──────────────────── Wave 3: custom audit templates & report jobs ────────────────────
+
+export const createTemplateController = asyncHandler(async (req, res) => {
+  const template = await createTemplate(req.body, req.user);
+  return res.status(201).json({
+    success: true,
+    message: "Report template created successfully",
+    data: template,
+  });
+});
+
+export const listTemplatesController = asyncHandler(async (req, res) => {
+  const schoolId = req.user && req.user.schoolId ? req.user.schoolId : null;
+  const templates = await listTemplates(schoolId);
+  return res.status(200).json({
+    success: true,
+    message: "Report templates retrieved successfully",
+    data: templates,
+  });
+});
+
+export const createJobController = asyncHandler(async (req, res) => {
+  const job = await createJob(req.body.templateId, req.user, req.body.parameters);
+  return res.status(201).json({
+    success: true,
+    message: "Report job queued successfully",
+    data: job,
+  });
+});
+
+export const getJobController = asyncHandler(async (req, res) => {
+  const job = await getJob(req.params.id);
+  return res.status(200).json({
+    success: true,
+    message: "Report job retrieved successfully",
+    data: {
+      ...job,
+      downloadUrl: job.fileUrl || null,
+      expiresAt: job.expiresAt || null,
+    },
+  });
+});
+
+export const listJobsController = asyncHandler(async (req, res) => {
+  const schoolId = req.user && req.user.schoolId ? req.user.schoolId : null;
+  const result = await listJobs(schoolId, req.query);
+  return res.status(200).json({
+    success: true,
+    message: "Report jobs retrieved successfully",
+    data: result.jobs,
+    meta: {
+      page: result.page,
+      perPage: result.perPage,
+      total: result.total,
+      totalPages: result.totalPages,
+    },
+  });
+});
 
 export { REPORTS };

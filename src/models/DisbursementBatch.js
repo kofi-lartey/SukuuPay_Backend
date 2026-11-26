@@ -55,6 +55,13 @@ const disbursementBatchSchema = new mongoose.Schema(
       index: true,
     },
 
+    campusId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Campus",
+      default: null,
+      index: true,
+    },
+
     /**
      * The window of parent payments this batch settles.
      *
@@ -88,6 +95,7 @@ const disbursementBatchSchema = new mongoose.Schema(
         "draft",
         "pending_approval",
         "approved",
+        "rejected",
         "processing",
         "paid",
         "failed",
@@ -96,6 +104,38 @@ const disbursementBatchSchema = new mongoose.Schema(
       default: "pending_approval",
       index: true,
     },
+
+    requiredSignatures: {
+      type: Number,
+      default: 1,
+      min: 1,
+    },
+    signatureCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    signatures: [
+      {
+        userId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User",
+          required: true,
+        },
+        role: {
+          type: String,
+          required: true,
+        },
+        signedAt: {
+          type: Date,
+          default: null,
+        },
+        ip: {
+          type: String,
+          default: null,
+        },
+      },
+    ],
 
     /** What parents paid in this window, before any split. Integer pesewas. */
     grossAmount: {
@@ -182,6 +222,17 @@ const disbursementBatchSchema = new mongoose.Schema(
       index: true,
     },
     approvedAt: {
+      type: Date,
+      default: null,
+    },
+
+    rejectedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
+    rejectedAt: {
       type: Date,
       default: null,
     },
