@@ -1,66 +1,52 @@
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import puppeteer from "puppeteer";
-import { install } from "@puppeteer/browsers";
+import PDFDocument from "pdfkit";
+import path from "path";
+import { fileURLToPath } from "url";
+import fs from "fs";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-const COMMON_CHROME_PATHS =
-  process.platform === "win32"
-    ? [
-        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-        "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-        "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-      ]
-    : process.platform === "darwin"
-    ? [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-      ]
-    : [
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/microsoft-edge",
-      ];
+const ASSETS = path.resolve(__dirname, "../../assets/fonts");
 
-const getChromeExecutablePath = async () => {
-  // 1. Environment variable override.
-  for (const env of [
-    "PUPPETEER_EXECUTABLE_PATH",
-    "CHROME_PATH",
-    "GOOGLE_CHROME_BIN",
-    "CHROME_EXECUTABLE",
-  ]) {
-    const value = process.env[env];
-    if (typeof value === "string" && value && fs.existsSync(value)) return value;
-  }
-
-  // 2. Common install paths per platform.
-  for (const candidate of COMMON_CHROME_PATHS) {
-    try {
-      if (typeof candidate === "string" && fs.existsSync(candidate)) return candidate;
-    } catch {}
-  }
-
-  // 3. Auto-install Chrome via @puppeteer/browsers (useful on hosts like Render
-  //    where no browser is pre-installed). Requires network at startup.
-  try {
-    const { executablePath } = await install({
-      browser: "chrome",
-      buildId: "latest",
-    });
-    return executablePath;
-  } catch {}
-
-  return null;
+const FONTS = {
+  poppinsLight: "Poppins-Light",
+  poppinsRegular: "Poppins-Regular",
+  poppinsBold: "Poppins-Bold",
+  notoRegular: "NotoSans-Regular",
+  notoBold: "NotoSans-Bold",
 };
 
-const money = (value) => `GH₵ ${((Number(value) || 0) / 100).toLocaleString("en-GH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+function fontPath(name) {
+  return path.join(ASSETS, name);
+}
+
+let fontsLoaded = false;
+
+function tryLoadFonts(doc) {
+  try {
+    if (
+      fs.existsSync(fontPath("Poppins-Light.ttf")) &&
+      fs.existsSync(fontPath("Poppins-Regular.ttf")) &&
+      fs.existsSync(fontPath("Poppins-Bold.ttf")) &&
+      fs.existsSync(fontPath("NotoSans-Regular.ttf")) &&
+      fs.existsSync(fontPath("NotoSans-Bold.ttf"))
+    ) {
+      doc.registerFont(FONTS.poppinsLight, fontPath("Poppins-Light.ttf"));
+      doc.registerFont(FONTS.poppinsRegular, fontPath("Poppins-Regular.ttf"));
+      doc.registerFont(FONTS.poppinsBold, fontPath("Poppins-Bold.ttf"));
+      doc.registerFont(FONTS.notoRegular, fontPath("NotoSans-Regular.ttf"));
+      doc.registerFont(FONTS.notoBold, fontPath("NotoSans-Bold.ttf"));
+      fontsLoaded = true;
+    } else {
+      fontsLoaded = false;
+    }
+  } catch (e) {
+    fontsLoaded = false;
+  }
+  return fontsLoaded;
+}
+
+// ──────────────────── public helpers (unchanged API) ────────────────────
 
 export const normaliseBreakdown = (feesBreakdown, fallbackAmount) => {
   const lines = (Array.isArray(feesBreakdown) ? feesBreakdown : [])
@@ -81,89 +67,341 @@ export const receiptFilename = (receiptNumber, paymentId) => {
   return `${stem || "receipt"}.pdf`;
 };
 
-export const generateReceiptPdf = async (payment, { student, school } = {}) => {
-  const receiptRef = payment?.receiptNumber || payment?.paymentId || "RCP-0000";
-  const date = payment?.paymentDate || payment?.createdAt || new Date();
-  const d = new Date(date);
-  const dateStr = Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-  const studentName = student?.name || payment?.studentName || "Student";
-  const studentId = student?.studentId || payment?.studentId || "";
-  const className = student?.className || payment?.className || "";
-  const schoolName = school?.name || payment?.schoolName || "School";
-  const schoolAddress = school?.address || payment?.schoolAddress || "";
-  const method = payment?.paymentMethod || payment?.method || "Mobile Money";
-  const amount = Number(payment?.amount ?? payment?.totalAmount ?? 0);
-  const totalFees = Number(payment?.totalFees ?? amount);
-  const paidToDate = Number(payment?.paidToDate ?? amount);
+// ──────────────────── formatters ────────────────────
+
+function money(value, useCedi = fontsLoaded) {
+  const cedi = useCedi ? "GH₵" : "GHc";
+  return `${cedi} ${((Number(value) || 0) / 100).toLocaleString("en-GH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function fmtDate(value) {
+  const d = value ? new Date(value) : new Date();
+  if (!Number.isFinite(d.getTime())) return "—";
+  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function uiFont(bold) {
+  return fontsLoaded ? (bold ? FONTS.poppinsBold : FONTS.poppinsRegular) : bold ? "Helvetica-Bold" : "Helvetica";
+}
+
+function amtFont(bold) {
+  return fontsLoaded ? (bold ? FONTS.notoBold : FONTS.notoRegular) : bold ? "Helvetica-Bold" : "Helvetica";
+}
+
+// Ellipsize `str` so it fits within `width` pt at the current font settings.
+function fitText(doc, str, width) {
+  if (doc.widthOfString(str) <= width) return str;
+  let trimmed = str;
+  while (trimmed.length > 0 && doc.widthOfString(trimmed + "…") > width) {
+    trimmed = trimmed.slice(0, -1);
+  }
+  return trimmed + "…";
+}
+
+// ──────────────────── main render ────────────────────
+
+export const generateReceiptPdf = async (payment = {}, { student, school } = {}) => {
+  const p = payment || {};
+  const s = student || {};
+  const sch = school || {};
+
+  const amount = Number(p.amount ?? 0);
+  // Preview (buildReceiptHtml) totals logic — do not "fix" it.
+  const totalFees = Number(p.totalFees ?? s.totalOwed ?? amount);
+  const amountAlreadyPaid = Number(s.totalPaid ?? p.paidToDate ?? 0);
+  const amountLeftToPay = Math.max(0, totalFees - amountAlreadyPaid);
   const amountPaidToday = amount;
-  const balance = Math.max(0, totalFees - paidToDate - amountPaidToday);
-  const description = payment?.description || "School fees payment";
+  const balance = Math.max(0, amountLeftToPay - amountPaidToday);
 
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Receipt ${receiptRef}</title><style>
-  @page { size: A4; margin: 0; }
-  * { box-sizing: border-box; }
-  body { margin: 0; font-family: "Century Gothic", "Futura", "Segoe UI", Arial, sans-serif; color: #4a5a52; background: #fff; }
-  .page { width: 210mm; min-height: 297mm; padding: 18mm 16mm; position: relative; }
-  .head { display: flex; justify-content: space-between; align-items: flex-start; }
-  h1 { font-size: 52px; font-weight: 300; letter-spacing: 8px; margin: 0; }
-  .logo { width: 80px; height: 80px; border-radius: 50%; background: #c9dcc4; display: flex; align-items: center; justify-content: center; font-size: 11px; overflow: hidden; }
-  .logo img { width: 100%; height: 100%; object-fit: cover; }
-  .bar { background: #c9dcc4; display: flex; justify-content: space-between; padding: 5px 8px; margin: 22px 0 18px; font-size: 11px; letter-spacing: 1px; }
-  .bar b { font-weight: 700; }
-  .cols { display: flex; gap: 24px; font-size: 12px; line-height: 1.7; }
-  .cols > div { flex: 1; }
-  .cols h4 { margin: 0 0 4px; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; }
-  .muted { opacity: .8; }
-  .pm span { display: block; padding-left: 16px; position: relative; }
-  .pm span.on::before { content: "X"; position: absolute; left: 0; font-weight: 700; }
-  table { width: 100%; border-collapse: collapse; margin-top: 26px; font-size: 12px; }
-  thead th { text-align: left; font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; padding: 8px 6px; border-top: 3px solid #c9dcc4; border-bottom: 3px solid #c9dcc4; }
-  td { padding: 10px 6px; border-bottom: 1px solid #c9dcc4; }
-  .c-no { width: 8%; }
-  .c-num, th.c-num { text-align: right; }
-  .totals { margin: 18px 0 0 auto; width: 60%; font-size: 12px; }
-  .totals div { display: flex; justify-content: space-between; padding: 4px 8px; }
-  .totals .grand { background: #c9dcc4; font-weight: 700; letter-spacing: 1px; }
-  .totals .balance { background: #4a5a52; color: #fff; font-weight: 700; letter-spacing: 1px; margin-top: 6px; }
-  .notes { margin-top: 26px; font-size: 11.5px; line-height: 1.6; }
-  .thanks { text-align: center; letter-spacing: 5px; font-size: 20px; margin-top: 50px; }
-  @media print { .page { box-shadow: none; } }
-  </style></head><body><div class="page">
-  <div class="head"><h1>RECEIPT</h1>${school?.logo ? `<div class="logo"><img src="${school.logo}" alt="logo" /></div>` : '<div class="logo">LOGO</div>'}</div>
-  <div class="bar"><span><b>RECEIPT REF.</b> ${receiptRef}</span><span><b>DATE:</b> ${dateStr}</span></div>
-  <div class="cols">
-    <div><h4>${schoolName}</h4><div class="muted">${schoolAddress}</div></div>
-    <div><h4>Paid To</h4><div>${studentName}</div><div class="muted">ID: ${studentId} ${className ? `• ${className}` : ""}</div></div>
-    <div class="pm"><h4>Payment Method</h4><span class="on">${method}</span><span>Cash</span><span>Bank Transfer</span><span>Other</span></div>
-  </div>
-  <table><thead><tr><th>No.</th><th>Description</th><th class="c-num">Qty</th><th class="c-num">Price</th><th class="c-num">Total</th></tr></thead><tbody>
-  <tr><td class="c-no">1</td><td>${description}</td><td class="c-num">1</td><td class="c-num">${money(amount)}</td><td class="c-num">${money(amount)}</td></tr>
-  </tbody></table>
-  <div class="totals">
-    <div><span>TOTAL FEES</span><span>${money(totalFees)}</span></div>
-    <div><span>AMOUNT ALREADY PAID</span><span>${money(paidToDate)}</span></div>
-    <div><span>AMOUNT LEFT TO PAY</span><span>${money(Math.max(0, totalFees - paidToDate))}</span></div>
-    <div><span>AMOUNT PAID TODAY</span><span>${money(amountPaidToday)}</span></div>
-    <div class="balance"><span>REMAINING BALANCE</span><span>${money(balance)}</span></div>
-  </div>
-  <div class="notes"><b>Notes</b><br>Thank you for your payment. This receipt confirms ${balance > 0 ? "part payment" : "full settlement"}. The remaining balance is shown above.</div>
-  <div class="thanks">THANK YOU</div>
-</div></body></html>`;
+  const dateStr = fmtDate(p.date || p.completedAt || p.createdAt);
 
-  const executablePath = await getChromeExecutablePath();
-  if (!executablePath) {
-    throw new Error(
-      "No Chrome/Chromium executable found. On Render, add Chrome to the build (e.g. `apt-get install -y chromium` in render.yaml) " +
-        "or set PUPPETEER_EXECUTABLE_PATH to a Chrome binary path.",
-    );
+  const rawMethod = String(p.paymentMethod || p.method || "");
+  let methodLabel;
+  const m = rawMethod.toLowerCase();
+  if (m === "momo") methodLabel = "Mobile Money";
+  else if (m === "cash") methodLabel = "Cash";
+  else if (m.includes("bank")) methodLabel = "Bank Transfer";
+  else if (m === "other") methodLabel = "Other";
+  else methodLabel = rawMethod || "Mobile Money";
+
+  const description = p.description || p.notes || "School Fee Payment";
+  const studentName = s.studentName || s.name || "—";
+  const studentId = s.studentId || "";
+  const studentClass = s.studentClass || s.className || "";
+  const schoolName = sch.name || "School";
+  const schoolAddress = [sch.address, sch.city].filter(Boolean).join(", ");
+
+  const receiptNumber = p.receiptNumber || "";
+  const paymentId = p.paymentId || "";
+
+  const breakdown = normaliseBreakdown(p.feesBreakdown, amount);
+
+  const doc = new PDFDocument({ size: "A4", margin: 0, autoFirstPage: true });
+  tryLoadFonts(doc);
+
+  const chunks = [];
+  doc.on("data", (c) => chunks.push(c));
+
+  const PAGE_W = 595.28;
+  const PAGE_H = 841.89;
+  const PAD_TOP = 51.0;
+  const PAD_BOTTOM = 51.0;
+  const PAD_X = 45.35;
+  const CONTENT_W = PAGE_W - PAD_X * 2; // 504.58
+  const BOTTOM = PAGE_H - PAD_BOTTOM;
+
+  let y = PAD_TOP;
+
+  function ensureSpace(h) {
+    if (y + h > BOTTOM) {
+      doc.addPage();
+      y = PAD_TOP;
+    }
   }
 
-  const browser = await puppeteer.launch({ headless: "new", executablePath });
-  const page = await browser.newPage();
-  await page.setContent(html, { waitUntil: "networkidle0" });
-  const pdf = await page.pdf({ format: "A4", printBackground: true });
-  await browser.close();
-  return Buffer.from(pdf);
+  function hline(x, yy, w, color, thickness) {
+    doc.save().strokeColor(color).lineWidth(thickness).moveTo(x, yy).lineTo(x + w, yy).stroke().restore();
+  }
+
+  // ──────── 1. HEADER ────────
+  // "RECEIPT" 39pt light weight, 6pt letter spacing; 60pt circle logo/initials on right.
+  ensureSpace(70);
+  doc.font(uiFont(false)).fontSize(39).fillColor("#4a5a52");
+  doc.text("RECEIPT", PAD_X, y, { lineBreak: false, characterSpacing: 6 });
+
+  const circleR = 30;
+  const cx = PAGE_W - PAD_X - circleR;
+  const cy = y + circleR;
+
+  let logoDrawn = false;
+  const logo = sch.logo;
+  if (typeof logo === "string" && logo.length) {
+    try {
+      if (logo.startsWith("data:")) {
+        const comma = logo.indexOf(",");
+        const base64 = comma === -1 ? logo.slice(5) : logo.slice(comma + 1);
+        const buf = Buffer.from(base64, "base64");
+        const ct = logo.slice(5, comma === -1 ? undefined : comma).toLowerCase();
+        const isImg = /^(image\/(png|jpeg|jpg))(;|$)/.test(ct);
+        if (isImg) {
+          doc.save();
+          doc.circle(cx, cy, circleR).clip();
+          doc.image(buf, cx - circleR, cy - circleR, { fit: [60, 60], align: "center", valign: "center" });
+          doc.restore();
+          logoDrawn = true;
+        }
+      } else {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 4000);
+        const res = await fetch(logo, { signal: ctrl.signal });
+        clearTimeout(timer);
+        if (res.ok) {
+          const ct = (res.headers.get("content-type") || "").toLowerCase();
+          const isImg = /^image\/(png|jpeg|jpg)(;|$)/.test(ct);
+          if (isImg) {
+            const ab = await res.arrayBuffer();
+            const buf = Buffer.from(ab);
+            doc.save();
+            doc.circle(cx, cy, circleR).clip();
+            doc.image(buf, cx - circleR, cy - circleR, { fit: [60, 60], align: "center", valign: "center" });
+            doc.restore();
+            logoDrawn = true;
+          }
+        }
+      }
+    } catch {
+      logoDrawn = false;
+    }
+  }
+
+  if (!logoDrawn) {
+    doc.save().fillColor("#c9dcc4").circle(cx, cy, circleR).fill().restore();
+    const initials = schoolName.slice(0, 3).toUpperCase();
+    doc.font(uiFont(true)).fontSize(16).fillColor("#4a5a52");
+    const tw = doc.widthOfString(initials);
+    doc.text(initials, cx - tw / 2, cy - 8, { lineBreak: false });
+  }
+
+  y += 70;
+
+  // ──────── 2. BAR ────────
+  // light-green strip, margin 22px above (already in y), 18px below.
+  const barH = 15.75; // 5px + 11px text + 5px padding approx
+  doc.save().fillColor("#c9dcc4").rect(PAD_X, y, CONTENT_W, barH).fill().restore();
+  doc.font(uiFont(true)).fontSize(8.25).fillColor("#4a5a52");
+  doc.text(`RECEIPT REF.  ${receiptNumber}`, PAD_X + 6, y + 3.75, { lineBreak: false, characterSpacing: 0.75 });
+  const dateLabel = `DATE:  ${dateStr}`;
+  const dw = doc.widthOfString(dateLabel);
+  doc.text(dateLabel, PAGE_W - PAD_X - 6 - dw, y + 3.75, { lineBreak: false });
+  y += barH + 13.5; // 18px below
+
+  // ──────── 3. THREE COLUMNS ────────
+  const colGap = 18;
+  const colW = (CONTENT_W - colGap * 2) / 3;
+  const col1X = PAD_X;
+  const col2X = PAD_X + colW + colGap;
+  const col3X = PAD_X + (colW + colGap) * 2;
+
+  const lineH = 9 * 1.7; // font 9pt × line-height 1.7
+
+  let cy3 = y;
+  // Col A: school
+  doc.font(uiFont(true)).fontSize(8.25).fillColor("#4a5a52");
+  doc.text(fitText(doc, schoolName.toUpperCase(), colW), col1X, cy3, { lineBreak: false, characterSpacing: 1.5 });
+  cy3 += 3 + 8.25 + 4; // h4 margin-bottom 4px + font height
+  doc.fillColor("#6e7b75").opacity(0.8);
+  doc.font(uiFont(false)).fontSize(9);
+  doc.text(fitText(doc, schoolAddress, colW), col1X, cy3, { lineBreak: false });
+  doc.opacity(1).fillColor("#4a5a52");
+  cy3 += lineH;
+
+  // Col B: paid to
+  let cyB = y;
+  doc.font(uiFont(true)).fontSize(8.25).fillColor("#4a5a52");
+  doc.text("PAID TO", col2X, cyB, { lineBreak: false, characterSpacing: 1.5 });
+  cyB += 3 + 8.25 + 4;
+  doc.font(uiFont(false)).fontSize(9).fillColor("#4a5a52");
+  doc.text(fitText(doc, studentName, colW), col2X, cyB, { lineBreak: false });
+  cyB += lineH;
+  const idLine = studentId ? `ID: ${studentId}${studentClass ? " • " + studentClass : ""}` : studentClass;
+  doc.fillColor("#6e7b75").opacity(0.8);
+  doc.font(uiFont(false)).fontSize(9);
+  doc.text(fitText(doc, idLine, colW), col2X, cyB, { lineBreak: false });
+  doc.opacity(1).fillColor("#4a5a52");
+  cyB += lineH;
+
+  // Col C: payment method — X on the selected line only.
+  let cyC = y;
+  doc.font(uiFont(true)).fontSize(8.25).fillColor("#4a5a52");
+  doc.text("PAYMENT METHOD", col3X, cyC, { lineBreak: false, characterSpacing: 1.5 });
+  cyC += 3 + 8.25 + 4;
+  const methods = ["Mobile Money", "Cash", "Bank Transfer", "Other"];
+  methods.forEach((mName) => {
+    const indent = 12;
+    const isSelected = mName === methodLabel;
+    doc.font(uiFont(isSelected)).fontSize(9).fillColor("#4a5a52");
+    if (isSelected) {
+      doc.text("X", col3X + 2, cyC, { lineBreak: false });
+    }
+    doc.font(uiFont(false)).fontSize(9).fillColor("#4a5a52");
+    doc.text(mName, col3X + indent, cyC, { lineBreak: false });
+    cyC += lineH;
+  });
+
+  y = Math.max(cy3, cyB, cyC) + 19.5; // 26px margin-top before table
+
+  // ──────── 4. TABLE ────────
+  ensureSpace(60);
+  // top rule 2.25pt
+  hline(PAD_X, y, CONTENT_W, "#c9dcc4", 2.25);
+  y += 6;
+  const headerY = y;
+  const noW = CONTENT_W * 0.08;
+  const descW = CONTENT_W * 0.46;
+  const qtyW = CONTENT_W * 0.10;
+  const priceW = CONTENT_W * 0.18;
+  const totalW = CONTENT_W * 0.18;
+  const xNo = PAD_X;
+  const xDesc = PAD_X + noW;
+  const xQty = xDesc + descW;
+  const xPrice = xQty + qtyW;
+  const xTotal = xPrice + priceW;
+
+  doc.font(uiFont(true)).fontSize(8.25).fillColor("#4a5a52");
+  doc.text("NO.", xNo, headerY, { lineBreak: false, characterSpacing: 1.125, width: noW, align: "left" });
+  doc.text("DESCRIPTION", xDesc, headerY, { lineBreak: false, characterSpacing: 1.125, width: descW, align: "left" });
+  doc.text("QTY", xQty, headerY, { lineBreak: false, characterSpacing: 1.125, width: qtyW, align: "right" });
+  doc.text("PRICE", xPrice, headerY, { lineBreak: false, characterSpacing: 1.125, width: priceW, align: "right" });
+  doc.text("TOTAL", xTotal, headerY, { lineBreak: false, characterSpacing: 1.125, width: totalW, align: "right" });
+  y = headerY + 8.25 + 6;
+  hline(PAD_X, y, CONTENT_W, "#c9dcc4", 2.25);
+
+  const rowH = 7.5 + 9 + 7.5; // 24pt
+  const rows = [];
+  breakdown.forEach((b, i) => {
+    rows.push({ no: i + 1, desc: b.description || b.label, qty: 1, price: b.amount, total: b.amount });
+  });
+  if (rows.length === 0) {
+    rows.push({ no: 1, desc: description, qty: 1, price: amount, total: amount });
+  }
+  for (let i = 0; i < 3; i++) rows.push({ no: "", desc: "", qty: "", price: "", total: "" });
+
+  for (const r of rows) {
+    ensureSpace(rowH + 2);
+    const ry = y + 7.5;
+    const hasDesc = String(r.desc).length > 0;
+    if (hasDesc) {
+      doc.font(uiFont(false)).fontSize(9).fillColor("#4a5a52");
+      doc.text(String(r.no), xNo, ry, { lineBreak: false, width: noW, align: "left" });
+      doc.text(fitText(doc, String(r.desc), descW), xDesc, ry, { width: descW });
+      doc.text(String(r.qty), xQty, ry, { lineBreak: false, width: qtyW, align: "right" });
+      doc.font(amtFont(false)).fontSize(9).fillColor("#4a5a52");
+      doc.text(money(r.price), xPrice, ry, { lineBreak: false, width: priceW, align: "right" });
+      doc.text(money(r.total), xTotal, ry, { lineBreak: false, width: totalW, align: "right" });
+    }
+    y += rowH;
+    hline(PAD_X, y, CONTENT_W, "#c9dcc4", 0.75);
+  }
+
+  y += 13.5; // 18px margin before totals
+
+  // ──────── 5. TOTALS BLOCK ────────
+  // right-aligned, 60% of content width.
+  ensureSpace(120);
+  const blockW = CONTENT_W * 0.6;
+  const blockX = PAGE_W - PAD_X - blockW;
+  const valueRight = PAGE_W - PAD_X;
+
+  const totals = [
+    ["TOTAL FEES", money(totalFees)],
+    ["AMOUNT ALREADY PAID", money(amountAlreadyPaid)],
+    ["AMOUNT LEFT TO PAY", money(amountLeftToPay)],
+    ["AMOUNT PAID TODAY", money(amountPaidToday)],
+  ];
+  for (const [lab, val] of totals) {
+    doc.font(uiFont(false)).fontSize(9).fillColor("#4a5a52");
+    doc.text(fitText(doc, lab, blockW * 0.6), blockX, y, { lineBreak: false });
+    doc.font(amtFont(false)).fontSize(9).fillColor("#4a5a52");
+    const vw = doc.widthOfString(val);
+    doc.text(val, valueRight - vw, y, { lineBreak: false });
+    y += lineH;
+  }
+  y += 4.5; // gap above balance band
+  const bandH = lineH;
+  doc.save().fillColor("#4a5a52").rect(blockX, y, blockW, bandH).fill().restore();
+  doc.font(uiFont(true)).fontSize(9).fillColor("#ffffff");
+  doc.text("REMAINING BALANCE", blockX + 6, y + 2, { lineBreak: false });
+  doc.font(amtFont(true)).fontSize(9).fillColor("#ffffff");
+  const bv = money(balance);
+  const bw = doc.widthOfString(bv);
+  doc.text(bv, valueRight - bw - 6, y + 2, { lineBreak: false });
+  y += bandH;
+
+  // ──────── 6. NOTES ────────
+  y += 19.5; // 26px margin-top
+  ensureSpace(60);
+  doc.font(uiFont(true)).fontSize(8.625).fillColor("#4a5a52");
+  doc.text("Notes", PAD_X, y, { lineBreak: false });
+  y += 8.625 + 4;
+  const part = balance > 0 ? "part payment" : "full settlement";
+  const noteText = `Thank you for your payment. This receipt confirms ${part}. The remaining balance is shown above.`;
+  doc.font(uiFont(false)).fontSize(8.625).fillColor("#4a5a52");
+  doc.text(noteText, PAD_X, y, { width: CONTENT_W, lineGap: 1.6 * 8.625 - 8.625 });
+
+  // ──────── 7. FOOTER ────────
+  y += 37.5 + 8.625 * 1.6; // 50px margin-top + notes height approx
+  ensureSpace(30);
+  doc.font(uiFont(false)).fontSize(15).fillColor("#4a5a52");
+  const tstr = "THANK YOU";
+  const tw = doc.widthOfString(tstr);
+  doc.text(tstr, (PAGE_W - tw) / 2, y, { lineBreak: false, characterSpacing: 3.75 });
+
+  doc.end();
+
+  return new Promise((resolve, reject) => {
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+  });
 };
 
 export default { generateReceiptPdf, normaliseBreakdown, receiptFilename };
