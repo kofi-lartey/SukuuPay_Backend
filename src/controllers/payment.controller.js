@@ -22,6 +22,8 @@ import {
   notifySchool,
   verifyPaymentByReference,
   buildParentReceipt,
+  verifyPin as verifyPinService,
+  loginWithDob,
 } from "../services/pay.service.js";
 import { generateReceiptPdf, receiptFilename, normaliseBreakdown } from "../utils/receiptService.js";
 import { sendWhatsAppDocument } from "../utils/whatsappApi.js";
@@ -902,6 +904,67 @@ export const moolreWebhookController = async (req, res) => {
 
     console.error("[MOOLRE WEBHOOK] Unhandled error:", error);
     return res.status(200).json({ received: true, error: error.message });
+  }
+};
+
+// ──────────────────── Public: Verify PIN ────────────────────
+/**
+ * `POST /pay/:token/verify-pin` — Verify the parent's PIN derived from child's DOB.
+ *
+ * This is an additional security factor for sensitive operations within the
+ * parent portal. The PIN is not stored; it is derived from the student's
+ * date of birth (DDMMYYYY format) and compared using constant-time comparison.
+ *
+ * Rate limited to 5 attempts per hour per token to prevent brute force.
+ */
+export const verifyPinController = async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { pin } = req.body;
+
+    const result = await verifyPinService(token, pin);
+
+    return res.status(200).json({
+      success: true,
+      message: "PIN verified successfully",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+// ──────────────────── Public: DOB Login ────────────────────
+/**
+ * `POST /pay/login` — Parent logs in with child's date of birth and name.
+ *
+ * The parent enters their child's DOB (YYYY-MM-DD) and full name. If a student
+ * with that DOB and matching name exists and has an active pay token, the token
+ * is returned so the frontend can redirect to the portal.
+ *
+ * Rate limited to 5 attempts per hour to prevent brute force.
+ */
+export const payLoginController = async (req, res) => {
+  try {
+    const { dateOfBirth, studentName, phone } = req.body;
+
+    const result = await loginWithDob(dateOfBirth, studentName, phone);
+
+    return res.status(200).json({
+      success: true,
+      message: "Login successful",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: resolveErrorMessage(error),
+      ...(error.code ? { code: error.code } : {}),
+    });
   }
 };
 

@@ -21,6 +21,7 @@ import {
 import { startOfDayAccra } from "../utils/dateHelpers.js";
 import { PORTAL_NETWORK_ALIASES } from "../validations/payment.validation.js";
 import { countParentUnread } from "./parent/notifications.service.js";
+import { derivePinFromDob, verifyPin as verifyPinUtil } from "../utils/parentPin.js";
 
 /**
  * The parent pay portal's own service layer.
@@ -1740,4 +1741,155 @@ export const buildParentReceipt = async (token, paymentId) => {
   }
 
   return { payment, student, school };
+};
+
+/**
+ * Verifies the parent's PIN derived from the child's date of birth.
+ *
+ * This is an additional security factor for sensitive operations in the
+ * parent portal. The PIN is not stored; it is derived on-demand from the
+ * student's DOB (format: DDMMYYYY) and compared using constant-time comparison.
+ *
+ * @param {string} token - The pay token (STU-XXXXXXXX)
+ * @param {string} inputPin - The 8-digit PIN provided by the parent
+ * @returns {Object} Portal view with pinVerified flag
+ * @throws {ApiError} If token invalid, student not found, or PIN incorrect
+ */
+export const verifyPin = async (token, inputPin) => {
+  // Validate PIN format first (fail fast, no info leak)
+  if (!inputPin || typeof inputPin !== "string" || !/^\d{8}$/.test(inputPin)) {
+    throw new ApiError(
+      "Invalid PIN format. Please enter an 8-digit PIN (DDMMYYYY).",
+      400,
+      "INVALID_PIN_FORMAT"
+    );
+  }
+
+  // Resolve student from token (same as other public endpoints)
+  const student = await requireStudentByToken(token);
+
+  // Derive expected PIN from student's date of birth
+  if (!student.dateOfBirth) {
+    throw new ApiError(
+      "Unable to verify PIN. Please contact the school.",
+      500,
+      "MISSING_DOB"
+    );
+  }
+
+  const expectedPin = derivePinFromDob(student.dateOfBirth);
+
+  // Constant-time comparison to prevent timing attacks
+  const isValid = verifyPinUtil(inputPin, expectedPin);
+
+  if (!isValid) {
+    // Generic error message - don't reveal whether token was valid
+    throw new ApiError(
+      "Incorrect PIN. Please try again.",
+      401,
+      "INVALID_PIN"
+    );
+  }
+
+  // PIN verified - return portal view with verification flag
+  const portalView = await getPortalView(token);
+
+  return {
+    ...portalView,
+    pinVerified: true,
+    pinVerifiedAt: new Date().toISOString(),
+  };
+};
+
+/**
+ * Finds a student by date of birth and returns their pay token for login.
+ *
+ * This allows parents to access the portal by entering their child's DOB
+ * and name instead of using a tokenized link.
+ *
+ * @param {string} dateOfBirth - ISO date string (YYYY-MM-DD)
+ * @param {string} studentName - Student's full name for verification
+ * @param {string} [phone] - Optional parent phone for additional verification
+ * @returns {Object} Student portal view with token
+ * @throws {ApiError} If no student found, DOB invalid, or name mismatch
+ */
+export const loginWithDob = async (dateOfBirth, studentName, phone) => {
+  // Validate date format
+  if (!dateOfBirth || !/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth)) {
+    throw new ApiError(
+      "Invalid date of birth format. Please use YYYY-MM-DD.",
+      400,
+      "INVALID_DOB_FORMAT"
+    );
+  }
+
+  // Validate student name
+  if (!studentName || studentName.trim().length < 2) {
+    throw new ApiError(
+      "Student name is required.",
+      400,
+      "INVALID_NAME"
+    );
+  }
+
+  // Parse the date to ensure it's valid
+  const dob = new Date(dateOfBirth);
+  if (isNaN(dob.getTime())) {
+    throw new ApiError("Invalid date of birth.", 400, "INVALID_DOB");
+  }
+
+  // Find student with matching DOB
+  // Only return students with active pay tokens (not deleted, not closed)
+  const query = {
+    dateOfBirth: dob,
+    deletedAt: null,
+    status: { $nin: ["closed", "archived"] },
+    uniquePayLinkToken: { $exists: true, $ne: null },
+  };
+
+  // If phone provided, also match against parent phone numbers
+  if (phone) {
+    // Normalize phone to match stored format
+    const normalizedPhone = phone.replace(/^\+233/, "0");
+    query.$or = [
+      { "parents.phone": phone },
+      { "parents.phone": normalizedPhone },
+      { "parents.phone": phone.replace(/^0/, "+233") },
+    ];
+  }
+
+  const student = await Student.findOne(query).select(
+    "studentName studentClass uniquePayLinkToken dateOfBirth status schoolId parents"
+  );
+
+  if (!student) {
+    throw new ApiError(
+      "No student found with that date of birth. Please check and try again.",
+      404,
+      "STUDENT_NOT_FOUND"
+    );
+  }
+
+  // Verify student name matches (case-insensitive, trimmed)
+  const providedName = studentName.trim().toLowerCase();
+  const storedName = student.studentName.trim().toLowerCase();
+  
+  if (providedName !== storedName) {
+    throw new ApiError(
+      "Student name does not match our records for this date of birth. Please check the spelling and try again.",
+      401,
+      "NAME_MISMATCH"
+    );
+  }
+
+  // Return the token and basic student info for redirect
+  return {
+    token: student.uniquePayLinkToken,
+    student: {
+      studentName: student.studentName,
+      studentClass: student.studentClass,
+      dateOfBirth: student.dateOfBirth,
+    },
+    schoolId: student.schoolId,
+  };
 };

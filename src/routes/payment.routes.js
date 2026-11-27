@@ -11,6 +11,8 @@ import {
   sendSupportMessageController,
   requestPaymentPlanController,
   notifySchoolController,
+  verifyPinController,
+  payLoginController,
   listPaymentsController,
   getPaymentSummaryController,
   exportPaymentsController,
@@ -33,6 +35,8 @@ import {
   payVerifyLimit,
   payRequestPlanLimit,
   payCancelPlanLimit,
+  payVerifyPinLimit,
+  payLoginLimit,
 } from "../middleware/rateLimit.js";
 import {
   payTokenParamSchema,
@@ -54,6 +58,8 @@ import {
   paymentExportQuerySchema,
   paymentDetailQuerySchema,
   refundPaymentSchema,
+  pinVerifySchema,
+  payLoginSchema,
 } from "../validations/payment.validation.js";
 import { recordManualPaymentSchema } from "../validations/manualPayment.validation.js";
 
@@ -75,6 +81,21 @@ const requireSchoolAdmin = authorize("super_admin", "school_admin", "accountant"
 // budget by guessing token shapes, and a typo costs nothing. A well-formed token is
 // then counted, which is exactly the traffic worth limiting.
 //
+//
+// POST /pay/login — Parent logs in with child's date of birth
+//
+// The parent enters their child's DOB (YYYY-MM-DD). If a student with that
+// DOB exists and has an active pay token, the token is returned so the
+// frontend can redirect to the portal.
+//
+// Rate limited to 5 attempts per hour to prevent brute force.
+paymentRoute.post(
+  "/pay/login",
+  payLoginLimit,
+  validate(payLoginSchema),
+  payLoginController
+);
+
 // GET /pay/:token - View student + balance
 paymentRoute.get(
   "/pay/:token",
@@ -218,6 +239,18 @@ paymentRoute.post(
   validate(payTokenParamSchema, "params"),
   validate(verifyPaymentSchema),
   verifyPaymentController
+);
+
+// POST /pay/:token/verify-pin - Verify parent PIN (DDMMYYYY from child's DOB)
+//
+// Additional security factor for sensitive portal operations.
+// Rate limited to 5 attempts per hour per token.
+paymentRoute.post(
+  "/pay/:token/verify-pin",
+  payVerifyPinLimit,
+  validate(payTokenParamSchema, "params"),
+  validate(pinVerifySchema),
+  verifyPinController
 );
 
 // GET /pay/:token/receipt/:paymentId - Parent: PDF download

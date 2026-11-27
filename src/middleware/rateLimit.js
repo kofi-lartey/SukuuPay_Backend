@@ -49,6 +49,10 @@ export const PAY_PORTAL_LIMITS = {
   notifySchool: { windowMs: DAY_MS, max: 3, message: 'You have already sent several messages from this link. Please call the school instead.' },
   /** `GET /pay/:token/verify/:reference` — polled every few seconds while pending. */
   verify: { windowMs: HOUR_MS, max: 120, message: 'Too many status checks from this link. Please reload the page.' },
+  /** `POST /pay/:token/verify-pin` — strict limit for PIN verification (5 per hour). */
+  verifyPin: { windowMs: HOUR_MS, max: 5, message: 'Too many PIN attempts. Please wait before trying again, or contact the school.' },
+  /** `POST /pay/login` — strict limit for DOB login attempts. */
+  login: { windowMs: HOUR_MS, max: 5, message: 'Too many login attempts. Please wait before trying again.' },
 };
 
 /**
@@ -151,5 +155,7 @@ export const payRequestPlanLimit = payPortalLimit(PAY_PORTAL_LIMITS.requestPlan)
 export const payCancelPlanLimit = payPortalLimit(PAY_PORTAL_LIMITS.cancelPlan);
 export const payNotifySchoolLimit = payPortalLimit(PAY_PORTAL_LIMITS.notifySchool);
 export const payVerifyLimit = payPortalLimit(PAY_PORTAL_LIMITS.verify);
+export const payVerifyPinLimit = payPortalLimit(PAY_PORTAL_LIMITS.verifyPin);
+export const payLoginLimit = payPortalLimit(PAY_PORTAL_LIMITS.login);
 
 export default rateLimit;

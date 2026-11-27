@@ -491,6 +491,43 @@ export const payPlanCancelSchema = Joi.object({
  * record — see `pay.service.js`'s `sendSupportMessage` — so a parent is never
  * asked to retype a number the school already holds.
  */
+/**
+ * `POST /pay/login` — Parent logs in with child's date of birth and name.
+ *
+ * The parent enters their child's DOB (YYYY-MM-DD) and full name. If a student
+ * with that DOB and matching name exists and has an active pay token, the token
+ * is returned so the frontend can redirect to the portal.
+ */
+export const payLoginSchema = Joi.object({
+  dateOfBirth: Joi.string()
+    .pattern(/^\d{4}-\d{2}-\d{2}$/)
+    .required()
+    .messages({
+      "string.pattern.base": "Date of birth must be in YYYY-MM-DD format",
+      "string.empty": "Please enter your child's date of birth",
+      "any.required": "Date of birth is required",
+    }),
+  studentName: Joi.string()
+    .trim()
+    .min(2)
+    .max(100)
+    .required()
+    .messages({
+      "string.min": "Student name must be at least 2 characters",
+      "string.max": "Student name must be under 100 characters",
+      "string.empty": "Please enter your child's full name",
+      "any.required": "Student name is required",
+    }),
+  // Optional: parent's phone number for additional verification
+  phone: Joi.string()
+    .pattern(/^(\+233|0)[2-9]\d{8}$/)
+    .optional()
+    .allow("", null)
+    .messages({
+      "string.pattern.base": "Please enter a valid Ghana phone number",
+    }),
+});
+
 export const paySupportSchema = Joi.object({
   category: Joi.string().trim().max(60).optional().allow("", null),
   subject: Joi.string().trim().max(120).optional().allow("", null),
@@ -499,4 +536,22 @@ export const paySupportSchema = Joi.object({
     "string.min": "Please write at least a short message so the school can help",
     "string.max": "Please keep your message under 1000 characters",
   }),
+});
+
+/**
+ * `POST /pay/:token/verify-pin`.
+ *
+ * The parent enters their 8-digit PIN derived from the child's DOB (DDMMYYYY).
+ * This is an additional security factor for sensitive operations.
+ */
+export const pinVerifySchema = Joi.object({
+  pin: Joi.string()
+    .trim()
+    .pattern(/^\d{8}$/)
+    .required()
+    .messages({
+      "string.pattern.base": "PIN must be 8 digits (DDMMYYYY)",
+      "string.empty": "Please enter your PIN",
+      "any.required": "PIN is required",
+    }),
 });
