@@ -112,6 +112,9 @@ export const generateReceiptPdf = async (payment = {}, { student, school } = {})
   const amountLeftToPay = Math.max(0, totalFees - amountAlreadyPaid);
   const amountPaidToday = amount;
   const balance = Math.max(0, amountLeftToPay - amountPaidToday);
+  // Outstanding balance from the student record (source of truth, may be
+  // negative when the student has overpaid — the school owes them).
+  const studentBalance = Number(s.balance ?? 0);
 
   const dateStr = fmtDate(p.date || p.completedAt || p.createdAt);
 
@@ -357,6 +360,7 @@ export const generateReceiptPdf = async (payment = {}, { student, school } = {})
     ["AMOUNT ALREADY PAID", money(amountAlreadyPaid)],
     ["AMOUNT LEFT TO PAY", money(amountLeftToPay)],
     ["AMOUNT PAID TODAY", money(amountPaidToday)],
+    ["OUTSTANDING BALANCE", money(studentBalance)],
   ];
   for (const [lab, val] of totals) {
     doc.font(uiFont(false)).fontSize(9).fillColor("#4a5a52");
@@ -395,6 +399,14 @@ export const generateReceiptPdf = async (payment = {}, { student, school } = {})
   const tstr = "THANK YOU";
   const tw = doc.widthOfString(tstr);
   doc.text(tstr, (PAGE_W - tw) / 2, y, { lineBreak: false, characterSpacing: 3.75 });
+
+  // Powered by SukuuPay footer.
+  y += 20;
+  ensureSpace(20);
+  doc.font(uiFont(false)).fontSize(8).fillColor("#6e7b75");
+  const footer = "Powered by SukuuPay";
+  const fw = doc.widthOfString(footer);
+  doc.text(footer, (PAGE_W - fw) / 2, y, { lineBreak: false });
 
   doc.end();
 

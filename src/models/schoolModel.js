@@ -206,12 +206,13 @@ const schoolModel = new mongoose.Schema(
       },
       status: {
         type: String,
-        enum: ["active", "suspended", "expired", "cancelled", "trial"],
+        enum: ["active", "grace", "locked", "suspended", "expired", "cancelled", "trial"],
         default: "trial",
       },
       trialEndsAt: { type: Date, default: null },
       currentPeriodStart: { type: Date, default: null },
       currentPeriodEnd: { type: Date, default: null },
+      gracePeriodEnd: { type: Date, default: null },
       cancelledAt: { type: Date, default: null },
       paymentMethod: {
         type: String,

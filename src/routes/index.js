@@ -62,7 +62,7 @@ router.use(maintenanceGuard);
 
 router.use('/', authRoute);
 router.use('/', userRoute);
-router.use('/', schoolRoute);
+router.use('/schools', schoolRoute);
 router.use('/v2', campusRoute);
 router.use('/', schoolVerificationRoute);
 router.use('/', studentRoute);

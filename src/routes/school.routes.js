@@ -16,6 +16,7 @@ import {
 import { authenticate, authorize } from "../middleware/authenticate.js";
 import { requireSchool } from "../middleware/requireSchool.js";
 import { trialExpiryMiddleware } from "../middleware/trialExpiry.js";
+import { subscriptionGraceMiddleware } from "../middleware/subscriptionGrace.js";
 import { validate } from "../middleware/validate.js";
 import { uploadLogo, uploadStamp } from "../middleware/upload.js";
 import {
@@ -40,7 +41,16 @@ export const schoolRoute = Router();
  * It is placed after `authenticate` so `req.user` is populated, and it
  * no-ops when `req.user.schoolId` is null (accounts without a school yet).
  */
-schoolRoute.use(authenticate, trialExpiryMiddleware);
+schoolRoute.use(trialExpiryMiddleware);
+
+/**
+ * Subscription grace-period and lock check. Runs on the same router so every
+ * school-scoped request is evaluated: an expired paid subscription enters a
+ * seven-day grace window (full access), then is locked and refused access.
+ * Placed after `trialExpiryMiddleware` because a trial that expires becomes
+ * `expired` (not `active`), which this middleware intentionally leaves alone.
+ */
+schoolRoute.use(subscriptionGraceMiddleware);
 
 /**
  * Self-service routes, declared before the `:schoolId` patterns so the intent is
@@ -51,7 +61,7 @@ schoolRoute.use(authenticate, trialExpiryMiddleware);
  * Neither carries `requireSchool`: both exist precisely for accounts that do not
  * have one.
  */
-schoolRoute.post("/schools/me", authenticate, validate(provisionMySchoolSchema), createMySchoolController);
+schoolRoute.post("/me", authenticate, validate(provisionMySchoolSchema), createMySchoolController);
 
 /**
  * `POST /schools/me/subscription/payment` — initiate a manual subscription
@@ -61,12 +71,12 @@ schoolRoute.post("/schools/me", authenticate, validate(provisionMySchoolSchema),
  * administrator approves it.
  */
 schoolRoute.post(
-  "/schools/me/subscription/payment",
+  "/me/subscription/payment",
   authenticate,
   initiateSubscriptionPaymentController
 );
 
-schoolRoute.post("/schools/join", authenticate, validate(joinSchoolSchema), joinSchoolController);
+schoolRoute.post("/join", authenticate, validate(joinSchoolSchema), joinSchoolController);
 
 /**
  * The approval queue, and the decision on it.
@@ -83,7 +93,7 @@ schoolRoute.post("/schools/join", authenticate, validate(joinSchoolSchema), join
  * other half.
  */
 schoolRoute.get(
-  "/schools/join-requests",
+  "/join-requests",
   authenticate,
   requireSchool,
   authorize("super_admin", "school_admin"),
@@ -91,7 +101,7 @@ schoolRoute.get(
 );
 
 schoolRoute.put(
-  "/schools/join-requests/:requestId",
+  "/join-requests/:requestId",
   authenticate,
   requireSchool,
   authorize("super_admin", "school_admin"),
@@ -106,7 +116,7 @@ schoolRoute.put(
  * self-service signup uses.
  */
 schoolRoute.post(
-  "/schools",
+  "/",
   authenticate,
   authorize("super_admin"),
   validate(createSchoolSchema),
@@ -115,7 +125,7 @@ schoolRoute.post(
 );
 
 schoolRoute.get(
-  "/schools",
+  "/",
   authenticate,
   authorize("super_admin"),
   validate(listSchoolsQuerySchema, "query"),
@@ -123,7 +133,7 @@ schoolRoute.get(
 );
 
 schoolRoute.get(
-  "/schools/:schoolId",
+  "/:schoolId",
   authenticate,
   validate(schoolIdParamSchema, "params"),
   getSchoolController
@@ -137,7 +147,7 @@ schoolRoute.get(
  * denied to them, they simply have no school to edit yet.
  */
 schoolRoute.put(
-  "/schools/:schoolId",
+  "/:schoolId",
   authenticate,
   requireSchool,
   validate(schoolIdParamSchema, "params"),
@@ -146,7 +156,7 @@ schoolRoute.put(
 );
 
 schoolRoute.put(
-  "/schools/:schoolId/logo",
+  "/:schoolId/logo",
   authenticate,
   requireSchool,
   validate(schoolIdParamSchema, "params"),
@@ -155,7 +165,7 @@ schoolRoute.put(
 );
 
 schoolRoute.put(
-  "/schools/:schoolId/stamp",
+  "/:schoolId/stamp",
   authenticate,
   authorize("super_admin"),
   validate(schoolIdParamSchema, "params"),
@@ -164,7 +174,7 @@ schoolRoute.put(
 );
 
 schoolRoute.put(
-  "/schools/:schoolId/suspend",
+  "/:schoolId/suspend",
   authenticate,
   authorize("super_admin"),
   validate(schoolIdParamSchema, "params"),
@@ -173,7 +183,7 @@ schoolRoute.put(
 );
 
 schoolRoute.delete(
-  "/schools/:schoolId",
+  "/:schoolId",
   authenticate,
   authorize("super_admin"),
   validate(schoolIdParamSchema, "params"),

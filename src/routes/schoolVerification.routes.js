@@ -21,15 +21,14 @@ import {
 
 export const schoolVerificationRoute = Router();
 
-schoolVerificationRoute.use(authenticate);
-
+// Public: search directory (no auth needed)
 schoolVerificationRoute.get(
   "/schools/directory/search",
-  authenticate,
   validate(schoolDirectorySearchQuerySchema, "query"),
   searchDirectoryController
 );
 
+// Protected routes - require authentication per route
 schoolVerificationRoute.post(
   "/schools/:schoolId/verification/documents",
   authenticate,
